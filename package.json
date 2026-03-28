@@ -1,0 +1,32 @@
+{
+  "name": "new-project-setup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Manifest-driven bootstrap CLI for repository setup, GitHub governance, home agent profiles, and CI baselines.",
+  "type": "module",
+  "bin": {
+    "project-bootstrap": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "yaml": "^2.8.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

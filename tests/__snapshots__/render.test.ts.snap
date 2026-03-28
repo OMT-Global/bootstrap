@@ -1,0 +1,405 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderManagedFiles > renders a stable managed file set for generic-empty 1`] = `
+[
+  {
+    "executable": false,
+    "path": "project.bootstrap.yaml",
+  },
+  {
+    "executable": false,
+    "path": "README.md",
+  },
+  {
+    "executable": false,
+    "path": "AGENTS.md",
+  },
+  {
+    "executable": false,
+    "path": "CLAUDE.md",
+  },
+  {
+    "executable": false,
+    "path": ".env.example",
+  },
+  {
+    "executable": false,
+    "path": ".gitignore",
+  },
+  {
+    "executable": true,
+    "path": ".githooks/pre-commit",
+  },
+  {
+    "executable": false,
+    "path": "CODEOWNERS",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/pr-fast-ci.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": true,
+    "path": "scripts/check-detect-secrets.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-fast-checks.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/setup.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/maintenance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude-cloud/setup.sh",
+  },
+  {
+    "executable": false,
+    "path": ".devcontainer/devcontainer.json",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude/setup-devcontainer.sh",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/claude.yml",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/claude-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/next-steps.md",
+  },
+]
+`;
+
+exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1`] = `
+[
+  {
+    "executable": false,
+    "path": "project.bootstrap.yaml",
+  },
+  {
+    "executable": false,
+    "path": "README.md",
+  },
+  {
+    "executable": false,
+    "path": "AGENTS.md",
+  },
+  {
+    "executable": false,
+    "path": "CLAUDE.md",
+  },
+  {
+    "executable": false,
+    "path": ".env.example",
+  },
+  {
+    "executable": false,
+    "path": ".gitignore",
+  },
+  {
+    "executable": true,
+    "path": ".githooks/pre-commit",
+  },
+  {
+    "executable": false,
+    "path": "CODEOWNERS",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/pr-fast-ci.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": true,
+    "path": "scripts/check-detect-secrets.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-fast-checks.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/setup.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/maintenance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude-cloud/setup.sh",
+  },
+  {
+    "executable": false,
+    "path": ".devcontainer/devcontainer.json",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude/setup-devcontainer.sh",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/claude.yml",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/claude-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "app/layout.tsx",
+  },
+  {
+    "executable": false,
+    "path": "app/page.tsx",
+  },
+  {
+    "executable": false,
+    "path": "app/globals.css",
+  },
+]
+`;
+
+exports[`renderManagedFiles > renders a stable managed file set for node-ts-service 1`] = `
+[
+  {
+    "executable": false,
+    "path": "project.bootstrap.yaml",
+  },
+  {
+    "executable": false,
+    "path": "README.md",
+  },
+  {
+    "executable": false,
+    "path": "AGENTS.md",
+  },
+  {
+    "executable": false,
+    "path": "CLAUDE.md",
+  },
+  {
+    "executable": false,
+    "path": ".env.example",
+  },
+  {
+    "executable": false,
+    "path": ".gitignore",
+  },
+  {
+    "executable": true,
+    "path": ".githooks/pre-commit",
+  },
+  {
+    "executable": false,
+    "path": "CODEOWNERS",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/pr-fast-ci.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": true,
+    "path": "scripts/check-detect-secrets.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-fast-checks.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/setup.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/maintenance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude-cloud/setup.sh",
+  },
+  {
+    "executable": false,
+    "path": ".devcontainer/devcontainer.json",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude/setup-devcontainer.sh",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/claude.yml",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/claude-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "src/index.ts",
+  },
+]
+`;
+
+exports[`renderManagedFiles > renders a stable managed file set for python-service 1`] = `
+[
+  {
+    "executable": false,
+    "path": "project.bootstrap.yaml",
+  },
+  {
+    "executable": false,
+    "path": "README.md",
+  },
+  {
+    "executable": false,
+    "path": "AGENTS.md",
+  },
+  {
+    "executable": false,
+    "path": "CLAUDE.md",
+  },
+  {
+    "executable": false,
+    "path": ".env.example",
+  },
+  {
+    "executable": false,
+    "path": ".gitignore",
+  },
+  {
+    "executable": true,
+    "path": ".githooks/pre-commit",
+  },
+  {
+    "executable": false,
+    "path": "CODEOWNERS",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/pr-fast-ci.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": true,
+    "path": "scripts/check-detect-secrets.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-fast-checks.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/setup.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/codex-cloud/maintenance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude-cloud/setup.sh",
+  },
+  {
+    "executable": false,
+    "path": ".devcontainer/devcontainer.json",
+  },
+  {
+    "executable": true,
+    "path": "scripts/claude/setup-devcontainer.sh",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/claude.yml",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/claude-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "src/python_service_demo/__init__.py",
+  },
+  {
+    "executable": false,
+    "path": "src/python_service_demo/app.py",
+  },
+  {
+    "executable": false,
+    "path": "tests/test_smoke.py",
+  },
+]
+`;

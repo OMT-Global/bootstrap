@@ -22,6 +22,11 @@ function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
   return manifest.github.requiredStatusChecks.join(", ");
 }
 
+function isEnvironmentProtectionPlanLimit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Failed to create the environment protection rule. Please ensure the billing plan supports");
+}
+
 function environmentBranchPolicy(
   manifest: BootstrapManifest,
   environmentName: "dev" | "stage" | "prod"
@@ -277,25 +282,35 @@ export async function applyGitHub(
     const reviewers = environment.requireApproval
       ? await resolveReviewerIdentities(client, environment.reviewers, manifest.project.owner)
       : [];
+    const environmentEndpoint = `/repos/${manifest.project.owner}/${manifest.project.name}/environments/${environmentName}`;
+    const environmentPayload = {
+      wait_timer: 0,
+      prevent_self_review: environment.preventSelfReview,
+      reviewers,
+      ...(environmentBranchPolicy(manifest, environmentName)
+        ? {
+            deployment_branch_policy: environmentBranchPolicy(manifest, environmentName)
+          }
+        : {})
+    };
 
-    await client.api(
-      "PUT",
-      `/repos/${manifest.project.owner}/${manifest.project.name}/environments/${environmentName}`,
-      {
-        wait_timer: 0,
-        prevent_self_review: environment.preventSelfReview,
-        reviewers,
-        ...(environmentBranchPolicy(manifest, environmentName)
-          ? {
-              deployment_branch_policy: environmentBranchPolicy(manifest, environmentName)
-            }
-          : {})
+    try {
+      await client.api("PUT", environmentEndpoint, environmentPayload);
+      actions.push({
+        id: `environment-${environmentName}`,
+        description: `Synced ${environmentName} environment protection rules.`
+      });
+    } catch (error) {
+      if (!isEnvironmentProtectionPlanLimit(error)) {
+        throw error;
       }
-    );
-    actions.push({
-      id: `environment-${environmentName}`,
-      description: `Synced ${environmentName} environment protection rules.`
-    });
+
+      await client.api("PUT", environmentEndpoint, {});
+      actions.push({
+        id: `environment-${environmentName}-plan-limited`,
+        description: `Created ${environmentName} environment without protection rules because the current GitHub plan does not support protected environments on this private repository.`
+      });
+    }
   }
 
   return actions;

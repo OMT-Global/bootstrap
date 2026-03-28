@@ -1,0 +1,76 @@
+version: 1
+project:
+  name: new-project-setup
+  description: Manifest-driven bootstrap CLI for repo governance, agent setup, and split CI.
+  visibility: public
+  owner: OMT-Global
+  defaultBranch: main
+archetype:
+  kind: generic-empty
+  packageManager: npm
+  moduleName: new_project_setup
+github:
+  createRepo: true
+  reviewers:
+    - jmcte
+  codeowners:
+    - pattern: "*"
+      owners:
+        - "@jmcte"
+  autoMerge: true
+  deleteBranchOnMerge: true
+  requiredApprovals: 1
+  dismissStaleReviews: true
+  requireCodeOwnerReviews: true
+  requireLastPushApproval: false
+  enforceLinearHistory: true
+  allowMergeCommit: true
+  allowSquashMerge: true
+  allowRebaseMerge: false
+  repoFeatures:
+    hasIssues: true
+    hasProjects: false
+    hasWiki: false
+    hasDiscussions: false
+ci:
+  runnerPolicy: hybrid-safe
+  nodeVersion: "20"
+  pythonVersion: "3.12"
+  fastChecks:
+    - lint
+    - typecheck
+    - unit
+    - build
+    - secrets
+  extendedChecks:
+    - integration
+    - release-readiness
+  nightlyCron: 0 7 * * *
+agents:
+  manageCodexHome: true
+  manageClaudeHome: true
+  codexProfile: default
+  claudeProfile: default
+  enableClaudeWebEnvironment: true
+  enableClaudeDevcontainer: true
+  enableClaudeGitHubAction: true
+  sharedSkills: []
+environments:
+  dev:
+    reviewers: []
+    requireApproval: false
+    preventSelfReview: false
+    branches: []
+  stage:
+    reviewers:
+      - jmcte
+    requireApproval: true
+    preventSelfReview: true
+    branches: []
+  prod:
+    reviewers:
+      - jmcte
+    requireApproval: true
+    preventSelfReview: true
+    branches:
+      - main

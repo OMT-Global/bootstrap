@@ -43,4 +43,24 @@ describe("renderManagedFiles", () => {
       expect(claudeCloudSetup?.contents).toContain("apt-get install -y gh");
     });
   }
+
+  it("uses the primary required status check name in the generated PR workflow", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "runner-adoption",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        requiredStatusChecks: ["test"]
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
+    expect(prWorkflow?.contents).toContain("name: test");
+    expect(prWorkflow?.contents).not.toContain("name: CI Gate");
+  });
 });

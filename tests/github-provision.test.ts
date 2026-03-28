@@ -12,6 +12,9 @@ describe("GitHub provisioning", () => {
       },
       archetype: {
         kind: "node-ts-service"
+      },
+      github: {
+        requiredStatusChecks: ["test"]
       }
     });
 
@@ -34,7 +37,8 @@ describe("GitHub provisioning", () => {
         kind: "node-ts-service"
       },
       github: {
-        reviewers: ["alice"]
+        reviewers: ["alice"],
+        requiredStatusChecks: ["test", "lint"]
       }
     });
 
@@ -70,6 +74,15 @@ describe("GitHub provisioning", () => {
           call.endpoint === "/repos/acme/example/branches/main/protection" && call.method === "PUT"
       )
     ).toBe(true);
+    const protectionCall = calls.find(
+      (call) => call.endpoint === "/repos/acme/example/branches/main/protection" && call.method === "PUT"
+    );
+    expect(protectionCall?.payload).toMatchObject({
+      required_status_checks: {
+        strict: true,
+        contexts: ["test", "lint"]
+      }
+    });
     expect(
       calls.some(
         (call) => call.endpoint === "/repos/acme/example/environments/prod" && call.method === "PUT"

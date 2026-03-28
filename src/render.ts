@@ -10,8 +10,46 @@ export interface RepoPlan {
   files: RenderedFile[];
 }
 
+function globToRegExp(pattern: string): RegExp {
+  const normalized = pattern.replace(/\\/g, "/");
+  let source = "^";
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index]!;
+    if (character === "*") {
+      const nextCharacter = normalized[index + 1];
+      if (nextCharacter === "*") {
+        source += ".*";
+        index += 1;
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+
+    source += /[|\\{}()[\]^$+?.]/.test(character) ? `\\${character}` : character;
+  }
+
+  source += "$";
+  return new RegExp(source);
+}
+
+function matchesManagedPath(filePath: string, pattern: string): boolean {
+  return globToRegExp(pattern).test(filePath.replace(/\\/g, "/"));
+}
+
+function selectManagedFiles(manifest: BootstrapManifest, files: RenderedFile[]): RenderedFile[] {
+  if (manifest.repo.managedPaths.length === 0) {
+    return files;
+  }
+
+  return files.filter((file) =>
+    manifest.repo.managedPaths.some((pattern) => matchesManagedPath(file.path, pattern))
+  );
+}
+
 export async function planRepo(manifest: BootstrapManifest, targetDir: string): Promise<RepoPlan> {
-  const files = renderManagedFiles(manifest);
+  const files = selectManagedFiles(manifest, renderManagedFiles(manifest));
   const existingState = await loadRepoState(targetDir);
   const changes: PlannedFileChange[] = [];
 

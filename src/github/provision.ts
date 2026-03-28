@@ -18,6 +18,10 @@ interface ReviewerIdentity {
   id: number;
 }
 
+function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.join(", ");
+}
+
 function environmentBranchPolicy(
   manifest: BootstrapManifest,
   environmentName: "dev" | "stage" | "prod"
@@ -132,7 +136,7 @@ export async function planGitHub(
       },
       {
         id: "branch-protection",
-        description: `Protect ${manifest.project.defaultBranch} with 1 approval, stale-review dismissal, code owner review, linear history, and required status check CI Gate.`
+        description: `Protect ${manifest.project.defaultBranch} with 1 approval, stale-review dismissal, code owner review, linear history, and required status checks ${requiredStatusChecksLabel(manifest)}.`
       },
       {
         id: "environments",
@@ -151,7 +155,7 @@ export async function planGitHub(
   });
   actions.push({
     id: "branch-protection",
-    description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), code owners, stale-review dismissal, linear history, and status check CI Gate.`
+    description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), code owners, stale-review dismissal, linear history, and status checks ${requiredStatusChecksLabel(manifest)}.`
   });
   actions.push({
     id: "environments",
@@ -232,7 +236,7 @@ export async function applyGitHub(
       {
         required_status_checks: {
           strict: true,
-          contexts: ["CI Gate"]
+          contexts: manifest.github.requiredStatusChecks
         },
         enforce_admins: true,
         required_pull_request_reviews: {

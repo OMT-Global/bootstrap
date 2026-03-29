@@ -1172,6 +1172,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
+      pull-requests: read
 
     env:
       NODE_VERSION: '${manifest.ci.nodeVersion}'

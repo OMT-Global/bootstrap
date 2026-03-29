@@ -18,12 +18,14 @@ describe("normalizeManifest", () => {
     });
 
     expect(manifest.project.defaultBranch).toBe("main");
+    expect(manifest.repo.managedPaths).toEqual([]);
     expect(manifest.github.codeowners).toEqual([
       {
         pattern: "*",
         owners: ["@alice", "@acme/platform"]
       }
     ]);
+    expect(manifest.github.requiredStatusChecks).toEqual(["CI Gate"]);
     expect(manifest.agents.enableClaudeWebEnvironment).toBe(true);
     expect(manifest.agents.enableClaudeDevcontainer).toBe(true);
     expect(manifest.agents.enableClaudeGitHubAction).toBe(true);
@@ -58,5 +60,26 @@ describe("normalizeManifest", () => {
 
     expect(manifest.environments.stage.reviewers).toEqual(["release-team"]);
     expect(manifest.environments.prod.branches).toEqual(["main"]);
+  });
+
+  it("preserves explicit required checks and managed path selection", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "runner-repo",
+        owner: "acme"
+      },
+      repo: {
+        managedPaths: ["project.bootstrap.yaml", "docs/bootstrap/**"]
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        requiredStatusChecks: ["test"]
+      }
+    });
+
+    expect(manifest.repo.managedPaths).toEqual(["project.bootstrap.yaml", "docs/bootstrap/**"]);
+    expect(manifest.github.requiredStatusChecks).toEqual(["test"]);
   });
 });

@@ -26,6 +26,11 @@ const manifestSchema = z.object({
     owner: z.string().min(1),
     defaultBranch: z.string().min(1).optional()
   }),
+  repo: z
+    .object({
+      managedPaths: z.array(z.string().min(1)).optional()
+    })
+    .optional(),
   archetype: z.object({
     kind: z.enum(["nextjs-web", "node-ts-service", "python-service", "generic-empty"]),
     packageManager: z.enum(["npm", "pnpm", "yarn"]).optional(),
@@ -39,6 +44,7 @@ const manifestSchema = z.object({
       autoMerge: z.boolean().optional(),
       deleteBranchOnMerge: z.boolean().optional(),
       requiredApprovals: z.number().int().min(1).max(6).optional(),
+      requiredStatusChecks: z.array(z.string().min(1)).min(1).optional(),
       dismissStaleReviews: z.boolean().optional(),
       requireCodeOwnerReviews: z.boolean().optional(),
       requireLastPushApproval: z.boolean().optional(),
@@ -172,6 +178,9 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       owner: parsed.project.owner,
       defaultBranch
     },
+    repo: {
+      managedPaths: parsed.repo?.managedPaths ?? []
+    },
     archetype: {
       kind: parsed.archetype.kind,
       packageManager: parsed.archetype.packageManager ?? "npm",
@@ -184,6 +193,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       autoMerge: github.autoMerge ?? true,
       deleteBranchOnMerge: github.deleteBranchOnMerge ?? true,
       requiredApprovals: github.requiredApprovals ?? 1,
+      requiredStatusChecks: github.requiredStatusChecks ?? ["CI Gate"],
       dismissStaleReviews: github.dismissStaleReviews ?? true,
       requireCodeOwnerReviews: github.requireCodeOwnerReviews ?? true,
       requireLastPushApproval: github.requireLastPushApproval ?? false,
@@ -254,6 +264,7 @@ export async function loadManifest(manifestPath: string): Promise<BootstrapManif
 
 interface ManifestOverrides {
   project?: Partial<BootstrapManifest["project"]>;
+  repo?: Partial<BootstrapManifest["repo"]>;
   archetype?: Partial<BootstrapManifest["archetype"]>;
   github?: Partial<BootstrapManifest["github"]>;
   ci?: Partial<BootstrapManifest["ci"]>;
@@ -273,6 +284,7 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
       owner: overrides?.project?.owner ?? "your-org",
       defaultBranch: overrides?.project?.defaultBranch ?? "main"
     },
+    repo: overrides?.repo,
     archetype: {
       kind: overrides?.archetype?.kind ?? "node-ts-service",
       packageManager: overrides?.archetype?.packageManager ?? "npm"

@@ -14,6 +14,10 @@ export interface EnvironmentConfig {
   branches: string[];
 }
 
+export interface RepoConfig {
+  managedPaths: string[];
+}
+
 export interface BootstrapManifest {
   version: 1;
   project: {
@@ -23,6 +27,7 @@ export interface BootstrapManifest {
     owner: string;
     defaultBranch: string;
   };
+  repo: RepoConfig;
   archetype: {
     kind: ArchetypeKind;
     packageManager: "npm" | "pnpm" | "yarn";
@@ -35,6 +40,7 @@ export interface BootstrapManifest {
     autoMerge: boolean;
     deleteBranchOnMerge: boolean;
     requiredApprovals: number;
+    requiredStatusChecks: string[];
     dismissStaleReviews: boolean;
     requireCodeOwnerReviews: boolean;
     requireLastPushApproval: boolean;

@@ -18,6 +18,15 @@ interface ReviewerIdentity {
   id: number;
 }
 
+function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.join(", ");
+}
+
+function isEnvironmentProtectionPlanLimit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Failed to create the environment protection rule. Please ensure the billing plan supports");
+}
+
 function environmentBranchPolicy(
   manifest: BootstrapManifest,
   environmentName: "dev" | "stage" | "prod"
@@ -132,7 +141,7 @@ export async function planGitHub(
       },
       {
         id: "branch-protection",
-        description: `Protect ${manifest.project.defaultBranch} with 1 approval, stale-review dismissal, code owner review, linear history, and required status check CI Gate.`
+        description: `Protect ${manifest.project.defaultBranch} with 1 approval, stale-review dismissal, code owner review, linear history, and required status checks ${requiredStatusChecksLabel(manifest)}.`
       },
       {
         id: "environments",
@@ -151,7 +160,7 @@ export async function planGitHub(
   });
   actions.push({
     id: "branch-protection",
-    description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), code owners, stale-review dismissal, linear history, and status check CI Gate.`
+    description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), code owners, stale-review dismissal, linear history, and status checks ${requiredStatusChecksLabel(manifest)}.`
   });
   actions.push({
     id: "environments",
@@ -232,7 +241,7 @@ export async function applyGitHub(
       {
         required_status_checks: {
           strict: true,
-          contexts: ["CI Gate"]
+          contexts: manifest.github.requiredStatusChecks
         },
         enforce_admins: true,
         required_pull_request_reviews: {
@@ -273,25 +282,35 @@ export async function applyGitHub(
     const reviewers = environment.requireApproval
       ? await resolveReviewerIdentities(client, environment.reviewers, manifest.project.owner)
       : [];
+    const environmentEndpoint = `/repos/${manifest.project.owner}/${manifest.project.name}/environments/${environmentName}`;
+    const environmentPayload = {
+      wait_timer: 0,
+      prevent_self_review: environment.preventSelfReview,
+      reviewers,
+      ...(environmentBranchPolicy(manifest, environmentName)
+        ? {
+            deployment_branch_policy: environmentBranchPolicy(manifest, environmentName)
+          }
+        : {})
+    };
 
-    await client.api(
-      "PUT",
-      `/repos/${manifest.project.owner}/${manifest.project.name}/environments/${environmentName}`,
-      {
-        wait_timer: 0,
-        prevent_self_review: environment.preventSelfReview,
-        reviewers,
-        ...(environmentBranchPolicy(manifest, environmentName)
-          ? {
-              deployment_branch_policy: environmentBranchPolicy(manifest, environmentName)
-            }
-          : {})
+    try {
+      await client.api("PUT", environmentEndpoint, environmentPayload);
+      actions.push({
+        id: `environment-${environmentName}`,
+        description: `Synced ${environmentName} environment protection rules.`
+      });
+    } catch (error) {
+      if (!isEnvironmentProtectionPlanLimit(error)) {
+        throw error;
       }
-    );
-    actions.push({
-      id: `environment-${environmentName}`,
-      description: `Synced ${environmentName} environment protection rules.`
-    });
+
+      await client.api("PUT", environmentEndpoint, {});
+      actions.push({
+        id: `environment-${environmentName}-plan-limited`,
+        description: `Created ${environmentName} environment without protection rules because the current GitHub plan does not support protected environments on this private repository.`
+      });
+    }
   }
 
   return actions;

@@ -9,6 +9,30 @@ function repoUrl(manifest: BootstrapManifest): string {
   return `https://github.com/${manifest.project.owner}/${manifest.project.name}`;
 }
 
+function requiredStatusChecksDisplay(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.map((check) => `\`${check}\``).join(", ");
+}
+
+function requiredStatusChecksPlain(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.join(", ");
+}
+
+function primaryRequiredStatusCheck(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks[0] ?? "CI Gate";
+}
+
+function requiredStatusCheckGuardrail(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.length === 1
+    ? `- Keep ${requiredStatusChecksDisplay(manifest)} as the single required PR status check.`
+    : `- Keep required PR status checks aligned with ${requiredStatusChecksDisplay(manifest)}.`;
+}
+
+function requiredStatusCheckConfirmation(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.length === 1
+    ? `Confirm branch protection points at the ${requiredStatusChecksDisplay(manifest)} status.`
+    : `Confirm branch protection points at the expected required status checks: ${requiredStatusChecksDisplay(manifest)}.`;
+}
+
 function codeowners(manifest: BootstrapManifest): string {
   if (manifest.github.codeowners.length === 0) {
     return "# Add CODEOWNERS entries when reviewer mapping is ready.\n";
@@ -84,11 +108,12 @@ function repoClaude(manifest: BootstrapManifest): string {
     manifest.agents.enableClaudeDevcontainer
       ? "- `.devcontainer/devcontainer.json`: interactive Claude Code workspace baseline"
       : null,
-    "- `scripts/ci/`: generated check entrypoints used by the workflows",
+    "- `.github/workflows/`: repo CI and review workflows",
+    "- `scripts/ci/`: bootstrap CI entrypoints when this repo uses the generated workflow lane",
     manifest.agents.enableClaudeDevcontainer
       ? "- `scripts/claude/setup-devcontainer.sh`: installs repo dependencies inside the devcontainer"
       : null,
-    "- `.githooks/pre-commit`: branch and env-file guardrail",
+    "- `.githooks/pre-commit`: branch and env-file guardrail when local hooks are bootstrap-managed",
     "- `docs/bootstrap/onboarding.md`: operator checklist for repo/governance setup",
     manifest.agents.enableClaudeWebEnvironment || manifest.agents.enableClaudeDevcontainer || manifest.agents.enableClaudeGitHubAction
       ? "- `docs/bootstrap/claude-environment.md`: Claude setup guide for hosted, interactive, and GitHub-hosted use"
@@ -98,7 +123,7 @@ function repoClaude(manifest: BootstrapManifest): string {
     .join("\n");
 
   const guardrailLines = [
-    "- Keep `CI Gate` as the single required PR status check.",
+    requiredStatusCheckGuardrail(manifest),
     `- Use one approval plus code owners on \`${manifest.project.defaultBranch}\` unless the manifest explicitly changes it.`,
     "- `stage` and `prod` environments require reviewers and prevent self-review by default.",
     "- Home-level Codex and Claude profile sync is managed by the bootstrap tool, not by ad-hoc manual edits.",
@@ -165,7 +190,7 @@ function repoReadme(manifest: BootstrapManifest): string {
 
     - GitHub governance and environments
     - repo-local AGENTS and CLAUDE instructions
-    - split fast and extended CI
+    - optional split fast and extended CI
     - Codex and Claude home profile sync
 
     ## Bootstrap Metadata
@@ -180,7 +205,7 @@ function repoReadme(manifest: BootstrapManifest): string {
     1. Review \`project.bootstrap.yaml\`.
     2. Run \`project-bootstrap plan --manifest ./project.bootstrap.yaml\`.
     3. Apply repo, GitHub, and home setup in that order.
-    4. Confirm branch protection points at the \`CI Gate\` status.
+    4. ${requiredStatusCheckConfirmation(manifest)}
 ${claudeSection}
 
     ## Repository URL
@@ -536,7 +561,7 @@ function codexCloudDoc(manifest: BootstrapManifest): string {
 
     - Codex cloud tasks automatically read \`AGENTS.md\` in this repo.
     - Setup scripts run in a separate shell session from the agent. Persistent env vars belong in Codex environment settings or \`~/.bashrc\`.
-    - This repo uses \`CI Gate\` as the single required PR check, so cloud review tasks should preserve that contract.
+    - This repo uses required PR checks ${requiredStatusChecksDisplay(manifest)}, so cloud review tasks should preserve that contract.
   `;
 }
 
@@ -751,6 +776,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
+      pull-requests: read
 
     jobs:
       claude:
@@ -794,7 +820,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
                 DEFAULT BRANCH: ${manifest.project.defaultBranch}
 
                 Use CLAUDE.md and docs/bootstrap/onboarding.md as repo policy context.
-                Keep CI Gate as the single required PR status check.
+                Keep required PR status checks aligned with ${requiredStatusChecksPlain(manifest)}.
                 Preserve the split fast and extended validation model.
                 Shell-safe jobs may use \`[self-hosted, synology, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`.
                 Docker, service-container, browser, and \`container:\` jobs stay on GitHub-hosted runners.
@@ -871,7 +897,7 @@ function claudeEnvironmentDoc(manifest: BootstrapManifest): string {
 
   const guardrailLines = [
     manifest.agents.enableClaudeGitHubAction
-      ? "- Keep the Claude workflow out of the required PR check set. `CI Gate` remains the only required check."
+      ? `- Keep the Claude workflow out of the required PR check set. The required checks are ${requiredStatusChecksDisplay(manifest)}.`
       : null,
     manifest.agents.enableClaudeWebEnvironment
       ? "- Prefer Claude Code on the web for long-running async review or fix tasks; use the devcontainer when you need a local interactive container."
@@ -1146,6 +1172,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
+      pull-requests: read
 
     env:
       NODE_VERSION: '${manifest.ci.nodeVersion}'
@@ -1201,7 +1228,7 @@ ${indentBlock(setupSteps(manifest), 6)}
             run: bash scripts/check-detect-secrets.sh --all-files
 
       ci-gate:
-        name: CI Gate
+        name: ${primaryRequiredStatusCheck(manifest)}
         runs-on: ${shellRunner}
         if: always()
         needs:
@@ -1387,7 +1414,7 @@ function onboardingDoc(manifest: BootstrapManifest): string {
 
     - Confirm the repository exists at \`${manifest.project.owner}/${manifest.project.name}\`.
     - Confirm branch protection or rulesets on \`${manifest.project.defaultBranch}\` require one approval and code owner review.
-    - Confirm the only required PR status check is \`CI Gate\`.
+    - ${requiredStatusCheckConfirmation(manifest)}
     - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled.
 
     ## Environments

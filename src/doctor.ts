@@ -11,6 +11,10 @@ export interface DoctorCheck {
   detail: string;
 }
 
+function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
+  return manifest.github.requiredStatusChecks.join(", ");
+}
+
 async function commandExists(runner: CommandRunner, command: string): Promise<boolean> {
   const result = await runner(command, ["--version"]);
   return result.exitCode === 0;
@@ -95,7 +99,7 @@ export async function runDoctor(
       name: "Claude GitHub Action",
       status: "ok",
       detail:
-        "The generated workflow is opt-in and separate from CI Gate. Finish GitHub-side auth with the Claude GitHub app or a repository ANTHROPIC_API_KEY secret."
+        `The generated workflow is opt-in and separate from the required PR checks (${requiredStatusChecksLabel(manifest)}). Finish GitHub-side auth with the Claude GitHub app or a repository ANTHROPIC_API_KEY secret.`
     });
   }
 

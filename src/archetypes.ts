@@ -776,6 +776,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
+      pull-requests: read
 
     jobs:
       claude:

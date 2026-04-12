@@ -5,11 +5,12 @@
     ignore_globs=("scripts/check-detect-secrets.sh")
     if [[ -f .detect-secrets-ignore ]]; then
       while IFS= read -r ignore_glob; do
-        case "$ignore_glob" in
-          ""|\#*)
-            continue
-            ;;
-        esac
+        if [[ -z "$ignore_glob" ]]; then
+          continue
+        fi
+        if [[ "${ignore_glob:0:1}" == "#" ]]; then
+          continue
+        fi
         ignore_globs+=("$ignore_glob")
       done < .detect-secrets-ignore
     fi

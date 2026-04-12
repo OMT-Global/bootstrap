@@ -121,7 +121,7 @@ describe("repo smoke", () => {
     await applyRepo(manifest, targetDir);
 
     await expect(
-      access(path.join(targetDir, ".git/info/new-project-bootstrap-state.json"))
+      access(path.join(targetDir, ".git/info/bootstrap-state.json"))
     ).resolves.toBeUndefined();
     await expect(access(path.join(targetDir, ".bootstrap/bootstrap-state.json"))).rejects.toThrow();
   });

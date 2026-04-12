@@ -1,10 +1,11 @@
 {
-  "name": "new-project-setup",
+  "name": "bootstrap",
   "version": "0.1.0",
   "private": true,
-  "description": "Manifest-driven bootstrap CLI for repository setup, GitHub governance, home agent profiles, and CI baselines.",
+  "description": "Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.",
   "type": "module",
   "bin": {
+    "bootstrap": "dist/cli.js",
     "project-bootstrap": "dist/cli.js"
   },
   "engines": {

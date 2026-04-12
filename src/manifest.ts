@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { readTextIfExists } from "./lib/fs.js";
 import type {
+  AdditionalWorkflowConfig,
   BootstrapManifest,
   CodeownerRule,
   DefaultRepositoryPermission,
@@ -39,6 +40,11 @@ const organizationSchema = z.object({
   membersCanCreateInternalRepositories: z.boolean().optional(),
   webCommitSignoffRequired: z.boolean().optional(),
   newRepositorySecurity: organizationSecuritySchema.optional()
+});
+
+const additionalWorkflowSchema = z.object({
+  path: z.string().min(1),
+  purpose: z.string().min(1)
 });
 
 const manifestSchema = z.object({
@@ -95,7 +101,8 @@ const manifestSchema = z.object({
       pythonVersion: z.string().optional(),
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
-      nightlyCron: z.string().optional()
+      nightlyCron: z.string().optional(),
+      additionalWorkflows: z.array(additionalWorkflowSchema).optional()
     })
     .optional(),
   agents: z
@@ -211,6 +218,15 @@ function normalizeOrganization(
   };
 }
 
+function normalizeAdditionalWorkflows(
+  workflows: z.input<typeof additionalWorkflowSchema>[] | undefined
+): AdditionalWorkflowConfig[] {
+  return (workflows ?? []).map((workflow) => ({
+    path: workflow.path.replace(/\\/g, "/"),
+    purpose: workflow.purpose.trim()
+  }));
+}
+
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
@@ -277,7 +293,8 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       pythonVersion: parsed.ci?.pythonVersion ?? "3.12",
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
-      nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *"
+      nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
+      additionalWorkflows: normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows)
     },
     agents: {
       manageCodexHome: parsed.agents?.manageCodexHome ?? true,

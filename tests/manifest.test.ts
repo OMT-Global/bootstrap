@@ -84,6 +84,33 @@ describe("normalizeManifest", () => {
     expect(manifest.github.requiredStatusChecks).toEqual(["test"]);
   });
 
+  it("normalizes declared repo-specific workflow lanes", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "ops-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      ci: {
+        additionalWorkflows: [
+          {
+            path: ".github\\workflows\\deploy.yml",
+            purpose: "Runs deploy orchestration after the standard CI lanes pass."
+          }
+        ]
+      }
+    });
+
+    expect(manifest.ci.additionalWorkflows).toEqual([
+      {
+        path: ".github/workflows/deploy.yml",
+        purpose: "Runs deploy orchestration after the standard CI lanes pass."
+      }
+    ]);
+  });
+
   it("preserves an explicit docs-facing display name", () => {
     const manifest = normalizeManifest({
       project: {

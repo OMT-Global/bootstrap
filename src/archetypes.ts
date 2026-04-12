@@ -51,6 +51,67 @@ function requiredStatusCheckConfirmation(manifest: BootstrapManifest): string {
     : `Confirm branch protection points at the expected required status checks: ${requiredStatusChecksDisplay(manifest)}.`;
 }
 
+function organizationRepoCreationPolicy(manifest: BootstrapManifest): string {
+  const organization = manifest.github.organization;
+  if (!organization) {
+    return "";
+  }
+
+  const disabledScopes = [
+    !organization.membersCanCreatePublicRepositories ? "public" : null,
+    !organization.membersCanCreatePrivateRepositories ? "private" : null,
+    organization.membersCanCreateInternalRepositories === false ? "internal" : null
+  ].filter((scope): scope is string => Boolean(scope));
+
+  if (
+    !organization.membersCanCreateRepositories &&
+    !organization.membersCanCreatePublicRepositories &&
+    !organization.membersCanCreatePrivateRepositories &&
+    organization.membersCanCreateInternalRepositories !== true
+  ) {
+    return "member repository creation is disabled.";
+  }
+
+  if (disabledScopes.length === 0) {
+    return "member repository creation matches the explicit manifest overrides.";
+  }
+
+  return `member repository creation is disabled for ${disabledScopes.join("/")}.`;
+}
+
+function organizationSecurityDefaultsLabel(manifest: BootstrapManifest): string {
+  const organization = manifest.github.organization;
+  if (!organization) {
+    return "";
+  }
+
+  const enabledDefaults = [
+    organization.newRepositorySecurity.dependencyGraph ? "dependency graph" : null,
+    organization.newRepositorySecurity.dependabotAlerts ? "Dependabot alerts" : null,
+    organization.newRepositorySecurity.dependabotSecurityUpdates ? "Dependabot security updates" : null,
+    organization.newRepositorySecurity.secretScanning ? "secret scanning" : null,
+    organization.newRepositorySecurity.secretScanningPushProtection ? "push protection" : null
+  ].filter((value): value is string => Boolean(value));
+
+  return enabledDefaults.join(", ");
+}
+
+function organizationGovernanceSection(manifest: BootstrapManifest): string {
+  const organization = manifest.github.organization;
+  if (!organization) {
+    return "";
+  }
+
+  return dedent`
+    ## Org Governance
+
+    - Confirm the org default repository permission is \`${organization.defaultRepositoryPermission}\`.
+    - Confirm ${organizationRepoCreationPolicy(manifest)}
+    - Confirm new-repo security defaults keep ${organizationSecurityDefaultsLabel(manifest)} enabled.
+    - Treat upstream-aligned forks as explicit exceptions; keep them aligned with the source fork unless you intentionally manage their GitHub policy here.
+  `;
+}
+
 function codeowners(manifest: BootstrapManifest): string {
   if (manifest.github.codeowners.length === 0) {
     return "# Add CODEOWNERS entries when reviewer mapping is ready.\n";
@@ -209,7 +270,7 @@ ${indentBlock(claudeBullets, 6)}
 
     ## What The Bootstrap Owns
 
-    - GitHub governance and environments
+    - GitHub governance, environments, and optional org defaults
     - Repo-local \`AGENTS.md\` and \`CLAUDE.md\` guidance
     - Fast PR checks plus heavier extended validation lanes
     - Portable Codex and Claude home profile sync
@@ -224,6 +285,10 @@ ${indentBlock(claudeBullets, 6)}
     bootstrap apply home --manifest ./project.bootstrap.yaml
     bootstrap doctor --manifest ./project.bootstrap.yaml
     \`\`\`
+
+    ${manifest.github.organization
+      ? `If \`github.organization\` is set and \`${manifest.project.owner}\` is an organization, \`bootstrap apply github\` also reconciles org defaults for new repos.`
+      : ""}
 
     ${requiredStatusCheckConfirmation(manifest)}
 
@@ -1459,6 +1524,8 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Confirm branch protection or rulesets on \`${manifest.project.defaultBranch}\` require one approval and code owner review.
     - ${requiredStatusCheckConfirmation(manifest)}
     - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled.
+
+${indentBlock(organizationGovernanceSection(manifest), 4)}
 
     ## Environments
 

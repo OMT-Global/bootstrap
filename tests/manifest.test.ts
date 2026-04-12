@@ -99,4 +99,45 @@ describe("normalizeManifest", () => {
     expect(manifest.project.name).toBe("bootstrap");
     expect(manifest.project.displayName).toBe("Bootstrap");
   });
+
+  it("normalizes optional organization governance settings", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "bootstrap",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        organization: {
+          defaultRepositoryPermission: "read",
+          membersCanCreateRepositories: false,
+          membersCanCreatePublicRepositories: false,
+          membersCanCreatePrivateRepositories: false,
+          newRepositorySecurity: {
+            dependencyGraph: true,
+            dependabotAlerts: true,
+            dependabotSecurityUpdates: true,
+            secretScanning: true,
+            secretScanningPushProtection: true
+          }
+        }
+      }
+    });
+
+    expect(manifest.github.organization).toEqual({
+      defaultRepositoryPermission: "read",
+      membersCanCreateRepositories: false,
+      membersCanCreatePublicRepositories: false,
+      membersCanCreatePrivateRepositories: false,
+      newRepositorySecurity: {
+        dependencyGraph: true,
+        dependabotAlerts: true,
+        dependabotSecurityUpdates: true,
+        secretScanning: true,
+        secretScanningPushProtection: true
+      }
+    });
+  });
 });

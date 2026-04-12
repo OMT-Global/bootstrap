@@ -6,7 +6,7 @@ Use `project.bootstrap.yaml` as the control plane for repo-local scaffolding, Gi
 
 ## What The Bootstrap Owns
 
-- GitHub governance and environments
+- GitHub governance, environments, and optional org defaults
 - Repo-local `AGENTS.md` and `CLAUDE.md` guidance
 - Fast PR checks plus heavier extended validation lanes
 - Portable Codex and Claude home profile sync
@@ -21,6 +21,8 @@ bootstrap apply github --manifest ./project.bootstrap.yaml
 bootstrap apply home --manifest ./project.bootstrap.yaml
 bootstrap doctor --manifest ./project.bootstrap.yaml
 ```
+
+If `github.organization` is set and `OMT-Global` is an organization, `bootstrap apply github` also reconciles org defaults for new repos.
 
 Confirm branch protection points at the `CI Gate` status.
 

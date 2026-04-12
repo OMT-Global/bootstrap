@@ -1,6 +1,7 @@
 export type ProjectVisibility = "private" | "public" | "internal";
 export type ArchetypeKind = "nextjs-web" | "node-ts-service" | "python-service" | "generic-empty";
 export type RunnerPolicy = "hybrid-safe" | "self-hosted-first" | "github-hosted-first";
+export type DefaultRepositoryPermission = "read" | "write" | "admin" | "none";
 
 export interface CodeownerRule {
   pattern: string;
@@ -16,6 +17,24 @@ export interface EnvironmentConfig {
 
 export interface RepoConfig {
   managedPaths: string[];
+}
+
+export interface OrganizationSecurityDefaults {
+  dependabotAlerts: boolean;
+  dependabotSecurityUpdates: boolean;
+  dependencyGraph: boolean;
+  secretScanning: boolean;
+  secretScanningPushProtection: boolean;
+}
+
+export interface OrganizationConfig {
+  defaultRepositoryPermission: DefaultRepositoryPermission;
+  membersCanCreateRepositories: boolean;
+  membersCanCreatePublicRepositories: boolean;
+  membersCanCreatePrivateRepositories: boolean;
+  membersCanCreateInternalRepositories?: boolean;
+  webCommitSignoffRequired?: boolean;
+  newRepositorySecurity: OrganizationSecurityDefaults;
 }
 
 export interface BootstrapManifest {
@@ -38,6 +57,7 @@ export interface BootstrapManifest {
     createRepo: boolean;
     reviewers: string[];
     codeowners: CodeownerRule[];
+    organization?: OrganizationConfig;
     autoMerge: boolean;
     deleteBranchOnMerge: boolean;
     requiredApprovals: number;

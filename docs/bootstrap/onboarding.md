@@ -14,6 +14,13 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Confirm branch protection points at the `CI Gate` status.
 - Confirm `delete branch on merge` and `allow auto-merge` are enabled.
 
+## Org Governance
+
+- Confirm the org default repository permission is `read`.
+- Confirm member repository creation is disabled.
+- Confirm new-repo security defaults keep dependency graph, Dependabot alerts, Dependabot security updates, secret scanning, push protection enabled.
+- Treat upstream-aligned forks as explicit exceptions; keep them aligned with the source fork unless you intentionally manage their GitHub policy here.
+
 ## Environments
 
 - `dev`: open by default for rapid iteration.

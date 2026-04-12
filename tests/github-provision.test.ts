@@ -38,7 +38,20 @@ describe("GitHub provisioning", () => {
       },
       github: {
         reviewers: ["alice"],
-        requiredStatusChecks: ["test", "lint"]
+        requiredStatusChecks: ["test", "lint"],
+        organization: {
+          defaultRepositoryPermission: "read",
+          membersCanCreateRepositories: false,
+          membersCanCreatePublicRepositories: false,
+          membersCanCreatePrivateRepositories: false,
+          newRepositorySecurity: {
+            dependencyGraph: true,
+            dependabotAlerts: true,
+            dependabotSecurityUpdates: true,
+            secretScanning: true,
+            secretScanningPushProtection: true
+          }
+        }
       }
     });
 
@@ -66,7 +79,9 @@ describe("GitHub provisioning", () => {
     };
 
     const actions = await applyGitHub(manifest, client as never);
+    expect(actions.map((action) => action.id)).toContain("organization-update");
     expect(actions.map((action) => action.id)).toContain("repo-create");
+    expect(calls.some((call) => call.endpoint === "/orgs/acme" && call.method === "PATCH")).toBe(true);
     expect(calls.some((call) => call.endpoint === "/orgs/acme/repos" && call.method === "POST")).toBe(true);
     expect(
       calls.some(
@@ -88,6 +103,70 @@ describe("GitHub provisioning", () => {
         (call) => call.endpoint === "/repos/acme/example/environments/prod" && call.method === "PUT"
       )
     ).toBe(true);
+  });
+
+  it("reports org-policy drift in the GitHub plan when organization defaults differ", async () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        organization: {
+          defaultRepositoryPermission: "read",
+          membersCanCreateRepositories: false,
+          membersCanCreatePublicRepositories: false,
+          membersCanCreatePrivateRepositories: false,
+          newRepositorySecurity: {
+            dependencyGraph: true,
+            dependabotAlerts: true,
+            dependabotSecurityUpdates: true,
+            secretScanning: true,
+            secretScanningPushProtection: true
+          }
+        }
+      }
+    });
+
+    const actions = await planGitHub(
+      manifest,
+      {
+        isAvailable: async () => true,
+        isAuthenticated: async () => true,
+        tryApi: async (method: string, endpoint: string) => {
+          if (endpoint === "/repos/acme/example") {
+            return undefined;
+          }
+          return undefined;
+        },
+        api: async (method: string, endpoint: string) => {
+          if (endpoint === "/users/acme") {
+            return { login: "acme", type: "Organization" };
+          }
+          if (endpoint === "/orgs/acme") {
+            return {
+              default_repository_permission: "write",
+              members_can_create_repositories: true,
+              members_can_create_public_repositories: true,
+              members_can_create_private_repositories: true,
+              dependabot_alerts_enabled_for_new_repositories: false,
+              dependabot_security_updates_enabled_for_new_repositories: false,
+              dependency_graph_enabled_for_new_repositories: false,
+              secret_scanning_enabled_for_new_repositories: false,
+              secret_scanning_push_protection_enabled_for_new_repositories: false
+            };
+          }
+          return {};
+        }
+      } as never
+    );
+
+    expect(actions.find((action) => action.id === "organization")?.description).toContain(
+      "Update organization defaults for acme."
+    );
   });
 
   it("falls back to bare environments when private-repo protection rules are unsupported", async () => {

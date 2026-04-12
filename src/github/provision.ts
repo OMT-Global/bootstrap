@@ -13,6 +13,20 @@ interface GitHubOwner {
   type: "User" | "Organization";
 }
 
+interface GitHubOrganizationSettings {
+  default_repository_permission: string;
+  members_can_create_repositories: boolean;
+  members_can_create_public_repositories: boolean;
+  members_can_create_private_repositories: boolean;
+  members_can_create_internal_repositories?: boolean;
+  web_commit_signoff_required?: boolean;
+  dependabot_alerts_enabled_for_new_repositories: boolean;
+  dependabot_security_updates_enabled_for_new_repositories: boolean;
+  dependency_graph_enabled_for_new_repositories: boolean;
+  secret_scanning_enabled_for_new_repositories: boolean;
+  secret_scanning_push_protection_enabled_for_new_repositories: boolean;
+}
+
 interface ReviewerIdentity {
   type: "User" | "Team";
   id: number;
@@ -20,6 +34,53 @@ interface ReviewerIdentity {
 
 function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
   return manifest.github.requiredStatusChecks.join(", ");
+}
+
+function hasOrganizationPolicy(manifest: BootstrapManifest): boolean {
+  return manifest.github.organization !== undefined;
+}
+
+function organizationPayload(manifest: BootstrapManifest): Record<string, boolean | string> | undefined {
+  const organization = manifest.github.organization;
+  if (!organization) {
+    return undefined;
+  }
+
+  return {
+    default_repository_permission: organization.defaultRepositoryPermission,
+    members_can_create_repositories: organization.membersCanCreateRepositories,
+    members_can_create_public_repositories: organization.membersCanCreatePublicRepositories,
+    members_can_create_private_repositories: organization.membersCanCreatePrivateRepositories,
+    ...(organization.membersCanCreateInternalRepositories !== undefined
+      ? {
+          members_can_create_internal_repositories: organization.membersCanCreateInternalRepositories
+        }
+      : {}),
+    ...(organization.webCommitSignoffRequired !== undefined
+      ? {
+          web_commit_signoff_required: organization.webCommitSignoffRequired
+        }
+      : {}),
+    dependabot_alerts_enabled_for_new_repositories: organization.newRepositorySecurity.dependabotAlerts,
+    dependabot_security_updates_enabled_for_new_repositories:
+      organization.newRepositorySecurity.dependabotSecurityUpdates,
+    dependency_graph_enabled_for_new_repositories: organization.newRepositorySecurity.dependencyGraph,
+    secret_scanning_enabled_for_new_repositories: organization.newRepositorySecurity.secretScanning,
+    secret_scanning_push_protection_enabled_for_new_repositories:
+      organization.newRepositorySecurity.secretScanningPushProtection
+  };
+}
+
+function organizationNeedsUpdate(
+  manifest: BootstrapManifest,
+  organization: GitHubOrganizationSettings
+): boolean {
+  const desired = organizationPayload(manifest);
+  if (!desired) {
+    return false;
+  }
+
+  return Object.entries(desired).some(([key, value]) => organization[key as keyof GitHubOrganizationSettings] !== value);
 }
 
 function isEnvironmentProtectionPlanLimit(error: unknown): boolean {
@@ -113,6 +174,13 @@ async function getOwner(client: GitHubClient, owner: string): Promise<GitHubOwne
   return client.api<GitHubOwner>("GET", `/users/${owner}`);
 }
 
+async function getOrganizationSettings(
+  client: GitHubClient,
+  owner: string
+): Promise<GitHubOrganizationSettings> {
+  return client.api<GitHubOrganizationSettings>("GET", `/orgs/${owner}`);
+}
+
 async function getRepo(
   client: GitHubClient,
   owner: string,
@@ -139,6 +207,15 @@ export async function planGitHub(
         id: "repo",
         description: `Create or update ${manifest.project.owner}/${manifest.project.name} with repo settings, auto-merge, and branch cleanup.`
       },
+      ...(hasOrganizationPolicy(manifest)
+        ? [
+            {
+              id: "organization",
+              description:
+                "Update organization defaults for repository permission, member repo creation, and new-repo security settings."
+            }
+          ]
+        : []),
       {
         id: "branch-protection",
         description: `Protect ${manifest.project.defaultBranch} with 1 approval, stale-review dismissal, code owner review, linear history, and required status checks ${requiredStatusChecksLabel(manifest)}.`
@@ -152,6 +229,23 @@ export async function planGitHub(
   }
 
   const repo = await getRepo(client, manifest.project.owner, manifest.project.name);
+  const owner = await getOwner(client, manifest.project.owner);
+
+  if (owner.type === "Organization" && hasOrganizationPolicy(manifest)) {
+    const organization = await getOrganizationSettings(client, manifest.project.owner);
+    actions.push({
+      id: organizationNeedsUpdate(manifest, organization) ? "organization" : "organization-sync",
+      description: organizationNeedsUpdate(manifest, organization)
+        ? `Update organization defaults for ${manifest.project.owner}.`
+        : `Organization defaults for ${manifest.project.owner} already match the manifest.`
+    });
+  } else if (owner.type !== "Organization" && hasOrganizationPolicy(manifest)) {
+    actions.push({
+      id: "organization-skip",
+      description: `Skip organization defaults because ${manifest.project.owner} is not an organization owner.`
+    });
+  }
+
   actions.push({
     id: "repo",
     description: repo
@@ -184,6 +278,22 @@ export async function applyGitHub(
   const repo = await getRepo(client, manifest.project.owner, manifest.project.name);
   const owner = await getOwner(client, manifest.project.owner);
   const actions: PlannedGitHubAction[] = [];
+
+  if (owner.type === "Organization" && hasOrganizationPolicy(manifest)) {
+    const payload = organizationPayload(manifest);
+    if (payload) {
+      await client.api("PATCH", `/orgs/${manifest.project.owner}`, payload);
+      actions.push({
+        id: "organization-update",
+        description: `Updated organization defaults for ${manifest.project.owner}.`
+      });
+    }
+  } else if (owner.type !== "Organization" && hasOrganizationPolicy(manifest)) {
+    actions.push({
+      id: "organization-skip",
+      description: `Skipped organization defaults because ${manifest.project.owner} is not an organization owner.`
+    });
+  }
 
   const visibility: BootstrapManifest["project"]["visibility"] | "private" =
     owner.type === "User" && manifest.project.visibility === "internal"

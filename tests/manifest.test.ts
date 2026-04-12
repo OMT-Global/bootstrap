@@ -18,6 +18,7 @@ describe("normalizeManifest", () => {
     });
 
     expect(manifest.project.defaultBranch).toBe("main");
+    expect(manifest.project.displayName).toBeUndefined();
     expect(manifest.repo.managedPaths).toEqual([]);
     expect(manifest.github.codeowners).toEqual([
       {
@@ -81,5 +82,21 @@ describe("normalizeManifest", () => {
 
     expect(manifest.repo.managedPaths).toEqual(["project.bootstrap.yaml", "docs/bootstrap/**"]);
     expect(manifest.github.requiredStatusChecks).toEqual(["test"]);
+  });
+
+  it("preserves an explicit docs-facing display name", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "bootstrap",
+        displayName: "Bootstrap",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    expect(manifest.project.name).toBe("bootstrap");
+    expect(manifest.project.displayName).toBe("Bootstrap");
   });
 });

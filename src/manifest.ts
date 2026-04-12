@@ -21,6 +21,7 @@ const manifestSchema = z.object({
   version: z.literal(1).optional(),
   project: z.object({
     name: z.string().min(1),
+    displayName: z.string().min(1).optional(),
     description: z.string().optional(),
     visibility: z.enum(["private", "public", "internal"]).optional(),
     owner: z.string().min(1),
@@ -172,8 +173,10 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     version: 1,
     project: {
       name: parsed.project.name,
+      ...(parsed.project.displayName ? { displayName: parsed.project.displayName } : {}),
       description:
-        parsed.project.description ?? "New project bootstrapped with the platform baseline.",
+        parsed.project.description ??
+        "Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.",
       visibility: parsed.project.visibility ?? "private",
       owner: parsed.project.owner,
       defaultBranch
@@ -277,9 +280,10 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
     version: 1,
     project: {
       name: overrides?.project?.name ?? "example-project",
+      ...(overrides?.project?.displayName ? { displayName: overrides.project.displayName } : {}),
       description:
         overrides?.project?.description ??
-        "New project bootstrapped with repo governance, agent setup, and split CI.",
+        "Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.",
       visibility: overrides?.project?.visibility ?? "private",
       owner: overrides?.project?.owner ?? "your-org",
       defaultBranch: overrides?.project?.defaultBranch ?? "main"

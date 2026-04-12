@@ -22,6 +22,7 @@ export interface BootstrapManifest {
   version: 1;
   project: {
     name: string;
+    displayName?: string;
     description: string;
     visibility: ProjectVisibility;
     owner: string;

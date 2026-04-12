@@ -63,4 +63,26 @@ describe("renderManagedFiles", () => {
     expect(prWorkflow?.contents).toContain("name: test");
     expect(prWorkflow?.contents).not.toContain("name: CI Gate");
   });
+
+  it("uses the display name in docs while keeping the repository slug visible", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "bootstrap",
+        displayName: "Bootstrap",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const readme = files.find((file) => file.path === "README.md");
+    const onboarding = files.find((file) => file.path === "docs/bootstrap/onboarding.md");
+
+    expect(readme?.contents).toContain("# Bootstrap");
+    expect(readme?.contents).toContain("- Repository: `acme/bootstrap`");
+    expect(onboarding?.contents).toContain("- Product name: `Bootstrap`");
+    expect(onboarding?.contents).toContain("- Repository: `acme/bootstrap`");
+  });
 });

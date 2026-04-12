@@ -1,26 +1,37 @@
-# new-project-setup
-Manifest-driven bootstrap CLI for repo governance, agent setup, and split CI.
+# Bootstrap
 
-This repository was bootstrapped with a manifest-driven baseline for:
+Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.
+
+Use `project.bootstrap.yaml` as the control plane for repo-local scaffolding, GitHub governance, CI policy, and portable Codex/Claude profile sync. Plan first, then apply repo, GitHub, and home targets deliberately.
+
+## What The Bootstrap Owns
 
 - GitHub governance and environments
-- repo-local AGENTS and CLAUDE instructions
-- split fast and extended CI
-- Codex and Claude home profile sync
+- Repo-local `AGENTS.md` and `CLAUDE.md` guidance
+- Fast PR checks plus heavier extended validation lanes
+- Portable Codex and Claude home profile sync
+- Operator docs for onboarding, hosted agents, and follow-up setup
 
-## Bootstrap Metadata
+## Quickstart
 
-- Owner: `OMT-Global`
+```sh
+bootstrap plan --manifest ./project.bootstrap.yaml
+bootstrap apply repo --manifest ./project.bootstrap.yaml
+bootstrap apply github --manifest ./project.bootstrap.yaml
+bootstrap apply home --manifest ./project.bootstrap.yaml
+bootstrap doctor --manifest ./project.bootstrap.yaml
+```
+
+Confirm branch protection points at the `CI Gate` status.
+
+## Project Identity
+
+- Product name: `Bootstrap`
+- Repository: `OMT-Global/bootstrap`
+- Manifest: `project.bootstrap.yaml`
 - Visibility: `public`
 - Default branch: `main`
 - Archetype: `generic-empty`
-
-## First Pass
-
-1. Review `project.bootstrap.yaml`.
-2. Run `project-bootstrap plan --manifest ./project.bootstrap.yaml`.
-3. Apply repo, GitHub, and home setup in that order.
-4. Confirm branch protection points at the `CI Gate` status.
 
 ## Claude Code
 
@@ -34,4 +45,4 @@ The full checklist is in `docs/bootstrap/claude-environment.md`.
 
 ## Repository URL
 
-- https://github.com/OMT-Global/new-project-setup
+- https://github.com/OMT-Global/bootstrap

@@ -6,10 +6,16 @@ Claude Code on the web provides a first-party cloud environment comparable to Co
 - Interactive containerized work with `.devcontainer/devcontainer.json`
 - GitHub-hosted automation with `.github/workflows/claude.yml`
 
+## Project
+
+- Product name: `Bootstrap`
+- Repository: `OMT-Global/bootstrap`
+- Manifest: `project.bootstrap.yaml`
+
 ## Claude Code On The Web
 
 - Hosted entrypoint: `https://claude.ai/code`
-- Repo: `OMT-Global/new-project-setup`
+- Repo: `OMT-Global/bootstrap`
 - Setup script: `bash scripts/claude-cloud/setup.sh`
 - Network access: start with limited access; only expand it when a task truly needs more than registries and GitHub
 - Environment variables: configure them in the Claude environment UI as `.env`-style key-value pairs
@@ -52,5 +58,4 @@ Claude Code on the web provides a first-party cloud environment comparable to Co
 
 ## Project
 
-- Repository: `OMT-Global/new-project-setup`
 - Default branch: `main`

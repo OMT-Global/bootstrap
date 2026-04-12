@@ -1,10 +1,17 @@
 # Bootstrap Onboarding
 
+Use this checklist after the first bootstrap render or whenever `project.bootstrap.yaml` changes in a way that affects GitHub policy, environments, or home-profile sync.
+
+## Project
+
+- Product name: `Bootstrap`
+- Repository: `OMT-Global/bootstrap`
+- Manifest: `project.bootstrap.yaml`
+
 ## Repo Governance
 
-- Confirm the repository exists at `OMT-Global/new-project-setup`.
 - Confirm branch protection or rulesets on `main` require one approval and code owner review.
-- Confirm the only required PR status check is `CI Gate`.
+- Confirm branch protection points at the `CI Gate` status.
 - Confirm `delete branch on merge` and `allow auto-merge` are enabled.
 
 ## Environments
@@ -21,7 +28,7 @@
 
 ## Home Profiles
 
-- Run `project-bootstrap apply home --manifest ./project.bootstrap.yaml` after reviewing the bundled profile content.
+- Run `bootstrap apply home --manifest ./project.bootstrap.yaml` after reviewing the bundled profile content.
 - The bootstrap manages portable Codex and Claude assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
 
 ## Claude Setup

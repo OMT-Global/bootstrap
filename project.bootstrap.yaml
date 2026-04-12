@@ -1,14 +1,18 @@
 version: 1
 project:
-  name: new-project-setup
-  description: Manifest-driven bootstrap CLI for repo governance, agent setup, and split CI.
+  name: bootstrap
+  displayName: Bootstrap
+  description: Manifest-first control plane for repo scaffolding, GitHub governance, and portable
+    agent profiles.
   visibility: public
   owner: OMT-Global
   defaultBranch: main
+repo:
+  managedPaths: []
 archetype:
   kind: generic-empty
   packageManager: npm
-  moduleName: new_project_setup
+  moduleName: bootstrap
 github:
   createRepo: true
   reviewers:
@@ -20,6 +24,8 @@ github:
   autoMerge: true
   deleteBranchOnMerge: true
   requiredApprovals: 1
+  requiredStatusChecks:
+    - CI Gate
   dismissStaleReviews: true
   requireCodeOwnerReviews: true
   requireLastPushApproval: false

@@ -1,8 +1,15 @@
 # Codex Cloud Environment
 
-Configure the Codex Web environment in Codex settings for:
+Configure the Codex Web environment in Codex settings for this bootstrap-managed repository.
 
-- Repo: `OMT-Global/new-project-setup`
+## Project
+
+- Product name: `Bootstrap`
+- Repository: `OMT-Global/bootstrap`
+- Manifest: `project.bootstrap.yaml`
+
+## Environment Settings
+
 - Base image: `universal`
 - Setup mode: manual setup script
 - Setup script: `bash scripts/codex-cloud/setup.sh`
@@ -14,4 +21,4 @@ Configure the Codex Web environment in Codex settings for:
 
 - Codex cloud tasks automatically read `AGENTS.md` in this repo.
 - Setup scripts run in a separate shell session from the agent. Persistent env vars belong in Codex environment settings or `~/.bashrc`.
-- This repo uses `CI Gate` as the single required PR check, so cloud review tasks should preserve that contract.
+- This repo uses required PR checks `CI Gate`, so cloud review tasks should preserve that contract.

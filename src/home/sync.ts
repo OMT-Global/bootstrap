@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { readTextIfExists, removeFileIfExists, writeTextFile } from "../lib/fs.js";
 import { sha256 } from "../lib/hash.js";
-import { HOME_STATE_PATH } from "../state.js";
+import { HOME_STATE_PATH, LEGACY_HOME_STATE_PATH } from "../state.js";
 import type {
   BootstrapManifest,
   ChangeType,
@@ -60,7 +60,9 @@ async function loadProfileFiles(sourceDir: string, targetRoot: string): Promise<
 }
 
 async function loadHomeState(homeDir: string): Promise<HomeState> {
-  const raw = await readTextIfExists(path.join(homeDir, HOME_STATE_PATH));
+  const raw =
+    (await readTextIfExists(path.join(homeDir, HOME_STATE_PATH))) ??
+    (await readTextIfExists(path.join(homeDir, LEGACY_HOME_STATE_PATH)));
   if (!raw) {
     return { managedFiles: {} };
   }

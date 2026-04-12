@@ -7,7 +7,10 @@ import type { BootstrapManifest, RenderedFile, RepoState } from "./types.js";
 
 export const TEMPLATE_VERSION = "2026.03.28.2";
 export const FALLBACK_REPO_STATE_PATH = ".bootstrap/bootstrap-state.json";
-export const HOME_STATE_PATH = ".new-project-bootstrap/home-state.json";
+export const HOME_STATE_PATH = ".bootstrap/home-state.json";
+export const LEGACY_HOME_STATE_PATH = ".new-project-bootstrap/home-state.json";
+export const REPO_STATE_FILENAME = "bootstrap-state.json";
+export const LEGACY_REPO_STATE_FILENAME = "new-project-bootstrap-state.json";
 
 async function resolveGitDir(targetDir: string): Promise<string | undefined> {
   const gitPath = path.join(targetDir, ".git");
@@ -39,12 +42,21 @@ async function resolveGitDir(targetDir: string): Promise<string | undefined> {
 async function resolveRepoStatePath(targetDir: string): Promise<string> {
   const gitDir = await resolveGitDir(targetDir);
   return gitDir
-    ? path.join(gitDir, "info", "new-project-bootstrap-state.json")
+    ? path.join(gitDir, "info", REPO_STATE_FILENAME)
     : path.join(targetDir, FALLBACK_REPO_STATE_PATH);
 }
 
+async function resolveLegacyRepoStatePath(targetDir: string): Promise<string | undefined> {
+  const gitDir = await resolveGitDir(targetDir);
+  return gitDir ? path.join(gitDir, "info", LEGACY_REPO_STATE_FILENAME) : undefined;
+}
+
 export async function loadRepoState(targetDir: string): Promise<RepoState | undefined> {
-  const raw = await readTextIfExists(await resolveRepoStatePath(targetDir));
+  const nextPath = await resolveRepoStatePath(targetDir);
+  const legacyPath = await resolveLegacyRepoStatePath(targetDir);
+  const raw =
+    (await readTextIfExists(nextPath)) ??
+    (legacyPath ? await readTextIfExists(legacyPath) : undefined);
   if (!raw) {
     return undefined;
   }

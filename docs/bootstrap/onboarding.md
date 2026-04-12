@@ -1,32 +1,39 @@
-    # Bootstrap Onboarding
+# Bootstrap Onboarding
 
-    ## Repo Governance
+Use this checklist after the first bootstrap render or whenever `project.bootstrap.yaml` changes in a way that affects GitHub policy, environments, or home-profile sync.
 
-    - Confirm the repository exists at `OMT-Global/new-project-setup`.
-    - Confirm branch protection or rulesets on `main` require one approval and code owner review.
-    - Confirm the only required PR status check is `CI Gate`.
-    - Confirm `delete branch on merge` and `allow auto-merge` are enabled.
+## Project
 
-    ## Environments
+- Product name: `Bootstrap`
+- Repository: `OMT-Global/bootstrap`
+- Manifest: `project.bootstrap.yaml`
 
-    - `dev`: open by default for rapid iteration.
-    - `stage`: one reviewer required and self-review blocked.
-    - `prod`: one reviewer required, self-review blocked, deployments limited to `main`.
+## Repo Governance
 
-    ## Runner Policy
+- Confirm branch protection or rulesets on `main` require one approval and code owner review.
+- Confirm branch protection points at the `CI Gate` status.
+- Confirm `delete branch on merge` and `allow auto-merge` are enabled.
 
-    - Shell-safe jobs may use `[self-hosted, synology, shell-only, public]`.
-    - Docker, service-container, browser, and `container:` workloads stay on GitHub-hosted runners.
-    - Keep PR checks cheap. Add heavy validation to `scripts/ci/run-extended-validation.sh` instead of the PR lane.
+## Environments
 
-    ## Home Profiles
+- `dev`: open by default for rapid iteration.
+- `stage`: one reviewer required and self-review blocked.
+- `prod`: one reviewer required, self-review blocked, deployments limited to `main`.
 
-    - Run `project-bootstrap apply home --manifest ./project.bootstrap.yaml` after reviewing the bundled profile content.
-    - The bootstrap manages portable Codex and Claude assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
+## Runner Policy
 
-    ## Claude Setup
+- Shell-safe jobs may use `[self-hosted, synology, shell-only, public]`.
+- Docker, service-container, browser, and `container:` workloads stay on GitHub-hosted runners.
+- Keep PR checks cheap. Add heavy validation to `scripts/ci/run-extended-validation.sh` instead of the PR lane.
 
-    - First-party Claude web sessions should use `bash scripts/claude-cloud/setup.sh` in `claude.ai/code`.
+## Home Profiles
+
+- Run `bootstrap apply home --manifest ./project.bootstrap.yaml` after reviewing the bundled profile content.
+- The bootstrap manages portable Codex and Claude assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
+
+## Claude Setup
+
+- First-party Claude web sessions should use `bash scripts/claude-cloud/setup.sh` in `claude.ai/code`.
 - Interactive Claude work is prepared through `.devcontainer/devcontainer.json`.
 - GitHub-hosted Claude automation lives in `.github/workflows/claude.yml` and is intentionally separate from the required PR checks.
 - Finish GitHub-side auth by running `/install-github-app` in Claude Code or adding `ANTHROPIC_API_KEY` as a repo secret.

@@ -45,7 +45,9 @@ function formatHomeActions(actions: Awaited<ReturnType<typeof planHome>>["action
 
 async function main(): Promise<void> {
   const program = new Command();
-  program.name("project-bootstrap").description("Manifest-driven repo, GitHub, and home bootstrap CLI.");
+  program
+    .name("bootstrap")
+    .description("Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.");
 
   program
     .command("init-manifest")
@@ -63,7 +65,8 @@ async function main(): Promise<void> {
         project: {
           name: options.name,
           owner: options.owner,
-          description: "New project bootstrapped with repo governance, agent setup, and split CI.",
+          description:
+            "Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.",
           visibility: "private",
           defaultBranch: "main"
         },

@@ -9,6 +9,24 @@ function repoUrl(manifest: BootstrapManifest): string {
   return `https://github.com/${manifest.project.owner}/${manifest.project.name}`;
 }
 
+function projectDisplayName(manifest: BootstrapManifest): string {
+  return manifest.project.displayName?.trim() || manifest.project.name;
+}
+
+function projectIdentityLines(manifest: BootstrapManifest): string {
+  const lines = [];
+  const displayName = projectDisplayName(manifest);
+
+  if (displayName !== manifest.project.name) {
+    lines.push(`- Product name: \`${displayName}\``);
+  }
+
+  lines.push(`- Repository: \`${manifest.project.owner}/${manifest.project.name}\``);
+  lines.push("- Manifest: `project.bootstrap.yaml`");
+
+  return lines.join("\n");
+}
+
 function requiredStatusChecksDisplay(manifest: BootstrapManifest): string {
   return manifest.github.requiredStatusChecks.map((check) => `\`${check}\``).join(", ");
 }
@@ -145,15 +163,16 @@ function repoClaude(manifest: BootstrapManifest): string {
 
     ## Project Map
 
-    ${projectMapLines}
+${indentBlock(projectMapLines, 4)}
 
     ## Guardrails
 
-    ${guardrailLines}
+${indentBlock(guardrailLines, 4)}
   `;
 }
 
 function repoReadme(manifest: BootstrapManifest): string {
+  const displayName = projectDisplayName(manifest);
   const claudeBullets = [
     manifest.agents.enableClaudeWebEnvironment
       ? "- First-party Claude Code on the web via `claude.ai/code` and `bash scripts/claude-cloud/setup.sh`"
@@ -175,38 +194,46 @@ function repoReadme(manifest: BootstrapManifest): string {
 
       This bootstrap can prepare these Claude workflows:
 
-      ${claudeBullets}
+${indentBlock(claudeBullets, 6)}
 
       The full checklist is in \`docs/bootstrap/claude-environment.md\`.
     `
     : "";
 
   return dedent`
-    # ${manifest.project.name}
+    # ${displayName}
 
     ${manifest.project.description}
 
-    This repository was bootstrapped with a manifest-driven baseline for:
+    Use \`project.bootstrap.yaml\` as the control plane for repo-local scaffolding, GitHub governance, CI policy, and portable Codex/Claude profile sync. Plan first, then apply repo, GitHub, and home targets deliberately.
+
+    ## What The Bootstrap Owns
 
     - GitHub governance and environments
-    - repo-local AGENTS and CLAUDE instructions
-    - optional split fast and extended CI
-    - Codex and Claude home profile sync
+    - Repo-local \`AGENTS.md\` and \`CLAUDE.md\` guidance
+    - Fast PR checks plus heavier extended validation lanes
+    - Portable Codex and Claude home profile sync
+    - Operator docs for onboarding, hosted agents, and follow-up setup
 
-    ## Bootstrap Metadata
+    ## Quickstart
 
-    - Owner: \`${manifest.project.owner}\`
+    \`\`\`sh
+    bootstrap plan --manifest ./project.bootstrap.yaml
+    bootstrap apply repo --manifest ./project.bootstrap.yaml
+    bootstrap apply github --manifest ./project.bootstrap.yaml
+    bootstrap apply home --manifest ./project.bootstrap.yaml
+    bootstrap doctor --manifest ./project.bootstrap.yaml
+    \`\`\`
+
+    ${requiredStatusCheckConfirmation(manifest)}
+
+    ## Project Identity
+
+${indentBlock(projectIdentityLines(manifest), 4)}
     - Visibility: \`${manifest.project.visibility}\`
     - Default branch: \`${manifest.project.defaultBranch}\`
     - Archetype: \`${manifest.archetype.kind}\`
-
-    ## First Pass
-
-    1. Review \`project.bootstrap.yaml\`.
-    2. Run \`project-bootstrap plan --manifest ./project.bootstrap.yaml\`.
-    3. Apply repo, GitHub, and home setup in that order.
-    4. ${requiredStatusCheckConfirmation(manifest)}
-${claudeSection}
+${indentBlock(claudeSection, 4)}
 
     ## Repository URL
 
@@ -547,9 +574,14 @@ function codexCloudDoc(manifest: BootstrapManifest): string {
   return dedent`
     # Codex Cloud Environment
 
-    Configure the Codex Web environment in Codex settings for:
+    Configure the Codex Web environment in Codex settings for this bootstrap-managed repository.
 
-    - Repo: \`${manifest.project.owner}/${manifest.project.name}\`
+    ## Project
+
+${indentBlock(projectIdentityLines(manifest), 4)}
+
+    ## Environment Settings
+
     - Base image: \`universal\`
     - Setup mode: manual setup script
     - Setup script: \`bash scripts/codex-cloud/setup.sh\`
@@ -776,7 +808,6 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
-      pull-requests: read
 
     jobs:
       claude:
@@ -820,7 +851,11 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
                 DEFAULT BRANCH: ${manifest.project.defaultBranch}
 
                 Use CLAUDE.md and docs/bootstrap/onboarding.md as repo policy context.
-                Keep required PR status checks aligned with ${requiredStatusChecksPlain(manifest)}.
+                ${
+                  manifest.github.requiredStatusChecks.length === 1
+                    ? `Keep ${primaryRequiredStatusCheck(manifest)} as the single required PR status check.`
+                    : `Keep required PR status checks aligned with ${requiredStatusChecksPlain(manifest)}.`
+                }
                 Preserve the split fast and extended validation model.
                 Shell-safe jobs may use \`[self-hosted, synology, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`.
                 Docker, service-container, browser, and \`container:\` jobs stay on GitHub-hosted runners.
@@ -920,18 +955,21 @@ function claudeEnvironmentDoc(manifest: BootstrapManifest): string {
 
     Claude Code on the web provides a first-party cloud environment comparable to Codex Web. This bootstrap prepares the hosted path first, then adds optional local and GitHub-native alternatives:
 
-    ${featureList}
-${webSection}
-${devcontainerSection}
-${actionSection}
-
-    ## Guardrails
-
-    ${guardrailLines}
+${indentBlock(featureList, 4)}
 
     ## Project
 
-    - Repository: \`${manifest.project.owner}/${manifest.project.name}\`
+${indentBlock(projectIdentityLines(manifest), 4)}
+${indentBlock(webSection, 4)}
+${indentBlock(devcontainerSection, 4)}
+${indentBlock(actionSection, 4)}
+
+    ## Guardrails
+
+${indentBlock(guardrailLines, 4)}
+
+    ## Project
+
     - Default branch: \`${manifest.project.defaultBranch}\`
   `;
 }
@@ -991,7 +1029,7 @@ function nextJsStarter(): RenderedFile[] {
         export default function HomePage() {
           return (
             <main>
-              <h1>New Project Bootstrap</h1>
+              <h1>Bootstrap</h1>
               <p>Replace this starter page with the real application entrypoint.</p>
             </main>
           );
@@ -1025,7 +1063,7 @@ function nodeStarter(): RenderedFile[] {
       reason: "Minimal Node.js entrypoint",
       contents: dedent`
         export function main(): string {
-          return "new-project-bootstrap";
+          return "bootstrap";
         }
 
         if (import.meta.url === \`file://\${process.argv[1]}\`) {
@@ -1048,7 +1086,7 @@ function pythonStarter(moduleName: string): RenderedFile[] {
       reason: "Minimal Python entrypoint",
       contents: dedent`
         def main() -> str:
-            return "new-project-bootstrap"
+            return "bootstrap"
 
 
         if __name__ == "__main__":
@@ -1063,7 +1101,7 @@ function pythonStarter(moduleName: string): RenderedFile[] {
 
 
         def test_main() -> None:
-            assert main() == "new-project-bootstrap"
+            assert main() == "bootstrap"
       `
     }
   ];
@@ -1078,8 +1116,9 @@ function genericStarter(): RenderedFile[] {
         # Next Steps
 
         - Add the primary runtime and package manifest for this project.
-        - Tighten \`scripts/ci/run-fast-checks.sh\` once the toolchain is known.
-        - Review CODEOWNERS and environment reviewers before the first merge.
+        - Tighten \`scripts/ci/run-fast-checks.sh\` and \`scripts/ci/run-extended-validation.sh\` once the toolchain is known.
+        - Review CODEOWNERS, environment reviewers, and required PR checks before the first merge.
+        - Re-run \`bootstrap plan --manifest ./project.bootstrap.yaml\` after major manifest changes to confirm intended drift.
       `
     }
   ];
@@ -1172,7 +1211,6 @@ function prWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
-      pull-requests: read
 
     env:
       NODE_VERSION: '${manifest.ci.nodeVersion}'
@@ -1410,9 +1448,14 @@ function onboardingDoc(manifest: BootstrapManifest): string {
   return dedent`
     # Bootstrap Onboarding
 
+    Use this checklist after the first bootstrap render or whenever \`project.bootstrap.yaml\` changes in a way that affects GitHub policy, environments, or home-profile sync.
+
+    ## Project
+
+${indentBlock(projectIdentityLines(manifest), 4)}
+
     ## Repo Governance
 
-    - Confirm the repository exists at \`${manifest.project.owner}/${manifest.project.name}\`.
     - Confirm branch protection or rulesets on \`${manifest.project.defaultBranch}\` require one approval and code owner review.
     - ${requiredStatusCheckConfirmation(manifest)}
     - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled.
@@ -1431,12 +1474,12 @@ function onboardingDoc(manifest: BootstrapManifest): string {
 
     ## Home Profiles
 
-    - Run \`project-bootstrap apply home --manifest ./project.bootstrap.yaml\` after reviewing the bundled profile content.
+    - Run \`bootstrap apply home --manifest ./project.bootstrap.yaml\` after reviewing the bundled profile content.
     - The bootstrap manages portable Codex and Claude assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
 
     ## Claude Setup
 
-    ${claudeSetupLines}
+${indentBlock(claudeSetupLines, 4)}
   `;
 }
 

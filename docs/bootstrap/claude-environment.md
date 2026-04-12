@@ -50,7 +50,7 @@ Claude Code on the web provides a first-party cloud environment comparable to Co
 
 ## Guardrails
 
-- Keep the Claude workflow out of the required PR check set. The required checks are `CI Gate`.
+- Keep the Claude workflow out of the required PR check set. `CI Gate` remains the only required check.
 - Prefer Claude Code on the web for long-running async review or fix tasks; use the devcontainer when you need a local interactive container.
 - Treat the devcontainer as a trusted-repo workspace because the mounted `~/.claude` profile is available inside the container.
 - Do not relax the action to allow non-write users on public repos unless you intentionally accept the prompt-injection risk.

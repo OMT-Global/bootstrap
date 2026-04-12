@@ -67,7 +67,11 @@ async function loadHomeState(homeDir: string): Promise<HomeState> {
     return { managedFiles: {} };
   }
 
-  return JSON.parse(raw) as HomeState;
+  try {
+    return JSON.parse(raw) as HomeState;
+  } catch {
+    return { managedFiles: {} };
+  }
 }
 
 async function writeHomeState(homeDir: string, state: HomeState): Promise<void> {

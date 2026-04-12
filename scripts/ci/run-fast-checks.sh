@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "Generic archetype selected."
-echo "Add project-specific scripts and tighten scripts/ci/run-fast-checks.sh when the stack is finalized."
+
+echo "--- typecheck"
+npm run typecheck
+
+echo "--- build"
+npm run build
+
+echo "--- test"
+npm test

@@ -67,6 +67,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Show Node runtime
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Run fast checks
         run: bash scripts/ci/run-fast-checks.sh
 

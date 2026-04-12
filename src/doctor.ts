@@ -52,6 +52,14 @@ export async function runDoctor(
     });
   }
 
+  if (manifest.github.organization) {
+    checks.push({
+      name: "GitHub org policy",
+      status: "ok",
+      detail: `apply github will also reconcile org defaults for ${manifest.project.owner}.`
+    });
+  }
+
   if (manifest.agents.manageCodexHome) {
     const codexAvailable = await commandExists(runner, "codex");
     checks.push({

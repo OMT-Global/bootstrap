@@ -21,6 +21,17 @@ github:
     - pattern: "*"
       owners:
         - "@jmcte"
+  organization:
+    defaultRepositoryPermission: read
+    membersCanCreateRepositories: false
+    membersCanCreatePublicRepositories: false
+    membersCanCreatePrivateRepositories: false
+    newRepositorySecurity:
+      dependabotAlerts: true
+      dependabotSecurityUpdates: true
+      dependencyGraph: true
+      secretScanning: true
+      secretScanningPushProtection: true
   autoMerge: true
   deleteBranchOnMerge: true
   requiredApprovals: 1

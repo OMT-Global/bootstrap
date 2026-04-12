@@ -138,7 +138,7 @@ async function main(): Promise<void> {
 
   apply
     .command("github")
-    .description("Create or update GitHub repo settings, branch protection, and environments.")
+    .description("Create or update GitHub org defaults, repo settings, branch protection, and environments.")
     .option("--manifest <path>", "Path to manifest")
     .action(async (options) => {
       const manifest = await loadManifest(resolveManifestPath(options.manifest));

@@ -3,7 +3,13 @@ import YAML from "yaml";
 import { z } from "zod";
 
 import { readTextIfExists } from "./lib/fs.js";
-import type { BootstrapManifest, CodeownerRule, EnvironmentConfig } from "./types.js";
+import type {
+  BootstrapManifest,
+  CodeownerRule,
+  DefaultRepositoryPermission,
+  EnvironmentConfig,
+  OrganizationConfig
+} from "./types.js";
 
 const environmentSchema = z.object({
   reviewers: z.array(z.string()).optional(),
@@ -15,6 +21,24 @@ const environmentSchema = z.object({
 const codeownerSchema = z.object({
   pattern: z.string().min(1),
   owners: z.array(z.string().min(1)).min(1)
+});
+
+const organizationSecuritySchema = z.object({
+  dependabotAlerts: z.boolean().optional(),
+  dependabotSecurityUpdates: z.boolean().optional(),
+  dependencyGraph: z.boolean().optional(),
+  secretScanning: z.boolean().optional(),
+  secretScanningPushProtection: z.boolean().optional()
+});
+
+const organizationSchema = z.object({
+  defaultRepositoryPermission: z.enum(["read", "write", "admin", "none"]).optional(),
+  membersCanCreateRepositories: z.boolean().optional(),
+  membersCanCreatePublicRepositories: z.boolean().optional(),
+  membersCanCreatePrivateRepositories: z.boolean().optional(),
+  membersCanCreateInternalRepositories: z.boolean().optional(),
+  webCommitSignoffRequired: z.boolean().optional(),
+  newRepositorySecurity: organizationSecuritySchema.optional()
 });
 
 const manifestSchema = z.object({
@@ -42,6 +66,7 @@ const manifestSchema = z.object({
       createRepo: z.boolean().optional(),
       reviewers: z.array(z.string()).optional(),
       codeowners: z.array(codeownerSchema).optional(),
+      organization: organizationSchema.optional(),
       autoMerge: z.boolean().optional(),
       deleteBranchOnMerge: z.boolean().optional(),
       requiredApprovals: z.number().int().min(1).max(6).optional(),
@@ -153,12 +178,46 @@ function normalizeCodeowners(
   ];
 }
 
+function normalizeOrganization(
+  organization: z.input<typeof organizationSchema> | undefined
+): OrganizationConfig | undefined {
+  if (!organization) {
+    return undefined;
+  }
+
+  return {
+    defaultRepositoryPermission:
+      (organization.defaultRepositoryPermission as DefaultRepositoryPermission | undefined) ?? "read",
+    membersCanCreateRepositories: organization.membersCanCreateRepositories ?? false,
+    membersCanCreatePublicRepositories: organization.membersCanCreatePublicRepositories ?? false,
+    membersCanCreatePrivateRepositories: organization.membersCanCreatePrivateRepositories ?? false,
+    ...(organization.membersCanCreateInternalRepositories !== undefined
+      ? {
+          membersCanCreateInternalRepositories: organization.membersCanCreateInternalRepositories
+        }
+      : {}),
+    ...(organization.webCommitSignoffRequired !== undefined
+      ? {
+          webCommitSignoffRequired: organization.webCommitSignoffRequired
+        }
+      : {}),
+    newRepositorySecurity: {
+      dependabotAlerts: organization.newRepositorySecurity?.dependabotAlerts ?? true,
+      dependabotSecurityUpdates: organization.newRepositorySecurity?.dependabotSecurityUpdates ?? true,
+      dependencyGraph: organization.newRepositorySecurity?.dependencyGraph ?? true,
+      secretScanning: organization.newRepositorySecurity?.secretScanning ?? true,
+      secretScanningPushProtection: organization.newRepositorySecurity?.secretScanningPushProtection ?? true
+    }
+  };
+}
+
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
   const defaultBranch = parsed.project.defaultBranch ?? "main";
   const moduleName = parsed.archetype.moduleName ?? moduleNameForProject(parsed.project.name);
   const github = parsed.github ?? {};
+  const organization = normalizeOrganization(github.organization);
   const repoFeatures = github.repoFeatures ?? {};
   const environments = parsed.environments ?? {};
 
@@ -193,6 +252,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       createRepo: github.createRepo ?? true,
       reviewers,
       codeowners: normalizeCodeowners(github.codeowners ?? [], reviewers),
+      ...(organization ? { organization } : {}),
       autoMerge: github.autoMerge ?? true,
       deleteBranchOnMerge: github.deleteBranchOnMerge ?? true,
       requiredApprovals: github.requiredApprovals ?? 1,

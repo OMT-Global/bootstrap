@@ -85,4 +85,36 @@ describe("renderManagedFiles", () => {
     expect(onboarding?.contents).toContain("- Product name: `Bootstrap`");
     expect(onboarding?.contents).toContain("- Repository: `acme/bootstrap`");
   });
+
+  it("documents repo-specific workflow lanes without replacing the standard CI frame", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "ops-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      ci: {
+        additionalWorkflows: [
+          {
+            path: ".github/workflows/deploy.yml",
+            purpose: "Runs deploy orchestration after the standard CI lanes pass."
+          }
+        ]
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const readme = files.find((file) => file.path === "README.md");
+    const claude = files.find((file) => file.path === "CLAUDE.md");
+    const onboarding = files.find((file) => file.path === "docs/bootstrap/onboarding.md");
+    const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
+
+    expect(readme?.contents).toContain("Repo-Specific Workflow Lanes");
+    expect(readme?.contents).toContain("`.github/workflows/deploy.yml`");
+    expect(claude?.contents).toContain("stay adjunct to the standard PR and extended validation lanes");
+    expect(onboarding?.contents).toContain("Do not repurpose them as the required PR gate");
+    expect(prWorkflow?.contents).toContain("name: CI Gate");
+  });
 });

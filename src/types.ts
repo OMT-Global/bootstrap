@@ -19,6 +19,11 @@ export interface RepoConfig {
   managedPaths: string[];
 }
 
+export interface AdditionalWorkflowConfig {
+  path: string;
+  purpose: string;
+}
+
 export interface OrganizationSecurityDefaults {
   dependabotAlerts: boolean;
   dependabotSecurityUpdates: boolean;
@@ -83,6 +88,7 @@ export interface BootstrapManifest {
     fastChecks: string[];
     extendedChecks: string[];
     nightlyCron: string;
+    additionalWorkflows: AdditionalWorkflowConfig[];
   };
   agents: {
     manageCodexHome: boolean;

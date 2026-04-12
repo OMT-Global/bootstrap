@@ -15,6 +15,10 @@ function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
   return manifest.github.requiredStatusChecks.join(", ");
 }
 
+function additionalWorkflowsLabel(manifest: BootstrapManifest): string {
+  return manifest.ci.additionalWorkflows.map((workflow) => workflow.path).join(", ");
+}
+
 async function commandExists(runner: CommandRunner, command: string): Promise<boolean> {
   const result = await runner(command, ["--version"]);
   return result.exitCode === 0;
@@ -123,6 +127,15 @@ export async function runDoctor(
       typeof runnerLabels === "string"
         ? `Shell-safe jobs resolve to ${runnerLabels}.`
         : `Shell-safe jobs resolve to [${runnerLabels.join(", ")}].`
+  });
+
+  checks.push({
+    name: "CI shape",
+    status: "ok",
+    detail:
+      manifest.ci.additionalWorkflows.length === 0
+        ? `Standard CI shape uses ${requiredStatusChecksLabel(manifest)} for PR gating plus extended validation on ${manifest.project.defaultBranch}, nightly, and manual dispatch.`
+        : `Standard CI shape uses ${requiredStatusChecksLabel(manifest)} for PR gating plus adjunct repo-specific workflow lanes: ${additionalWorkflowsLabel(manifest)}.`
   });
 
   for (const environmentName of ["stage", "prod"] as const) {

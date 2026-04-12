@@ -51,6 +51,26 @@ function requiredStatusCheckConfirmation(manifest: BootstrapManifest): string {
     : `Confirm branch protection points at the expected required status checks: ${requiredStatusChecksDisplay(manifest)}.`;
 }
 
+function additionalWorkflowLines(manifest: BootstrapManifest): string[] {
+  return manifest.ci.additionalWorkflows.map(
+    (workflow) => `- \`${workflow.path}\`: ${workflow.purpose}`
+  );
+}
+
+function additionalWorkflowSection(manifest: BootstrapManifest): string {
+  if (manifest.ci.additionalWorkflows.length === 0) {
+    return "";
+  }
+
+  return dedent`
+    ## Repo-Specific Workflow Lanes
+
+${indentBlock(additionalWorkflowLines(manifest).join("\n"), 4)}
+
+    These lanes are adjunct to the standard CI shape. Keep the required PR status checks aligned with ${requiredStatusChecksDisplay(manifest)}, and keep heavyweight or specialized logic out of the fast PR gate unless the manifest explicitly changes that contract.
+  `;
+}
+
 function organizationRepoCreationPolicy(manifest: BootstrapManifest): string {
   const organization = manifest.github.organization;
   if (!organization) {
@@ -178,6 +198,7 @@ function repoClaude(manifest: BootstrapManifest): string {
   const projectMapLines = [
     "- `project.bootstrap.yaml`: source of truth for bootstrap policy",
     "- `.github/workflows/`: generated fast and extended CI lanes",
+    ...additionalWorkflowLines(manifest),
     manifest.agents.enableClaudeWebEnvironment
       ? "- `scripts/claude-cloud/setup.sh`: first-party Claude Code on the web setup script"
       : null,
@@ -211,6 +232,9 @@ function repoClaude(manifest: BootstrapManifest): string {
       : null,
     manifest.agents.enableClaudeGitHubAction
       ? "- The generated Claude GitHub Action is a separate review lane. It must not become a required status check."
+      : null,
+    manifest.ci.additionalWorkflows.length > 0
+      ? `- Repo-specific workflow lanes (${manifest.ci.additionalWorkflows.map((workflow) => `\`${workflow.path}\``).join(", ")}) stay adjunct to the standard PR and extended validation lanes.`
       : null,
     manifest.agents.enableClaudeDevcontainer
       ? "- Treat the devcontainer as a trusted-repo workspace. Do not mount extra secrets beyond the persisted `~/.claude` profile unless you explicitly need them."
@@ -271,6 +295,9 @@ ${indentBlock(claudeBullets, 6)}
     ## What The Bootstrap Owns
 
     - GitHub governance, environments, and optional org defaults
+    ${manifest.ci.additionalWorkflows.length > 0
+      ? "- Optional repo-specific workflow lanes declared in the manifest without replacing the standard CI frame"
+      : ""}
     - Repo-local \`AGENTS.md\` and \`CLAUDE.md\` guidance
     - Fast PR checks plus heavier extended validation lanes
     - Portable Codex and Claude home profile sync
@@ -298,6 +325,7 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Visibility: \`${manifest.project.visibility}\`
     - Default branch: \`${manifest.project.defaultBranch}\`
     - Archetype: \`${manifest.archetype.kind}\`
+${indentBlock(additionalWorkflowSection(manifest), 4)}
 ${indentBlock(claudeSection, 4)}
 
     ## Repository URL
@@ -1526,6 +1554,7 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled.
 
 ${indentBlock(organizationGovernanceSection(manifest), 4)}
+${indentBlock(additionalWorkflowSection(manifest), 4)}
 
     ## Environments
 
@@ -1538,6 +1567,11 @@ ${indentBlock(organizationGovernanceSection(manifest), 4)}
     - Shell-safe jobs may use \`[self-hosted, synology, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`.
     - Docker, service-container, browser, and \`container:\` workloads stay on GitHub-hosted runners.
     - Keep PR checks cheap. Add heavy validation to \`scripts/ci/run-extended-validation.sh\` instead of the PR lane.
+    ${manifest.ci.additionalWorkflows.length > 0
+      ? `- Keep repo-specific workflow lanes (${manifest.ci.additionalWorkflows
+          .map((workflow) => `\`${workflow.path}\``)
+          .join(", ")}) as adjuncts to the standard CI frame. Do not repurpose them as the required PR gate unless the manifest's required status checks change deliberately.`
+      : ""}
 
     ## Home Profiles
 

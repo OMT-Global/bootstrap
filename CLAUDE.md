@@ -4,6 +4,8 @@
 
 - `project.bootstrap.yaml`: source of truth for bootstrap policy
 - `.github/workflows/`: generated fast and extended CI lanes
+- `CONTRIBUTING.md`: human contributor workflow and local validation guidance
+- `.github/PULL_REQUEST_TEMPLATE.md`: standard PR summary, issue link, and validation checklist
 - `scripts/claude-cloud/setup.sh`: first-party Claude Code on the web setup script
 - `.github/workflows/claude.yml`: opt-in Claude GitHub Action for manual or `@claude` review flows
 - `.devcontainer/devcontainer.json`: interactive Claude Code workspace baseline
@@ -18,6 +20,7 @@
 
 - Keep `CI Gate` as the single required PR status check.
 - Use one approval plus code owners on `main` unless the manifest explicitly changes it.
+- Contributors and agents must use `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` for PR shape unless a repo intentionally replaces those files.
 - `stage` and `prod` environments require reviewers and prevent self-review by default.
 - Home-level Codex and Claude profile sync is managed by the bootstrap tool, not by ad-hoc manual edits.
 - Claude Code on the web should use the repo-managed setup script and keep network access limited by default.

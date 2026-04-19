@@ -7,7 +7,7 @@ Use `project.bootstrap.yaml` as the control plane for repo-local scaffolding, Gi
 ## What The Bootstrap Owns
 
 - GitHub governance, environments, and optional org defaults
-- Repo-local `AGENTS.md` and `CLAUDE.md` guidance
+- Repo-local `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and pull request template guidance
 - Fast PR checks plus heavier extended validation lanes
 - Portable Codex and Claude home profile sync
 - Operator docs for onboarding, hosted agents, and follow-up setup
@@ -25,6 +25,12 @@ bootstrap doctor --manifest ./project.bootstrap.yaml
 If `github.organization` is set and `OMT-Global` is an organization, `bootstrap apply github` also reconciles org defaults for new repos.
 
 Confirm branch protection points at the `CI Gate` status.
+
+## Contributor And PR Guidance
+
+- `CONTRIBUTING.md` is the canonical contributor onboarding and local validation surface.
+- `.github/PULL_REQUEST_TEMPLATE.md` is the canonical pull request format for summaries, governing issue links, validation notes, and merge-readiness checks.
+- Existing bootstrapped repos can retrofit these surfaces with `bootstrap apply repo --manifest ./project.bootstrap.yaml`; repos with restricted `repo.managedPaths` should include both paths before applying.
 
 ## Project Identity
 

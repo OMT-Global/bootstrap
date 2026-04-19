@@ -41,6 +41,12 @@ describe("renderManagedFiles", () => {
 
       const claudeCloudSetup = files.find((file) => file.path === "scripts/claude-cloud/setup.sh");
       expect(claudeCloudSetup?.contents).toContain("apt-get install -y gh");
+
+      const contributing = files.find((file) => file.path === "CONTRIBUTING.md");
+      expect(contributing?.contents).toContain("Use `.github/PULL_REQUEST_TEMPLATE.md`");
+
+      const pullRequestTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
+      expect(pullRequestTemplate?.contents).toContain("## Governing Issue");
     });
   }
 

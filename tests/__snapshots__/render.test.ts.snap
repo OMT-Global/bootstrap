@@ -20,6 +20,14 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": false,
+    "path": "CONTRIBUTING.md",
+  },
+  {
+    "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+  },
+  {
+    "executable": false,
     "path": ".env.example",
   },
   {
@@ -114,6 +122,14 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": false,
     "path": "CLAUDE.md",
+  },
+  {
+    "executable": false,
+    "path": "CONTRIBUTING.md",
+  },
+  {
+    "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
   },
   {
     "executable": false,
@@ -222,6 +238,14 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": false,
+    "path": "CONTRIBUTING.md",
+  },
+  {
+    "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+  },
+  {
+    "executable": false,
     "path": ".env.example",
   },
   {
@@ -316,6 +340,14 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": false,
     "path": "CLAUDE.md",
+  },
+  {
+    "executable": false,
+    "path": "CONTRIBUTING.md",
+  },
+  {
+    "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
   },
   {
     "executable": false,

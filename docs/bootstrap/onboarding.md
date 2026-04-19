@@ -13,6 +13,7 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Confirm branch protection or rulesets on `main` require one approval and code owner review.
 - Confirm branch protection points at the `CI Gate` status.
 - Confirm `delete branch on merge` and `allow auto-merge` are enabled.
+- Confirm `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` are present as the required contributor and PR guidance surfaces.
 
 ## Org Governance
 
@@ -32,6 +33,13 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Shell-safe jobs may use `[self-hosted, synology, shell-only, public]`.
 - Docker, service-container, browser, and `container:` workloads stay on GitHub-hosted runners.
 - Keep PR checks cheap. Add heavy validation to `scripts/ci/run-extended-validation.sh` instead of the PR lane.
+
+## Contributor And PR Guidance
+
+- `CONTRIBUTING.md` defines the contributor workflow, branch expectations, validation expectations, and secret-handling baseline.
+- `.github/PULL_REQUEST_TEMPLATE.md` defines the standard PR shape: summary, governing issue link, validation notes, and bootstrap governance checklist.
+- To retrofit an existing bootstrapped repo, add `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` to `repo.managedPaths` when that repo restricts managed paths, then run `bootstrap apply repo --manifest ./project.bootstrap.yaml`.
+- Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
 
 ## Home Profiles
 

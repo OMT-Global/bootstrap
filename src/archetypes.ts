@@ -186,6 +186,15 @@ function repoAgents(manifest: BootstrapManifest): string {
     - Add or update tests for every interactive, branching, or operator-facing behavior change.
     - Never commit real secrets, runtime auth, or machine-local env files. Use templates and GitHub environments instead.
 
+    ## Kingdom Governance
+
+    - Pheidon is the orchestrator and current gate for repo execution work.
+    - GitHub issues are the source of record for agent execution work.
+    - Worker agents should act from assigned or explicitly enabled issues, not free-roaming backlog grabs.
+    - If an agent authors a PR, that same agent may not approve it. This is a hard rule.
+    - Healthy PRs should converge toward auto-merge once required checks are green or intentionally skipped, approvals are satisfied, and no blocking review state remains.
+    - PRs should link and close their governing issue where possible so issue state remains the durable work contract.
+
     ## Local Conventions
 
     - Keep scope tight and favor predictable templates over clever scaffolding.
@@ -199,6 +208,8 @@ function repoClaude(manifest: BootstrapManifest): string {
     "- `project.bootstrap.yaml`: source of truth for bootstrap policy",
     "- `.github/workflows/`: generated fast and extended CI lanes",
     ...additionalWorkflowLines(manifest),
+    "- `CONTRIBUTING.md`: human contributor workflow and local validation guidance",
+    "- `.github/PULL_REQUEST_TEMPLATE.md`: standard PR summary, issue link, and validation checklist",
     manifest.agents.enableClaudeWebEnvironment
       ? "- `scripts/claude-cloud/setup.sh`: first-party Claude Code on the web setup script"
       : null,
@@ -225,6 +236,7 @@ function repoClaude(manifest: BootstrapManifest): string {
   const guardrailLines = [
     requiredStatusCheckGuardrail(manifest),
     `- Use one approval plus code owners on \`${manifest.project.defaultBranch}\` unless the manifest explicitly changes it.`,
+    "- Contributors and agents must use `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` for PR shape unless a repo intentionally replaces those files.",
     "- `stage` and `prod` environments require reviewers and prevent self-review by default.",
     "- Home-level Codex and Claude profile sync is managed by the bootstrap tool, not by ad-hoc manual edits.",
     manifest.agents.enableClaudeWebEnvironment
@@ -298,7 +310,7 @@ ${indentBlock(claudeBullets, 6)}
     ${manifest.ci.additionalWorkflows.length > 0
       ? "- Optional repo-specific workflow lanes declared in the manifest without replacing the standard CI frame"
       : ""}
-    - Repo-local \`AGENTS.md\` and \`CLAUDE.md\` guidance
+    - Repo-local \`AGENTS.md\`, \`CLAUDE.md\`, \`CONTRIBUTING.md\`, and pull request template guidance
     - Fast PR checks plus heavier extended validation lanes
     - Portable Codex and Claude home profile sync
     - Operator docs for onboarding, hosted agents, and follow-up setup
@@ -319,6 +331,12 @@ ${indentBlock(claudeBullets, 6)}
 
     ${requiredStatusCheckConfirmation(manifest)}
 
+    ## Contributor And PR Guidance
+
+    - \`CONTRIBUTING.md\` is the canonical contributor onboarding and local validation surface.
+    - \`.github/PULL_REQUEST_TEMPLATE.md\` is the canonical pull request format for summaries, governing issue links, validation notes, and merge-readiness checks.
+    - Existing bootstrapped repos can retrofit these surfaces with \`bootstrap apply repo --manifest ./project.bootstrap.yaml\`; repos with restricted \`repo.managedPaths\` should include both paths before applying.
+
     ## Project Identity
 
 ${indentBlock(projectIdentityLines(manifest), 4)}
@@ -331,6 +349,68 @@ ${indentBlock(claudeSection, 4)}
     ## Repository URL
 
     - ${repoUrl(manifest)}
+  `;
+}
+
+function contributingDoc(manifest: BootstrapManifest): string {
+  return dedent`
+    # Contributing
+
+    Contributions should start from a GitHub issue that is assigned or explicitly enabled by Pheidon. Keep changes scoped to that issue, work on a feature branch, and link the issue from the pull request.
+
+    ## Local Setup
+
+    - Install dependencies for the selected stack before changing code.
+    - Enable repo hooks with \`git config core.hooksPath .githooks\`; they block direct commits to \`${manifest.project.defaultBranch}\` and catch committed runtime env files.
+    - Use \`project.bootstrap.yaml\` as the source of truth for governance, CI, environments, and bootstrap-managed guidance files.
+
+    ## Change Expectations
+
+    - Keep implementation changes minimal and relevant to the governing issue.
+    - Add or update tests for interactive, branching, or operator-facing behavior changes.
+    - Keep fast PR checks cheap and shell-safe; move heavyweight validation to \`scripts/ci/run-extended-validation.sh\`.
+    - Do not commit real secrets, runtime auth, generated credentials, caches, or machine-local env files.
+
+    ## Validation
+
+    - Run the relevant local checks before opening a PR.
+    - For this bootstrap contract, the required PR check surface is ${requiredStatusChecksDisplay(manifest)}.
+    - Document any skipped checks in the PR with a concrete reason.
+
+    ## Pull Requests
+
+    - Use \`.github/PULL_REQUEST_TEMPLATE.md\`.
+    - Link the governing issue with a closing keyword when the PR should close it.
+    - PR authors may not approve their own PRs.
+    - A healthy PR should converge toward auto-merge after required checks pass or are intentionally skipped, approvals are satisfied, and no blocking review state remains.
+  `;
+}
+
+function pullRequestTemplate(manifest: BootstrapManifest): string {
+  return dedent`
+    ## Summary
+
+    -
+
+    ## Governing Issue
+
+    Closes #
+
+    ## Validation
+
+    - [ ] Relevant local checks passed
+    - [ ] Required PR checks are expected to satisfy ${requiredStatusChecksDisplay(manifest)}
+    - [ ] Skipped checks are explained below
+
+    ## Bootstrap Governance
+
+    - [ ] Changes are scoped to the linked issue
+    - [ ] Contributor or PR guidance changes are reflected in \`CONTRIBUTING.md\`, \`.github/PULL_REQUEST_TEMPLATE.md\`, and \`docs/bootstrap/onboarding.md\` when applicable
+    - [ ] No real secrets, runtime auth, or machine-local env files are committed
+
+    ## Notes
+
+    -
   `;
 }
 
@@ -1222,6 +1302,8 @@ function workflowPaths(manifest: BootstrapManifest): { app: string[]; ci: string
     "project.bootstrap.yaml",
     "AGENTS.md",
     "CLAUDE.md",
+    "CONTRIBUTING.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
     ".devcontainer/**",
     ".githooks/**",
     ".github/workflows/**",
@@ -1552,6 +1634,7 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Confirm branch protection or rulesets on \`${manifest.project.defaultBranch}\` require one approval and code owner review.
     - ${requiredStatusCheckConfirmation(manifest)}
     - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled.
+    - Confirm \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` are present as the required contributor and PR guidance surfaces.
 
 ${indentBlock(organizationGovernanceSection(manifest), 4)}
 ${indentBlock(additionalWorkflowSection(manifest), 4)}
@@ -1572,6 +1655,13 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
           .map((workflow) => `\`${workflow.path}\``)
           .join(", ")}) as adjuncts to the standard CI frame. Do not repurpose them as the required PR gate unless the manifest's required status checks change deliberately.`
       : ""}
+
+    ## Contributor And PR Guidance
+
+    - \`CONTRIBUTING.md\` defines the contributor workflow, branch expectations, validation expectations, and secret-handling baseline.
+    - \`.github/PULL_REQUEST_TEMPLATE.md\` defines the standard PR shape: summary, governing issue link, validation notes, and bootstrap governance checklist.
+    - To retrofit an existing bootstrapped repo, add \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` to \`repo.managedPaths\` when that repo restricts managed paths, then run \`bootstrap apply repo --manifest ./project.bootstrap.yaml\`.
+    - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
 
     ## Home Profiles
 
@@ -1605,6 +1695,16 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       path: "CLAUDE.md",
       reason: "Repo-local Claude instructions",
       contents: `${repoClaude(manifest)}\n`
+    },
+    {
+      path: "CONTRIBUTING.md",
+      reason: "Contributor workflow guidance",
+      contents: `${contributingDoc(manifest)}\n`
+    },
+    {
+      path: ".github/PULL_REQUEST_TEMPLATE.md",
+      reason: "Pull request guidance template",
+      contents: `${pullRequestTemplate(manifest)}\n`
     },
     {
       path: ".env.example",

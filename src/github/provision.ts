@@ -218,7 +218,7 @@ export async function planGitHub(
         : []),
       {
         id: "branch-protection",
-        description: `Protect ${manifest.project.defaultBranch} with 1 approval, stale-review dismissal, code owner review, linear history, and required status checks ${requiredStatusChecksLabel(manifest)}.`
+        description: `Protect ${manifest.project.defaultBranch} with 1 approval, last-push approval, stale-review dismissal, code owner review, linear history, and required status checks ${requiredStatusChecksLabel(manifest)}.`
       },
       {
         id: "environments",
@@ -254,7 +254,7 @@ export async function planGitHub(
   });
   actions.push({
     id: "branch-protection",
-    description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), code owners, stale-review dismissal, linear history, and status checks ${requiredStatusChecksLabel(manifest)}.`
+    description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), last-push approval, code owners, stale-review dismissal, linear history, and status checks ${requiredStatusChecksLabel(manifest)}.`
   });
   actions.push({
     id: "environments",

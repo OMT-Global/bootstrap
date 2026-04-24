@@ -1,0 +1,105 @@
+name: Security PR
+
+on:
+  workflow_call:
+    inputs:
+      dependency-review:
+        description: Run GitHub dependency review on pull requests
+        required: false
+        default: true
+        type: boolean
+      run-osv:
+        description: Run OSV-Scanner when the repo provides a script
+        required: false
+        default: false
+        type: boolean
+      run-semgrep:
+        description: Run Semgrep when the repo provides a script
+        required: false
+        default: false
+        type: boolean
+      codeql-languages:
+        description: Comma-separated CodeQL language list; empty disables CodeQL
+        required: false
+        default: ""
+        type: string
+    secrets:
+      SEMGREP_APP_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    if: ${{ inputs.dependency-review }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  codeql:
+    name: codeql
+    if: ${{ inputs.codeql-languages != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ inputs.codeql-languages }}
+      - name: Repo build hook
+        run: |
+          if [[ -x scripts/ci/run-security-build.sh ]]; then
+            bash scripts/ci/run-security-build.sh
+          else
+            echo "No scripts/ci/run-security-build.sh hook; continuing without a custom build."
+          fi
+      - uses: github/codeql-action/analyze@v4
+
+  osv:
+    name: osv
+    if: ${{ inputs.run-osv }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repo OSV hook
+        run: |
+          if [[ -x scripts/ci/run-osv.sh ]]; then
+            bash scripts/ci/run-osv.sh
+          else
+            echo "scripts/ci/run-osv.sh is required when run-osv=true" >&2
+            exit 1
+          fi
+
+  semgrep:
+    name: semgrep
+    if: ${{ inputs.run-semgrep }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repo Semgrep hook
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          if [[ -x scripts/ci/run-semgrep.sh ]]; then
+            bash scripts/ci/run-semgrep.sh
+          else
+            echo "scripts/ci/run-semgrep.sh is required when run-semgrep=true" >&2
+            exit 1
+          fi

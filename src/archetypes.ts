@@ -152,6 +152,7 @@ function baseGitignore(manifest: BootstrapManifest): string {
     "coverage/",
     ".playwright-cli/",
     "tmp/",
+    ".claude/",
     ".bootstrap/",
     ".new-project-bootstrap/"
   ];
@@ -184,6 +185,7 @@ function repoAgents(manifest: BootstrapManifest): string {
     - CI baseline: fast PR checks stay cheap and shell-safe; extended validation runs on \`main\`, nightly, or manual dispatch.
     - Self-hosted runner policy: shell-safe jobs may use \`[self-hosted, synology, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`; anything needing Docker, service containers, browser infra, or \`container:\` must stay on GitHub-hosted runners.
     - Add or update tests for every interactive, branching, or operator-facing behavior change.
+    - PRs must use the generated pull request template. The required PR gate validates summary, issue linkage, validation evidence, and risk notes.
     - Never commit real secrets, runtime auth, or machine-local env files. Use templates and GitHub environments instead.
 
     ## Kingdom Governance
@@ -268,8 +270,57 @@ ${indentBlock(guardrailLines, 4)}
   `;
 }
 
+function releaseTagExamples(manifest: BootstrapManifest): { exact: string; minor: string; major: string } {
+  const prefix = manifest.release.tagPrefix;
+
+  return {
+    exact: `${prefix}1.2.3`,
+    minor: `${prefix}1.2`,
+    major: `${prefix}1`
+  };
+}
+
+function isControlPlaneBootstrap(manifest: BootstrapManifest): boolean {
+  return manifest.project.owner === "OMT-Global" && manifest.project.name === "bootstrap";
+}
+
 function repoReadme(manifest: BootstrapManifest): string {
   const displayName = projectDisplayName(manifest);
+  const releaseTags = releaseTagExamples(manifest);
+  const aiAttestationSection = manifest.ci.aiAttestation.enabled
+    ? dedent`
+
+      ## AI Attestation
+
+      This bootstrap also renders \`.github/workflows/ai-attestation.yml\` as a caller for the shared attestation workflow at \`${manifest.ci.aiAttestation.reusableWorkflowRepo}/.github/workflows/ai-attestation-reusable.yml@${manifest.ci.aiAttestation.reusableWorkflowRef}\`.
+
+      Override the default provider, model, and prompt hash with repo variables (\`AI_ATTESTATION_PROVIDER\`, \`AI_ATTESTATION_MODEL\`, \`AI_ATTESTATION_PROMPT_HASH\`) or update \`project.bootstrap.yaml\` before production rollout.
+    `
+    : "";
+  const releaseSection = manifest.release.enabled
+    ? dedent`
+
+      ## Release Standard
+
+      This bootstrap uses immutable exact SemVer tags such as \`${releaseTags.exact}\`, then automatically advances the floating compatibility tags \`${releaseTags.minor}\` and \`${releaseTags.major}\` to the same commit.
+
+      Cut patch releases from \`release/X.Y\` branches when you maintain an older minor line. Cut new minor and major releases from \`${manifest.project.defaultBranch}\`.
+    `
+    : "";
+  const tierASection = isControlPlaneBootstrap(manifest)
+    ? dedent`
+
+      ## Tier A Control Plane
+
+      This repo now carries the shared Tier A workflow contracts:
+
+      - \`.github/workflows/security-pr.yml\`
+      - \`.github/workflows/release.yml\`
+      - \`.github/workflows/ai-attestation-reusable.yml\`
+
+      Use \`docs/bootstrap/tier-a-ci-contract.md\` for the consumer interface and rollout pattern. Use \`docs/bootstrap/next-steps.md\` as the publish checklist before downstream repos pin to a tag or immutable SHA.
+    `
+    : "";
   const claudeBullets = [
     manifest.agents.enableClaudeWebEnvironment
       ? "- First-party Claude Code on the web via `claude.ai/code` and `bash scripts/claude-cloud/setup.sh`"
@@ -312,6 +363,8 @@ ${indentBlock(claudeBullets, 6)}
       : ""}
     - Repo-local \`AGENTS.md\`, \`CLAUDE.md\`, \`CONTRIBUTING.md\`, and pull request template guidance
     - Fast PR checks plus heavier extended validation lanes
+    ${manifest.release.enabled ? "- SemVer release automation with floating major/minor compatibility tags" : ""}
+    ${manifest.ci.aiAttestation.enabled ? "- Optional signed AI attestation workflow backed by the control-plane reusable contract" : ""}
     - Portable Codex and Claude home profile sync
     - Operator docs for onboarding, hosted agents, and follow-up setup
 
@@ -329,7 +382,7 @@ ${indentBlock(claudeBullets, 6)}
       ? `If \`github.organization\` is set and \`${manifest.project.owner}\` is an organization, \`bootstrap apply github\` also reconciles org defaults for new repos.`
       : ""}
 
-    ${requiredStatusCheckConfirmation(manifest)}
+    ${requiredStatusCheckConfirmation(manifest)} and require approval from someone other than the most recent pusher.
 
     ## Contributor And PR Guidance
 
@@ -344,6 +397,9 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Default branch: \`${manifest.project.defaultBranch}\`
     - Archetype: \`${manifest.archetype.kind}\`
 ${indentBlock(additionalWorkflowSection(manifest), 4)}
+${indentBlock(releaseSection, 4)}
+${indentBlock(aiAttestationSection, 4)}
+${indentBlock(tierASection, 4)}
 ${indentBlock(claudeSection, 4)}
 
     ## Repository URL
@@ -1177,6 +1233,28 @@ function extendedChecksScript(manifest: BootstrapManifest): string {
   `}\n${body}\n`;
 }
 
+function releaseVerificationScript(): string {
+  return `${dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    bash scripts/ci/run-fast-checks.sh
+    bash scripts/ci/run-extended-validation.sh
+  `}\n`;
+}
+
+function releasePublishScript(manifest: BootstrapManifest): string {
+  const releaseTags = releaseTagExamples(manifest);
+
+  return `${dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "No repo-specific artifact publish step is configured."
+    echo "Create exact release tags such as ${releaseTags.exact}; the reusable release workflow handles GitHub release publication and floating tag promotion."
+  `}\n`;
+}
+
 function nextJsStarter(): RenderedFile[] {
   return [
     {
@@ -1280,7 +1358,14 @@ function pythonStarter(moduleName: string): RenderedFile[] {
   ];
 }
 
-function genericStarter(): RenderedFile[] {
+function genericStarter(manifest: BootstrapManifest): RenderedFile[] {
+  const controlPlaneLines = isControlPlaneBootstrap(manifest)
+    ? [
+        "- Validate reusable control-plane workflows (`security-pr`, `release`, and AI attestation) before publishing a consumer-facing tag.",
+        "- Publish a stable control-plane tag or immutable SHA before moving Tier A repos off branch-ref callers."
+      ]
+    : [];
+
   return [
     {
       path: "docs/bootstrap/next-steps.md",
@@ -1290,6 +1375,7 @@ function genericStarter(): RenderedFile[] {
 
         - Add the primary runtime and package manifest for this project.
         - Tighten \`scripts/ci/run-fast-checks.sh\` and \`scripts/ci/run-extended-validation.sh\` once the toolchain is known.
+${indentBlock(controlPlaneLines.join("\n"), 8)}
         - Review CODEOWNERS, environment reviewers, and required PR checks before the first merge.
         - Re-run \`bootstrap plan --manifest ./project.bootstrap.yaml\` after major manifest changes to confirm intended drift.
       `
@@ -1369,6 +1455,65 @@ function setupSteps(manifest: BootstrapManifest): string {
   return lines.join("\n");
 }
 
+function aiAttestationCallerWorkflow(manifest: BootstrapManifest): string {
+  const config = manifest.ci.aiAttestation;
+  const reusableWorkflow =
+    config.reusableWorkflowRepo === `${manifest.project.owner}/${manifest.project.name}`
+      ? "./.github/workflows/ai-attestation-reusable.yml"
+      : `${config.reusableWorkflowRepo}/.github/workflows/ai-attestation-reusable.yml@${config.reusableWorkflowRef}`;
+
+  return dedent`
+    name: AI Attestation
+
+    on:
+      pull_request:
+      push:
+        branches: [${manifest.project.defaultBranch}]
+
+    permissions:
+      contents: read
+      id-token: write
+
+    jobs:
+      attest:
+        uses: ${reusableWorkflow}
+        with:
+          artifact_name: '${config.artifactName}'
+          retention_days: ${config.retentionDays}
+          ai_provider: \${{ vars.AI_ATTESTATION_PROVIDER || '${config.provider}' }}
+          ai_model: \${{ vars.AI_ATTESTATION_MODEL || '${config.model}' }}
+          prompt_hash: \${{ vars.AI_ATTESTATION_PROMPT_HASH || '${config.promptHash}' }}
+  `;
+}
+
+function releaseCallerWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Release
+
+    on:
+      push:
+        tags:
+          - '${manifest.release.tagPrefix}*.*.*'
+
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
+
+    jobs:
+      release:
+        uses: ${manifest.release.reusableWorkflowRepo}/.github/workflows/release.yml@${manifest.release.reusableWorkflowRef}
+        with:
+          runs-on: '["ubuntu-latest"]'
+          verify-script: scripts/ci/run-release-verification.sh
+          publish-script: scripts/ci/run-release-publish.sh
+          create-github-release: ${manifest.release.createGitHubRelease ? "true" : "false"}
+          tag-prefix: '${manifest.release.tagPrefix}'
+          update-major-tag: ${manifest.release.updateMajorTag ? "true" : "false"}
+          update-minor-tag: ${manifest.release.updateMinorTag ? "true" : "false"}
+  `;
+}
+
 function prWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
   const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
@@ -1378,7 +1523,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
 
     on:
       pull_request:
-        types: [opened, synchronize, reopened, ready_for_review]
+        types: [opened, edited, synchronize, reopened, ready_for_review]
 
     concurrency:
       group: pr-fast-\${{ github.event.pull_request.number || github.ref }}
@@ -1428,6 +1573,49 @@ ${indentBlock(setupSteps(manifest), 6)}
           - name: Run fast checks
             run: bash scripts/ci/run-fast-checks.sh
 
+      validate-pr-description:
+        name: Validate PR Description
+        runs-on: ${shellRunner}
+        timeout-minutes: 5
+        if: github.event.pull_request.draft == false
+        env:
+          PR_BODY: \${{ github.event.pull_request.body }}
+        steps:
+          - name: Require generated PR template content
+            run: |
+              failed=0
+
+              require_line() {
+                local line="$1"
+                if ! grep -Fqx "$line" <<<"$PR_BODY"; then
+                  echo "Missing required PR section: $line"
+                  failed=1
+                fi
+              }
+
+              require_line "## Summary"
+              require_line "## Governing Issue"
+              require_line "## Validation"
+              require_line "## Bootstrap Governance"
+              require_line "## Notes"
+
+              if grep -Eiq 'Closes #$|#<issue-number>|what changed|why it changed|notable tradeoffs|migration or rollout notes|follow-up work if any' <<<"$PR_BODY"; then
+                echo "PR body still contains template placeholder text."
+                failed=1
+              fi
+
+              if ! grep -Eiq '(^|[[:space:]-])((close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+|no issue is linked|no linked issue|without a linked issue|no governing issue)' <<<"$PR_BODY"; then
+                echo "PR body must close/link an issue or explicitly explain why no issue is linked."
+                failed=1
+              fi
+
+              if ! grep -Eiq '(^|[[:space:]-])(\\[[xX]\\]|not run|not applicable|n/a)' <<<"$PR_BODY"; then
+                echo "PR body must include validation evidence, a checked validation item, or a reason validation was not run."
+                failed=1
+              fi
+
+              exit "$failed"
+
       validate-secrets:
         name: Validate Secrets
         runs-on: ${shellRunner}
@@ -1447,6 +1635,7 @@ ${indentBlock(setupSteps(manifest), 6)}
         needs:
           - changes
           - fast-checks
+          - validate-pr-description
           - validate-secrets
         steps:
           - name: Check required PR jobs
@@ -1454,6 +1643,7 @@ ${indentBlock(setupSteps(manifest), 6)}
               RESULTS: >-
                 changes=\${{ needs.changes.result }}
                 fast-checks=\${{ needs.fast-checks.result }}
+                validate-pr-description=\${{ needs.validate-pr-description.result }}
                 validate-secrets=\${{ needs.validate-secrets.result }}
             run: |
               failed=0
@@ -1603,6 +1793,7 @@ ${indentBlock(setupSteps(manifest), 6)}
 }
 
 function onboardingDoc(manifest: BootstrapManifest): string {
+  const releaseTags = releaseTagExamples(manifest);
   const claudeSetupLines = [
     manifest.agents.enableClaudeWebEnvironment
       ? "- First-party Claude web sessions should use `bash scripts/claude-cloud/setup.sh` in `claude.ai/code`."
@@ -1631,10 +1822,11 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
 
     ## Repo Governance
 
-    - Confirm branch protection or rulesets on \`${manifest.project.defaultBranch}\` require one approval and code owner review.
+    - Confirm branch protection or rulesets on \`${manifest.project.defaultBranch}\` require one approval, code owner review, and approval from someone other than the most recent pusher.
     - ${requiredStatusCheckConfirmation(manifest)}
-    - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled.
     - Confirm \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` are present as the required contributor and PR guidance surfaces.
+    - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before ${primaryRequiredStatusCheck(manifest)} can pass.
+    - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled so reviewed PRs merge via automation after checks pass.
 
 ${indentBlock(organizationGovernanceSection(manifest), 4)}
 ${indentBlock(additionalWorkflowSection(manifest), 4)}
@@ -1655,6 +1847,7 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
           .map((workflow) => `\`${workflow.path}\``)
           .join(", ")}) as adjuncts to the standard CI frame. Do not repurpose them as the required PR gate unless the manifest's required status checks change deliberately.`
       : ""}
+    - Consume shared security, release, and AI attestation workflows from the control-plane repo once those contracts are pinned for production use.
 
     ## Contributor And PR Guidance
 
@@ -1662,6 +1855,32 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
     - \`.github/PULL_REQUEST_TEMPLATE.md\` defines the standard PR shape: summary, governing issue link, validation notes, and bootstrap governance checklist.
     - To retrofit an existing bootstrapped repo, add \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` to \`repo.managedPaths\` when that repo restricts managed paths, then run \`bootstrap apply repo --manifest ./project.bootstrap.yaml\`.
     - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
+
+${manifest.release.enabled
+  ? indentBlock(
+      dedent`
+        ## Release Standard
+
+        - Use immutable exact SemVer tags such as \`${releaseTags.exact}\` as the source of truth.
+        - Automatically advance \`${releaseTags.minor}\` and \`${releaseTags.major}\` to the newest compatible exact tag; never retag an exact release.
+        - Cut patch releases from \`release/X.Y\` when you maintain older minors; cut new minors and majors from \`${manifest.project.defaultBranch}\`.
+      `,
+      4
+    )
+  : ""}
+
+${manifest.ci.aiAttestation.enabled
+  ? indentBlock(
+      dedent`
+        ## AI Attestation
+
+        - \`.github/workflows/ai-attestation.yml\` calls \`${manifest.ci.aiAttestation.reusableWorkflowRepo}/.github/workflows/ai-attestation-reusable.yml@${manifest.ci.aiAttestation.reusableWorkflowRef}\`.
+        - Override default metadata with repo variables (\`AI_ATTESTATION_PROVIDER\`, \`AI_ATTESTATION_MODEL\`, \`AI_ATTESTATION_PROMPT_HASH\`) before treating the artifact metadata as authoritative.
+        - Pin the reusable workflow to a tag or SHA once the control-plane contract is stable.
+      `,
+      4
+    )
+  : ""}
 
     ## Home Profiles
 
@@ -1671,6 +1890,37 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
     ## Claude Setup
 
 ${indentBlock(claudeSetupLines, 4)}
+  `;
+}
+
+function releaseVersioningDoc(manifest: BootstrapManifest): string {
+  const releaseTags = releaseTagExamples(manifest);
+
+  return dedent`
+    # Release Versioning
+
+    This bootstrap standardizes on Semantic Versioning with immutable exact tags and automatically promoted compatibility aliases.
+
+    ## Tag Rules
+
+    - Exact release tags are immutable: \`${releaseTags.exact}\`
+    - Minor compatibility tags move forward automatically: \`${releaseTags.minor}\`
+    - Major compatibility tags move forward automatically: \`${releaseTags.major}\`
+
+    Consumers should prefer \`${releaseTags.major}\` for the default compatibility channel, \`${releaseTags.minor}\` when they need to stay on one minor line, and an exact tag or SHA when they need full reproducibility.
+
+    ## Branch Rules
+
+    - \`${manifest.project.defaultBranch}\` is the next minor or major release train.
+    - \`release/X.Y\` branches are maintenance lines for patch releases on older minors.
+    - Promote fixes forward: oldest supported \`release/X.Y\` first, then newer maintenance branches, then \`${manifest.project.defaultBranch}\`.
+
+    ## Automation
+
+    - \`.github/workflows/release-tag.yml\` runs when an exact SemVer tag matching \`${manifest.release.tagPrefix}*.*.*\` is pushed.
+    - \`scripts/ci/run-release-verification.sh\` runs the repo release gate before publication.
+    - \`scripts/ci/run-release-publish.sh\` is the repo hook for artifact publication; the generated default is a no-op until the repo needs more than GitHub releases.
+    - The shared reusable release workflow creates or updates the GitHub release and then advances the floating compatibility tags when enabled in \`project.bootstrap.yaml\`.
   `;
 }
 
@@ -1702,11 +1952,6 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: `${contributingDoc(manifest)}\n`
     },
     {
-      path: ".github/PULL_REQUEST_TEMPLATE.md",
-      reason: "Pull request guidance template",
-      contents: `${pullRequestTemplate(manifest)}\n`
-    },
-    {
       path: ".env.example",
       reason: "Safe environment template",
       contents: `${envExample()}\n`
@@ -1728,6 +1973,11 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: codeowners(manifest)
     },
     {
+      path: ".github/PULL_REQUEST_TEMPLATE.md",
+      reason: "Pull request guidance template",
+      contents: `${pullRequestTemplate(manifest)}\n`
+    },
+    {
       path: ".github/workflows/pr-fast-ci.yml",
       reason: "Fast pull request workflow",
       contents: `${prWorkflow(manifest)}\n`
@@ -1737,6 +1987,24 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Extended validation workflow",
       contents: `${extendedWorkflow(manifest)}\n`
     },
+    ...(manifest.release.enabled
+      ? [
+          {
+            path: ".github/workflows/release-tag.yml",
+            reason: "Shared release workflow caller",
+            contents: `${releaseCallerWorkflow(manifest)}\n`
+          }
+        ]
+      : []),
+    ...(manifest.ci.aiAttestation.enabled
+      ? [
+          {
+            path: ".github/workflows/ai-attestation.yml",
+            reason: "Shared AI attestation workflow caller",
+            contents: `${aiAttestationCallerWorkflow(manifest)}\n`
+          }
+        ]
+      : []),
     {
       path: "scripts/check-detect-secrets.sh",
       reason: "Repository secret scan helper",
@@ -1755,6 +2023,22 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: extendedChecksScript(manifest),
       executable: true
     },
+    ...(manifest.release.enabled
+      ? [
+          {
+            path: "scripts/ci/run-release-verification.sh",
+            reason: "Release verification entrypoint",
+            contents: releaseVerificationScript(),
+            executable: true
+          },
+          {
+            path: "scripts/ci/run-release-publish.sh",
+            reason: "Release publication entrypoint",
+            contents: releasePublishScript(manifest),
+            executable: true
+          }
+        ]
+      : []),
     {
       path: "scripts/codex-cloud/setup.sh",
       reason: "Codex cloud setup script",
@@ -1811,6 +2095,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Codex web environment setup guide",
       contents: `${codexCloudDoc(manifest)}\n`
     },
+    ...(manifest.release.enabled
+      ? [
+          {
+            path: "docs/bootstrap/versioning.md",
+            reason: "Release and versioning guide",
+            contents: `${releaseVersioningDoc(manifest)}\n`
+          }
+        ]
+      : []),
     ...(manifest.agents.enableClaudeWebEnvironment ||
     manifest.agents.enableClaudeDevcontainer ||
     manifest.agents.enableClaudeGitHubAction
@@ -1832,6 +2125,6 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
     case "python-service":
       return [...files, ...pythonStarter(manifest.archetype.moduleName)];
     case "generic-empty":
-      return [...files, ...genericStarter()];
+      return [...files, ...genericStarter(manifest)];
   }
 }

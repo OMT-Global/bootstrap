@@ -96,6 +96,9 @@ describe("GitHub provisioning", () => {
       required_status_checks: {
         strict: true,
         contexts: ["test", "lint"]
+      },
+      required_pull_request_reviews: {
+        require_last_push_approval: true
       }
     });
     expect(
@@ -233,5 +236,20 @@ describe("GitHub provisioning", () => {
       }),
       {}
     ]);
+  });
+
+  it("defaults GitHub review protection to require approval from someone other than the last pusher", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    expect(manifest.github.autoMerge).toBe(true);
+    expect(manifest.github.requireLastPushApproval).toBe(true);
   });
 });

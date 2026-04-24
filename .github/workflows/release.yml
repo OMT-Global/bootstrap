@@ -1,0 +1,115 @@
+name: Reusable Release
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: JSON array runner selector for the release job
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
+      verify-script:
+        description: Release verification script path relative to the repository root
+        required: false
+        default: "scripts/ci/run-release-verification.sh"
+        type: string
+      publish-script:
+        description: Release publish script path relative to the repository root
+        required: false
+        default: "scripts/ci/run-release-publish.sh"
+        type: string
+      create-github-release:
+        description: Create a GitHub release after publish succeeds
+        required: false
+        default: false
+        type: boolean
+      tag-prefix:
+        description: Prefix used by exact SemVer release tags
+        required: false
+        default: "v"
+        type: string
+      update-major-tag:
+        description: Move the floating major tag to the current exact release
+        required: false
+        default: true
+        type: boolean
+      update-minor-tag:
+        description: Move the floating minor tag to the current exact release
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify release contract
+        run: |
+          if [[ ! -x "${{ inputs.verify-script }}" ]]; then
+            echo "Missing executable verify script: ${{ inputs.verify-script }}" >&2
+            exit 1
+          fi
+          bash "${{ inputs.verify-script }}"
+      - name: Publish release artifacts
+        run: |
+          if [[ ! -x "${{ inputs.publish-script }}" ]]; then
+            echo "Missing executable publish script: ${{ inputs.publish-script }}" >&2
+            exit 1
+          fi
+          bash "${{ inputs.publish-script }}"
+      - name: Promote floating SemVer tags
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          UPDATE_MAJOR_TAG: ${{ inputs.update-major-tag }}
+          UPDATE_MINOR_TAG: ${{ inputs.update-minor-tag }}
+        run: |
+          set -euo pipefail
+
+          prefix="${TAG_PREFIX}"
+          tag="${RELEASE_TAG}"
+          escaped_prefix="$(printf '%s' "${prefix}" | sed 's/[][(){}.^$*+?|\\-]/\\&/g')"
+
+          if [[ ! "${tag}" =~ ^${escaped_prefix}([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tag '${tag}' does not match the required exact SemVer pattern '${prefix}X.Y.Z'." >&2
+            exit 1
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          commit="$(git rev-list -n 1 "${tag}")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [[ "${UPDATE_MINOR_TAG}" == "true" ]]; then
+            minor_tag="${prefix}${major}.${minor}"
+            git tag -fa "${minor_tag}" "${commit}" -m "Advance ${minor_tag} to ${tag}"
+            git push origin "refs/tags/${minor_tag}" --force
+          fi
+
+          if [[ "${UPDATE_MAJOR_TAG}" == "true" ]]; then
+            major_tag="${prefix}${major}"
+            git tag -fa "${major_tag}" "${commit}" -m "Advance ${major_tag} to ${tag}"
+            git push origin "refs/tags/${major_tag}" --force
+          fi
+      - name: Create GitHub release
+        if: ${{ inputs.create-github-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ -z "${tag}" ]]; then
+            echo "GITHUB_REF_NAME is required to create a GitHub release." >&2
+            exit 1
+          fi
+          gh release create "${tag}" --generate-notes || gh release edit "${tag}" --latest

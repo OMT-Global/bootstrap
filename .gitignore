@@ -6,5 +6,6 @@ dist/
 coverage/
 .playwright-cli/
 tmp/
+.claude/
 .bootstrap/
 .new-project-bootstrap/

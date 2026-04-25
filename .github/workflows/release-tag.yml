@@ -1,0 +1,23 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+jobs:
+  release:
+    uses: OMT-Global/bootstrap/.github/workflows/release.yml@refs/heads/main
+    with:
+      runs-on: '["ubuntu-latest"]'
+      verify-script: scripts/ci/run-release-verification.sh
+      publish-script: scripts/ci/run-release-publish.sh
+      create-github-release: true
+      tag-prefix: 'v'
+      update-major-tag: true
+      update-minor-tag: true

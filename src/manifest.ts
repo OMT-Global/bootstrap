@@ -102,7 +102,30 @@ const manifestSchema = z.object({
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
-      additionalWorkflows: z.array(additionalWorkflowSchema).optional()
+      additionalWorkflows: z.array(additionalWorkflowSchema).optional(),
+      aiAttestation: z
+        .object({
+          enabled: z.boolean().optional(),
+          artifactName: z.string().min(1).optional(),
+          retentionDays: z.number().int().min(1).max(365).optional(),
+          provider: z.string().min(1).optional(),
+          model: z.string().min(1).optional(),
+          promptHash: z.string().min(1).optional(),
+          reusableWorkflowRepo: z.string().min(1).optional(),
+          reusableWorkflowRef: z.string().min(1).optional()
+        })
+        .optional()
+    })
+    .optional(),
+  release: z
+    .object({
+      enabled: z.boolean().optional(),
+      tagPrefix: z.string().min(1).optional(),
+      createGitHubRelease: z.boolean().optional(),
+      updateMajorTag: z.boolean().optional(),
+      updateMinorTag: z.boolean().optional(),
+      reusableWorkflowRepo: z.string().min(1).optional(),
+      reusableWorkflowRef: z.string().min(1).optional()
     })
     .optional(),
   agents: z
@@ -275,7 +298,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       requiredStatusChecks: github.requiredStatusChecks ?? ["CI Gate"],
       dismissStaleReviews: github.dismissStaleReviews ?? true,
       requireCodeOwnerReviews: github.requireCodeOwnerReviews ?? true,
-      requireLastPushApproval: github.requireLastPushApproval ?? false,
+      requireLastPushApproval: github.requireLastPushApproval ?? true,
       enforceLinearHistory: github.enforceLinearHistory ?? true,
       allowMergeCommit: github.allowMergeCommit ?? true,
       allowSquashMerge: github.allowSquashMerge ?? true,
@@ -294,7 +317,27 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
-      additionalWorkflows: normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows)
+      additionalWorkflows: normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows),
+      aiAttestation: {
+        enabled: parsed.ci?.aiAttestation?.enabled ?? false,
+        artifactName: parsed.ci?.aiAttestation?.artifactName ?? "ai-attestation",
+        retentionDays: parsed.ci?.aiAttestation?.retentionDays ?? 90,
+        provider: parsed.ci?.aiAttestation?.provider ?? "unknown",
+        model: parsed.ci?.aiAttestation?.model ?? "unknown",
+        promptHash: parsed.ci?.aiAttestation?.promptHash ?? "unknown",
+        reusableWorkflowRepo:
+          parsed.ci?.aiAttestation?.reusableWorkflowRepo ?? `${parsed.project.owner}/bootstrap`,
+        reusableWorkflowRef: parsed.ci?.aiAttestation?.reusableWorkflowRef ?? "refs/heads/main"
+      }
+    },
+    release: {
+      enabled: parsed.release?.enabled ?? true,
+      tagPrefix: parsed.release?.tagPrefix ?? "v",
+      createGitHubRelease: parsed.release?.createGitHubRelease ?? true,
+      updateMajorTag: parsed.release?.updateMajorTag ?? true,
+      updateMinorTag: parsed.release?.updateMinorTag ?? true,
+      reusableWorkflowRepo: parsed.release?.reusableWorkflowRepo ?? `${parsed.project.owner}/bootstrap`,
+      reusableWorkflowRef: parsed.release?.reusableWorkflowRef ?? "refs/heads/main"
     },
     agents: {
       manageCodexHome: parsed.agents?.manageCodexHome ?? true,
@@ -348,6 +391,7 @@ interface ManifestOverrides {
   archetype?: Partial<BootstrapManifest["archetype"]>;
   github?: Partial<BootstrapManifest["github"]>;
   ci?: Partial<BootstrapManifest["ci"]>;
+  release?: Partial<BootstrapManifest["release"]>;
   agents?: Partial<BootstrapManifest["agents"]>;
   environments?: Partial<BootstrapManifest["environments"]>;
 }
@@ -372,6 +416,7 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
     },
     github: overrides?.github,
     ci: overrides?.ci,
+    release: overrides?.release,
     agents: overrides?.agents,
     environments: overrides?.environments
   });

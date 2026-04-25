@@ -7,8 +7,11 @@ Use `project.bootstrap.yaml` as the control plane for repo-local scaffolding, Gi
 ## What The Bootstrap Owns
 
 - GitHub governance, environments, and optional org defaults
+
 - Repo-local `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and pull request template guidance
 - Fast PR checks plus heavier extended validation lanes
+- SemVer release automation with floating major/minor compatibility tags
+- Optional signed AI attestation workflow backed by the control-plane reusable contract
 - Portable Codex and Claude home profile sync
 - Operator docs for onboarding, hosted agents, and follow-up setup
 
@@ -24,7 +27,7 @@ bootstrap doctor --manifest ./project.bootstrap.yaml
 
 If `github.organization` is set and `OMT-Global` is an organization, `bootstrap apply github` also reconciles org defaults for new repos.
 
-Confirm branch protection points at the `CI Gate` status.
+Confirm branch protection points at the `CI Gate` status. and require approval from someone other than the most recent pusher.
 
 ## Contributor And PR Guidance
 
@@ -41,6 +44,29 @@ Confirm branch protection points at the `CI Gate` status.
 - Default branch: `main`
 - Archetype: `generic-empty`
 
+
+## Release Standard
+
+This bootstrap uses immutable exact SemVer tags such as `v1.2.3`, then automatically advances the floating compatibility tags `v1.2` and `v1` to the same commit.
+
+Cut patch releases from `release/X.Y` branches when you maintain an older minor line. Cut new minor and major releases from `main`.
+
+## AI Attestation
+
+This bootstrap also renders `.github/workflows/ai-attestation.yml` as a caller for the shared attestation workflow at `OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@refs/heads/main`.
+
+Override the default provider, model, and prompt hash with repo variables (`AI_ATTESTATION_PROVIDER`, `AI_ATTESTATION_MODEL`, `AI_ATTESTATION_PROMPT_HASH`) or update `project.bootstrap.yaml` before production rollout.
+
+## Tier A Control Plane
+
+This repo now carries the shared Tier A workflow contracts:
+
+- `.github/workflows/security-pr.yml`
+- `.github/workflows/release.yml`
+- `.github/workflows/ai-attestation-reusable.yml`
+
+Use `docs/bootstrap/tier-a-ci-contract.md` for the consumer interface and rollout pattern. Use `docs/bootstrap/next-steps.md` as the publish checklist before downstream repos pin to a tag or immutable SHA.
+
 ## Claude Code
 
 This bootstrap can prepare these Claude workflows:
@@ -50,50 +76,6 @@ This bootstrap can prepare these Claude workflows:
 - Remote GitHub-hosted automation via `.github/workflows/claude.yml`
 
 The full checklist is in `docs/bootstrap/claude-environment.md`.
-
-## Kingdom Governance Flow
-
-### Issue to merge flow
-
-```mermaid
-flowchart TD
-    J[John designs work] --> I[GitHub issue becomes source of record]
-    I --> P[Pheidon assigns or enables issue]
-    P --> W[Worker lane implements]
-    W --> PR[Worker opens PR linked to issue]
-    PR --> G{Pheidon gate checks readiness}
-    G -->|CI green or intentionally skipped\napprovals satisfied\nmergeable| A[Arm auto-merge]
-    A --> M[GitHub merges PR]
-    M --> C[Linked issue closes]
-    C --> N[Worker eligible for next issue]
-    G -->|CI failed\nbehind/conflicted\nrequested changes| R[Return PR to owning worker]
-    R --> W
-```
-
-### PR ownership and repair loop
-
-```mermaid
-flowchart TD
-    PR[Worker-owned PR] --> S{PR healthy?}
-    S -->|No| B{Blocker type}
-    B -->|CI failure| F[PR owner fixes CI]
-    B -->|Behind or conflicts| RB[PR owner rebases or refreshes branch]
-    B -->|Review changes requested| RC[PR owner updates implementation]
-    F --> PR
-    RB --> PR
-    RC --> PR
-    S -->|Yes| G[Pheidon gate confirms policy]
-    G --> AM[Auto-merge armed]
-```
-
-### Governance rules
-
-- GitHub issues are the source of record for agent execution work.
-- Pheidon is the orchestrator and current gate.
-- Workers should act from assigned or explicitly enabled issues.
-- PR authors may not approve their own PRs.
-- PR owners must repair their own PRs until merge-ready unless Pheidon explicitly reassigns ownership.
-- Healthy PRs should converge toward auto-merge.
 
 ## Repository URL
 

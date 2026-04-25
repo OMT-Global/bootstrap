@@ -1,0 +1,20 @@
+name: AI Attestation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  attest:
+    uses: ./.github/workflows/ai-attestation-reusable.yml
+    with:
+      artifact_name: 'ai-attestation'
+      retention_days: 90
+      ai_provider: ${{ vars.AI_ATTESTATION_PROVIDER || 'unknown' }}
+      ai_model: ${{ vars.AI_ATTESTATION_MODEL || 'unknown' }}
+      prompt_hash: ${{ vars.AI_ATTESTATION_PROMPT_HASH || 'unknown' }}

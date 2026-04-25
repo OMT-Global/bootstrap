@@ -39,7 +39,7 @@ github:
     - CI Gate
   dismissStaleReviews: true
   requireCodeOwnerReviews: true
-  requireLastPushApproval: false
+  requireLastPushApproval: true
   enforceLinearHistory: true
   allowMergeCommit: true
   allowSquashMerge: true
@@ -63,6 +63,24 @@ ci:
     - integration
     - release-readiness
   nightlyCron: 0 7 * * *
+  additionalWorkflows: []
+  aiAttestation:
+    enabled: true
+    artifactName: ai-attestation
+    retentionDays: 90
+    provider: unknown
+    model: unknown
+    promptHash: unknown
+    reusableWorkflowRepo: OMT-Global/bootstrap
+    reusableWorkflowRef: refs/heads/main
+release:
+  enabled: true
+  tagPrefix: v
+  createGitHubRelease: true
+  updateMajorTag: true
+  updateMinorTag: true
+  reusableWorkflowRepo: OMT-Global/bootstrap
+  reusableWorkflowRef: refs/heads/main
 agents:
   manageCodexHome: true
   manageClaudeHome: true

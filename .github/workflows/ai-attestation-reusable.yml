@@ -1,0 +1,116 @@
+name: Reusable AI Attestation
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Base name for the uploaded attestation artifact
+        type: string
+        default: ai-attestation
+      retention_days:
+        description: Artifact retention window in days
+        type: number
+        default: 90
+      ai_provider:
+        description: AI provider name captured in the attestation payload
+        type: string
+        default: unknown
+      ai_model:
+        description: AI model identifier captured in the attestation payload
+        type: string
+        default: unknown
+      prompt_hash:
+        description: Stable prompt hash or identifier captured in the attestation payload
+        type: string
+        default: unknown
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.1
+
+      - name: Collect metadata and write attestation
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+          mkdir -p attest
+
+          cat > "attest/${sha}.json" <<EOF
+          {
+            "attestation_version": "1.0",
+            "commit_sha": "${sha}",
+            "timestamp_utc": "${timestamp_utc}",
+            "repo": "${GITHUB_REPOSITORY}",
+            "ref": "${GITHUB_REF}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "ai_generation": {
+              "provider": "${{ inputs.ai_provider }}",
+              "model": "${{ inputs.ai_model }}",
+              "prompt_hash": "${{ inputs.prompt_hash }}",
+              "ci": {
+                "workflow": "${GITHUB_WORKFLOW}",
+                "job": "${GITHUB_JOB}"
+              }
+            }
+          }
+          EOF
+
+      - name: Sign attestation blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="${{ steps.meta.outputs.sha }}"
+          cosign sign-blob --yes \
+            --bundle "attest/${sha}.bundle" \
+            "attest/${sha}.json"
+
+      - name: Upload attestation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}-${{ steps.meta.outputs.sha }}
+          path: attest/
+          retention-days: ${{ inputs.retention_days }}
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: attest
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.1
+
+      - name: Download attestation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}-${{ needs.attest.outputs.sha }}
+          path: attest
+
+      - name: Verify signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="${{ needs.attest.outputs.sha }}"
+          test -f "attest/${sha}.json"
+          test -f "attest/${sha}.bundle"
+
+          cosign verify-blob \
+            --bundle "attest/${sha}.bundle" \
+            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "attest/${sha}.json"

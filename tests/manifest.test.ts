@@ -27,6 +27,25 @@ describe("normalizeManifest", () => {
       }
     ]);
     expect(manifest.github.requiredStatusChecks).toEqual(["CI Gate"]);
+    expect(manifest.ci.aiAttestation).toEqual({
+      enabled: false,
+      artifactName: "ai-attestation",
+      retentionDays: 90,
+      provider: "unknown",
+      model: "unknown",
+      promptHash: "unknown",
+      reusableWorkflowRepo: "acme/bootstrap",
+      reusableWorkflowRef: "refs/heads/main"
+    });
+    expect(manifest.release).toEqual({
+      enabled: true,
+      tagPrefix: "v",
+      createGitHubRelease: true,
+      updateMajorTag: true,
+      updateMinorTag: true,
+      reusableWorkflowRepo: "acme/bootstrap",
+      reusableWorkflowRef: "refs/heads/main"
+    });
     expect(manifest.agents.enableClaudeWebEnvironment).toBe(true);
     expect(manifest.agents.enableClaudeDevcontainer).toBe(true);
     expect(manifest.agents.enableClaudeGitHubAction).toBe(true);
@@ -109,6 +128,70 @@ describe("normalizeManifest", () => {
         purpose: "Runs deploy orchestration after the standard CI lanes pass."
       }
     ]);
+  });
+
+  it("normalizes AI attestation defaults and explicit overrides", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "attested-repo",
+        owner: "OMT-Global"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      ci: {
+        aiAttestation: {
+          enabled: true,
+          provider: "OpenAI",
+          model: "gpt-5.4",
+          promptHash: "sha256:abc123",
+          artifactName: "repo-attestation",
+          retentionDays: 30,
+          reusableWorkflowRef: "refs/tags/bootstrap-v1"
+        }
+      }
+    });
+
+    expect(manifest.ci.aiAttestation).toEqual({
+      enabled: true,
+      artifactName: "repo-attestation",
+      retentionDays: 30,
+      provider: "OpenAI",
+      model: "gpt-5.4",
+      promptHash: "sha256:abc123",
+      reusableWorkflowRepo: "OMT-Global/bootstrap",
+      reusableWorkflowRef: "refs/tags/bootstrap-v1"
+    });
+  });
+
+  it("normalizes release defaults and explicit overrides", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "release-repo",
+        owner: "OMT-Global"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      release: {
+        enabled: true,
+        tagPrefix: "bootstrap-v",
+        createGitHubRelease: false,
+        updateMajorTag: true,
+        updateMinorTag: false,
+        reusableWorkflowRef: "refs/tags/v1"
+      }
+    });
+
+    expect(manifest.release).toEqual({
+      enabled: true,
+      tagPrefix: "bootstrap-v",
+      createGitHubRelease: false,
+      updateMajorTag: true,
+      updateMinorTag: false,
+      reusableWorkflowRepo: "OMT-Global/bootstrap",
+      reusableWorkflowRef: "refs/tags/v1"
+    });
   });
 
   it("preserves an explicit docs-facing display name", () => {

@@ -24,10 +24,6 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": false,
-    "path": ".github/PULL_REQUEST_TEMPLATE.md",
-  },
-  {
-    "executable": false,
     "path": ".env.example",
   },
   {
@@ -44,11 +40,19 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+  },
+  {
+    "executable": false,
     "path": ".github/workflows/pr-fast-ci.yml",
   },
   {
     "executable": false,
     "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/release-tag.yml",
   },
   {
     "executable": true,
@@ -61,6 +65,14 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   {
     "executable": true,
     "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-publish.sh",
   },
   {
     "executable": true,
@@ -93,6 +105,10 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   {
     "executable": false,
     "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/versioning.md",
   },
   {
     "executable": false,
@@ -129,10 +145,6 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   },
   {
     "executable": false,
-    "path": ".github/PULL_REQUEST_TEMPLATE.md",
-  },
-  {
-    "executable": false,
     "path": ".env.example",
   },
   {
@@ -149,11 +161,19 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   },
   {
     "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+  },
+  {
+    "executable": false,
     "path": ".github/workflows/pr-fast-ci.yml",
   },
   {
     "executable": false,
     "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/release-tag.yml",
   },
   {
     "executable": true,
@@ -166,6 +186,14 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": true,
     "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-publish.sh",
   },
   {
     "executable": true,
@@ -198,6 +226,10 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": false,
     "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/versioning.md",
   },
   {
     "executable": false,
@@ -242,10 +274,6 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": false,
-    "path": ".github/PULL_REQUEST_TEMPLATE.md",
-  },
-  {
-    "executable": false,
     "path": ".env.example",
   },
   {
@@ -262,11 +290,19 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+  },
+  {
+    "executable": false,
     "path": ".github/workflows/pr-fast-ci.yml",
   },
   {
     "executable": false,
     "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/release-tag.yml",
   },
   {
     "executable": true,
@@ -279,6 +315,14 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   {
     "executable": true,
     "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-publish.sh",
   },
   {
     "executable": true,
@@ -311,6 +355,10 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   {
     "executable": false,
     "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/versioning.md",
   },
   {
     "executable": false,
@@ -347,10 +395,6 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   },
   {
     "executable": false,
-    "path": ".github/PULL_REQUEST_TEMPLATE.md",
-  },
-  {
-    "executable": false,
     "path": ".env.example",
   },
   {
@@ -367,11 +411,19 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   },
   {
     "executable": false,
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+  },
+  {
+    "executable": false,
     "path": ".github/workflows/pr-fast-ci.yml",
   },
   {
     "executable": false,
     "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/workflows/release-tag.yml",
   },
   {
     "executable": true,
@@ -384,6 +436,14 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": true,
     "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-publish.sh",
   },
   {
     "executable": true,
@@ -416,6 +476,10 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": false,
     "path": "docs/bootstrap/codex-cloud-environment.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/versioning.md",
   },
   {
     "executable": false,

@@ -89,6 +89,25 @@ export interface BootstrapManifest {
     extendedChecks: string[];
     nightlyCron: string;
     additionalWorkflows: AdditionalWorkflowConfig[];
+    aiAttestation: {
+      enabled: boolean;
+      artifactName: string;
+      retentionDays: number;
+      provider: string;
+      model: string;
+      promptHash: string;
+      reusableWorkflowRepo: string;
+      reusableWorkflowRef: string;
+    };
+  };
+  release: {
+    enabled: boolean;
+    tagPrefix: string;
+    createGitHubRelease: boolean;
+    updateMajorTag: boolean;
+    updateMinorTag: boolean;
+    reusableWorkflowRepo: string;
+    reusableWorkflowRef: string;
   };
   agents: {
     manageCodexHome: boolean;

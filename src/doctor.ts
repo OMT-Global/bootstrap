@@ -75,46 +75,6 @@ export async function runDoctor(
     });
   }
 
-  if (manifest.agents.manageClaudeHome) {
-    const claudeAvailable = await commandExists(runner, "claude");
-    checks.push({
-      name: "Claude CLI",
-      status: claudeAvailable ? "ok" : "warn",
-      detail: claudeAvailable
-        ? "claude is available."
-        : "claude is not on PATH. Home sync can still write files, but the CLI is unavailable."
-    });
-  }
-
-  if (manifest.agents.enableClaudeDevcontainer) {
-    const dockerAvailable = await commandExists(runner, "docker");
-    checks.push({
-      name: "Claude devcontainer runtime",
-      status: dockerAvailable ? "ok" : "warn",
-      detail: dockerAvailable
-        ? "docker is available for the generated Claude devcontainer."
-        : "docker is not on PATH. The generated .devcontainer config will exist, but local container launches will fail until Docker is installed."
-    });
-  }
-
-  if (manifest.agents.enableClaudeWebEnvironment) {
-    checks.push({
-      name: "Claude web environment",
-      status: "ok",
-      detail:
-        "Use claude.ai/code with the generated scripts/claude-cloud/setup.sh file, limited network access, and the repo CLAUDE.md instructions."
-    });
-  }
-
-  if (manifest.agents.enableClaudeGitHubAction) {
-    checks.push({
-      name: "Claude GitHub Action",
-      status: "ok",
-      detail:
-        `The generated workflow is opt-in and separate from the required PR checks (${requiredStatusChecksLabel(manifest)}). Finish GitHub-side auth with the Claude GitHub app or a repository ANTHROPIC_API_KEY secret.`
-    });
-  }
-
   const runnerLabels = resolveRunsOn(
     manifest.ci.runnerPolicy,
     manifest.project.visibility,

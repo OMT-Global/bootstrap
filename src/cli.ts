@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 
 import { runDoctor } from "./doctor.js";
+import { reconcileFleet } from "./fleet.js";
 import { planGitHub, applyGitHub } from "./github/provision.js";
 import { planHome, applyHome } from "./home/sync.js";
 import {
@@ -40,6 +41,26 @@ function formatHomeActions(actions: Awaited<ReturnType<typeof planHome>>["action
   return [
     "**Home**",
     ...actions.map((action) => `- [${action.type}] ${action.path}: ${action.reason}`)
+  ].join("\n");
+}
+
+function formatFleetReport(report: Awaited<ReturnType<typeof reconcileFleet>>): string {
+  if (report.results.length === 0) {
+    return "Fleet: no bootstrapped repositories found.";
+  }
+
+  return [
+    `**Fleet ${report.mode}**`,
+    ...report.results.map((result) => {
+      const changed = result.repoChanges.filter((change) => change.type !== "unchanged").length;
+      const details = [
+        `${result.repo}: ${result.status}`,
+        changed > 0 ? `${changed} repo change(s)` : "no repo drift",
+        result.pullRequestUrl ? `PR ${result.pullRequestUrl}` : undefined,
+        result.reason
+      ].filter(Boolean);
+      return `- ${details.join(" - ")}`;
+    })
   ].join("\n");
 }
 
@@ -122,6 +143,38 @@ async function main(): Promise<void> {
       );
     });
 
+  program
+    .command("reconcile")
+    .description("Plan or apply bootstrap alignment across local bootstrapped repositories.")
+    .requiredOption("--workspace-root <path>", "Directory containing local repository checkouts")
+    .option("--org <owner>", "Discover repositories from a GitHub org or user, then map them to local checkouts")
+    .option("--repo <name...>", "Restrict to one or more repo names or owner/name values")
+    .option("--apply-repo", "Write repo-local bootstrap drift")
+    .option("--apply-github", "Apply GitHub settings and label drift")
+    .option("--create-pr", "Commit repo drift on a branch, push, and open a draft PR")
+    .option("--branch-prefix <prefix>", "Branch prefix for PR mode", "codex/bootstrap-reconcile")
+    .option("--report <path>", "Write JSON report")
+    .option("--json", "Emit JSON")
+    .action(async (options) => {
+      const report = await reconcileFleet({
+        workspaceRoot: path.resolve(options.workspaceRoot),
+        org: options.org,
+        repos: options.repo,
+        applyRepo: options.applyRepo ?? false,
+        applyGitHub: options.applyGithub ?? false,
+        createPr: options.createPr ?? false,
+        branchPrefix: options.branchPrefix,
+        reportPath: options.report
+      });
+
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+        return;
+      }
+
+      process.stdout.write(`${formatFleetReport(report)}\n`);
+    });
+
   const apply = program.command("apply").description("Apply one bootstrap target.");
 
   apply
@@ -148,7 +201,7 @@ async function main(): Promise<void> {
 
   apply
     .command("home")
-    .description("Sync portable Codex and Claude home assets.")
+    .description("Sync portable Codex home assets.")
     .option("--manifest <path>", "Path to manifest")
     .option("--home-dir <path>", "Override home directory")
     .action(async (options) => {

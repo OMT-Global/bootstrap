@@ -100,13 +100,6 @@ export async function planHome(
     });
   }
 
-  if (manifest.agents.manageClaudeHome) {
-    mappings.push({
-      sourceDir: path.join(baseRoot, "profiles/home/claude"),
-      targetRoot: path.join(homeDir, ".claude")
-    });
-  }
-
   const files = (await Promise.all(
     mappings.map((mapping) => loadProfileFiles(mapping.sourceDir, mapping.targetRoot))
   )).flat();

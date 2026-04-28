@@ -385,6 +385,10 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
     - [ ] Contributor or PR guidance changes are reflected in \`CONTRIBUTING.md\`, \`.github/PULL_REQUEST_TEMPLATE.md\`, and \`docs/bootstrap/onboarding.md\` when applicable
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
+    ## Merge Automation
+
+    - [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
+
     ## Notes
 
     -
@@ -1138,6 +1142,7 @@ ${indentBlock(setupSteps(manifest), 6)}
               require_line "## Governing Issue"
               require_line "## Validation"
               require_line "## Bootstrap Governance"
+              require_line "## Merge Automation"
               require_line "## Notes"
 
               if grep -Eiq 'Closes #$|#<issue-number>|what changed|why it changed|notable tradeoffs|migration or rollout notes|follow-up work if any' <<<"$PR_BODY"; then
@@ -1152,6 +1157,11 @@ ${indentBlock(setupSteps(manifest), 6)}
 
               if ! grep -Eiq '(^|[[:space:]-])(\\[[xX]\\]|not run|not applicable|n/a)' <<<"$PR_BODY"; then
                 echo "PR body must include validation evidence, a checked validation item, or a reason validation was not run."
+                failed=1
+              fi
+
+              if ! grep -Eiq '(auto-merge is enabled|auto-merge enabled|auto merge is enabled|auto merge enabled|auto-merge.*(unavailable|unsafe|blocked|not supported)|auto merge.*(unavailable|unsafe|blocked|not supported))' <<<"$PR_BODY"; then
+                echo "PR body must state that auto-merge is enabled or explain why it is unavailable or unsafe."
                 failed=1
               fi
 

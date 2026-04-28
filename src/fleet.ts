@@ -206,6 +206,9 @@ async function applyRepoThroughPullRequest(
         "- [x] Changes are limited to bootstrap-managed file drift.",
         "- [x] No real secrets, runtime auth, or machine-local env files are committed.",
         "",
+        "## Merge Automation",
+        "- [ ] Auto-merge is unavailable until a human reviews and enables it for this scheduled reconciliation PR.",
+        "",
         "## Notes",
         "- Daily fleet reconciliation PR; review before merge."
       ].join("\n")

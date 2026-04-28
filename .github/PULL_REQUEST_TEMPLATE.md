@@ -18,6 +18,10 @@ Closes #
 - [ ] Contributor or PR guidance changes are reflected in `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`, and `docs/bootstrap/onboarding.md` when applicable
 - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
+## Merge Automation
+
+- [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
+
 ## Notes
 
 -

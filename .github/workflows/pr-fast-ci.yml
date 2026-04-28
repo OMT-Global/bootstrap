@@ -94,6 +94,7 @@ jobs:
           require_line "## Governing Issue"
           require_line "## Validation"
           require_line "## Bootstrap Governance"
+          require_line "## Merge Automation"
           require_line "## Notes"
 
           if grep -Eiq 'Closes #$|#<issue-number>|what changed|why it changed|notable tradeoffs|migration or rollout notes|follow-up work if any' <<<"$PR_BODY"; then
@@ -108,6 +109,11 @@ jobs:
 
           if ! grep -Eiq '(^|[[:space:]-])(\[[xX]\]|not run|not applicable|n/a)' <<<"$PR_BODY"; then
             echo "PR body must include validation evidence, a checked validation item, or a reason validation was not run."
+            failed=1
+          fi
+
+          if ! grep -Eiq '(auto-merge is enabled|auto-merge enabled|auto merge is enabled|auto merge enabled|auto-merge.*(unavailable|unsafe|blocked|not supported)|auto merge.*(unavailable|unsafe|blocked|not supported))' <<<"$PR_BODY"; then
+            echo "PR body must state that auto-merge is enabled or explain why it is unavailable or unsafe."
             failed=1
           fi
 

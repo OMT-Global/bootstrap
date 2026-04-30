@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe("home sync", () => {
-  it("plans and applies portable Codex and Claude assets", async () => {
+  it("plans and applies portable Codex assets", async () => {
     const homeDir = await makeTempDir();
     const manifest = normalizeManifest({
       project: {
@@ -37,7 +37,7 @@ describe("home sync", () => {
 
     const applied = await applyHome(manifest, homeDir);
     expect(applied.some((action) => action.path === ".codex/AGENTS.md")).toBe(true);
-    expect(applied.some((action) => action.path === ".claude/CLAUDE.md")).toBe(true);
+    expect(applied.some((action) => action.path.startsWith(".claude/"))).toBe(false);
 
     const codexAgents = await readFile(path.join(homeDir, ".codex/AGENTS.md"), "utf8");
     expect(codexAgents).toContain("Codex Home Profile");
@@ -45,6 +45,36 @@ describe("home sync", () => {
 
     const secondPlan = await planHome(manifest, homeDir);
     expect(secondPlan.actions.every((action) => action.type === "unchanged")).toBe(true);
+  });
+
+  it("backs out previously managed Claude home assets", async () => {
+    const homeDir = await makeTempDir();
+    await mkdir(path.join(homeDir, ".claude"), { recursive: true });
+    await writeFile(path.join(homeDir, ".claude/CLAUDE.md"), "legacy Claude profile\n", "utf8");
+    await mkdir(path.join(homeDir, ".bootstrap"), { recursive: true });
+    await writeFile(
+      path.join(homeDir, ".bootstrap/home-state.json"),
+      `${JSON.stringify({ managedFiles: { ".claude/CLAUDE.md": "abc123" } }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    const plan = await planHome(manifest, homeDir);
+    expect(plan.actions.some((action) => action.path === ".claude/CLAUDE.md" && action.type === "delete")).toBe(
+      true
+    );
+
+    await applyHome(manifest, homeDir);
+    await expect(access(path.join(homeDir, ".claude/CLAUDE.md"))).rejects.toThrow();
   });
 
   it("loads legacy home state from the old path", async () => {

@@ -43,14 +43,10 @@ describe("renderManagedFiles", () => {
       expect(prTemplate?.contents).toContain("## Bootstrap Governance");
       expect(prTemplate?.contents).toContain("## Notes");
 
-      const claudeWorkflow = files.find((file) => file.path === ".github/workflows/claude.yml");
-      expect(claudeWorkflow?.contents).toContain("uses: anthropics/claude-code-action@v1");
-
-      const devcontainer = files.find((file) => file.path === ".devcontainer/devcontainer.json");
-      expect(devcontainer?.contents).toContain("ghcr.io/anthropics/devcontainer-features/claude-code:1");
-
-      const claudeCloudSetup = files.find((file) => file.path === "scripts/claude-cloud/setup.sh");
-      expect(claudeCloudSetup?.contents).toContain("apt-get install -y gh");
+      expect(files.some((file) => file.path === "CLAUDE.md")).toBe(false);
+      expect(files.some((file) => file.path === ".github/workflows/claude.yml")).toBe(false);
+      expect(files.some((file) => file.path === ".devcontainer/devcontainer.json")).toBe(false);
+      expect(files.some((file) => file.path === "scripts/claude-cloud/setup.sh")).toBe(false);
 
       const contributing = files.find((file) => file.path === "CONTRIBUTING.md");
       expect(contributing?.contents).toContain("Use `.github/PULL_REQUEST_TEMPLATE.md`");
@@ -218,13 +214,11 @@ describe("renderManagedFiles", () => {
 
     const files = renderManagedFiles(manifest);
     const readme = files.find((file) => file.path === "README.md");
-    const claude = files.find((file) => file.path === "CLAUDE.md");
     const onboarding = files.find((file) => file.path === "docs/bootstrap/onboarding.md");
     const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
 
     expect(readme?.contents).toContain("Repo-Specific Workflow Lanes");
     expect(readme?.contents).toContain("`.github/workflows/deploy.yml`");
-    expect(claude?.contents).toContain("stay adjunct to the standard PR and extended validation lanes");
     expect(onboarding?.contents).toContain("Do not repurpose them as the required PR gate");
     expect(prWorkflow?.contents).toContain("name: CI Gate");
   });

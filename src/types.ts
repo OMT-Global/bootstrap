@@ -8,6 +8,12 @@ export interface CodeownerRule {
   owners: string[];
 }
 
+export interface IssueLabelConfig {
+  name: string;
+  color: string;
+  description: string;
+}
+
 export interface EnvironmentConfig {
   reviewers: string[];
   requireApproval: boolean;
@@ -62,6 +68,7 @@ export interface BootstrapManifest {
     createRepo: boolean;
     reviewers: string[];
     codeowners: CodeownerRule[];
+    issueLabels: IssueLabelConfig[];
     organization?: OrganizationConfig;
     autoMerge: boolean;
     deleteBranchOnMerge: boolean;
@@ -111,12 +118,7 @@ export interface BootstrapManifest {
   };
   agents: {
     manageCodexHome: boolean;
-    manageClaudeHome: boolean;
     codexProfile: string;
-    claudeProfile: string;
-    enableClaudeWebEnvironment: boolean;
-    enableClaudeDevcontainer: boolean;
-    enableClaudeGitHubAction: boolean;
     sharedSkills: string[];
   };
   environments: {

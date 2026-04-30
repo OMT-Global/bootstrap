@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { applyGitHub, planGitHub } from "../src/github/provision.js";
-import { normalizeManifest } from "../src/manifest.js";
+import { DEFAULT_ISSUE_LABELS, normalizeManifest } from "../src/manifest.js";
 
 describe("GitHub provisioning", () => {
   it("produces a static plan when gh is unavailable", async () => {
@@ -25,6 +25,7 @@ describe("GitHub provisioning", () => {
 
     expect(actions.map((action) => action.id)).toContain("github-auth");
     expect(actions.map((action) => action.id)).toContain("branch-protection");
+    expect(actions.map((action) => action.id)).toContain("issue-labels");
   });
 
   it("applies repo settings, branch protection, and environments through gh api", async () => {
@@ -64,7 +65,10 @@ describe("GitHub provisioning", () => {
         if (endpoint === "/repos/acme/example") {
           return undefined;
         }
-        return { name: "example", full_name: "acme/example", private: true, visibility: "private" };
+        if (endpoint.startsWith("/repos/acme/example/labels/")) {
+          return undefined;
+        }
+        return undefined;
       },
       api: async (method: string, endpoint: string, payload?: unknown) => {
         calls.push({ method, endpoint, payload });
@@ -81,6 +85,7 @@ describe("GitHub provisioning", () => {
     const actions = await applyGitHub(manifest, client as never);
     expect(actions.map((action) => action.id)).toContain("organization-update");
     expect(actions.map((action) => action.id)).toContain("repo-create");
+    expect(actions.map((action) => action.id)).toContain("issue-labels");
     expect(calls.some((call) => call.endpoint === "/orgs/acme" && call.method === "PATCH")).toBe(true);
     expect(calls.some((call) => call.endpoint === "/orgs/acme/repos" && call.method === "POST")).toBe(true);
     expect(
@@ -106,6 +111,9 @@ describe("GitHub provisioning", () => {
         (call) => call.endpoint === "/repos/acme/example/environments/prod" && call.method === "PUT"
       )
     ).toBe(true);
+    expect(
+      calls.filter((call) => call.endpoint === "/repos/acme/example/labels" && call.method === "POST")
+    ).toHaveLength(DEFAULT_ISSUE_LABELS.length);
   });
 
   it("reports org-policy drift in the GitHub plan when organization defaults differ", async () => {
@@ -143,6 +151,9 @@ describe("GitHub provisioning", () => {
           if (endpoint === "/repos/acme/example") {
             return undefined;
           }
+          if (endpoint.startsWith("/repos/acme/example/labels/")) {
+            return undefined;
+          }
           return undefined;
         },
         api: async (method: string, endpoint: string) => {
@@ -170,6 +181,9 @@ describe("GitHub provisioning", () => {
     expect(actions.find((action) => action.id === "organization")?.description).toContain(
       "Update organization defaults for acme."
     );
+    expect(actions.find((action) => action.id === "issue-labels")?.description).toContain(
+      `Create or update ${DEFAULT_ISSUE_LABELS.length} issue label(s)`
+    );
   });
 
   it("falls back to bare environments when private-repo protection rules are unsupported", async () => {
@@ -192,7 +206,12 @@ describe("GitHub provisioning", () => {
     const client = {
       isAvailable: async () => true,
       isAuthenticated: async () => true,
-      tryApi: async () => ({ name: "example", full_name: "acme/example", private: true, visibility: "private" }),
+      tryApi: async (method: string, endpoint: string) => {
+        if (endpoint.startsWith("/repos/acme/example/labels/")) {
+          return undefined;
+        }
+        return { name: "example", full_name: "acme/example", private: true, visibility: "private" };
+      },
       api: async (method: string, endpoint: string, payload?: unknown) => {
         calls.push({ method, endpoint, payload });
         if (endpoint === "/users/acme") {
@@ -251,5 +270,81 @@ describe("GitHub provisioning", () => {
 
     expect(manifest.github.autoMerge).toBe(true);
     expect(manifest.github.requireLastPushApproval).toBe(true);
+  });
+
+  it("updates drifted labels and leaves matching labels alone", async () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        createRepo: false,
+        issueLabels: [
+          {
+            name: "area:frontend",
+            color: "1f77b4",
+            description: "Frontend and user-interface work."
+          },
+          {
+            name: "risk:high",
+            color: "d93f0b",
+            description: "High implementation or operational risk."
+          }
+        ]
+      }
+    });
+
+    const calls: Array<{ method: string; endpoint: string; payload?: unknown }> = [];
+    const client = {
+      isAvailable: async () => true,
+      isAuthenticated: async () => true,
+      tryApi: async (method: string, endpoint: string) => {
+        calls.push({ method, endpoint });
+        if (endpoint === "/repos/acme/example") {
+          return { name: "example", full_name: "acme/example", private: true, visibility: "private" };
+        }
+        if (endpoint === "/repos/acme/example/labels/area%3Afrontend") {
+          return {
+            name: "area:frontend",
+            color: "1f77b4",
+            description: "Frontend and user-interface work."
+          };
+        }
+        if (endpoint === "/repos/acme/example/labels/risk%3Ahigh") {
+          return {
+            name: "risk:high",
+            color: "cccccc",
+            description: "Old description."
+          };
+        }
+        return undefined;
+      },
+      api: async (method: string, endpoint: string, payload?: unknown) => {
+        calls.push({ method, endpoint, payload });
+        if (endpoint === "/users/acme") {
+          return { login: "acme", type: "Organization" };
+        }
+        return {};
+      }
+    };
+
+    await applyGitHub(manifest, client as never);
+
+    const labelWrites = calls.filter((call) => call.endpoint.includes("/labels/") && call.method === "PATCH");
+    expect(labelWrites).toEqual([
+      {
+        method: "PATCH",
+        endpoint: "/repos/acme/example/labels/risk%3Ahigh",
+        payload: {
+          name: "risk:high",
+          color: "d93f0b",
+          description: "High implementation or operational risk."
+        }
+      }
+    ]);
   });
 });

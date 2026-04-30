@@ -16,6 +16,7 @@ Closes #
 
 - [ ] Changes are scoped to the linked issue
 - [ ] Contributor or PR guidance changes are reflected in `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`, and `docs/bootstrap/onboarding.md` when applicable
+- [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
 - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
 ## Notes

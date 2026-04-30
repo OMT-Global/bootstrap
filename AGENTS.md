@@ -15,6 +15,7 @@
 - Worker agents should act from assigned or explicitly enabled issues, not free-roaming backlog grabs.
 - If an agent authors a PR, that same agent may not approve it. This is a hard rule.
 - Healthy PRs should converge toward auto-merge once required checks are green or intentionally skipped, approvals are satisfied, and no blocking review state remains.
+- When GitHub plan limits make auto-merge unavailable for a private repo, use the fallback merge-readiness policy: required checks pass or are intentionally skipped, approvals and conversation resolution are satisfied, no blocking review state remains, and a maintainer performs the merge manually.
 - PRs should link and close their governing issue where possible so issue state remains the durable work contract.
 
 ## Local Conventions

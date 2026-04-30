@@ -27,7 +27,7 @@ bootstrap doctor --manifest ./project.bootstrap.yaml
 
 If `github.organization` is set and `OMT-Global` is an organization, `bootstrap apply github` also reconciles org defaults for new repos.
 
-Confirm branch protection points at the `CI Gate` status. and require approval from someone other than the most recent pusher.
+Confirm branch protection points at the `CI Gate` status and require approval from someone other than the most recent pusher. When GitHub plan limits make auto-merge unavailable for a private repo, use the fallback merge-readiness policy: required checks pass or are intentionally skipped, approvals and conversation resolution are satisfied, no blocking review state remains, and a maintainer performs the merge manually.
 
 ## Contributor And PR Guidance
 

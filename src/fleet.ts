@@ -262,6 +262,14 @@ async function reconcileOneRepo(
   if (!options.applyRepo) {
     if (options.applyGitHub) {
       githubActions = await applyGitHub(manifest);
+      return {
+        repo: `${manifest.project.owner}/${manifest.project.name}`,
+        path: repo.path,
+        status: "applied",
+        ...(repoDrift ? { reason: "Repo drift detected; run with --apply-repo to write file changes." } : {}),
+        repoChanges: plannedRepo.changes,
+        githubActions
+      };
     }
     return {
       repo: `${manifest.project.owner}/${manifest.project.name}`,
@@ -279,6 +287,18 @@ async function reconcileOneRepo(
       path: repo.path,
       status: "blocked",
       reason: "Target worktree is dirty; refusing to apply bootstrap changes.",
+      repoChanges: plannedRepo.changes,
+      githubActions
+    };
+  }
+
+  if (!repoDrift && options.applyGitHub) {
+    githubActions = await applyGitHub(manifest);
+    return {
+      repo: `${manifest.project.owner}/${manifest.project.name}`,
+      path: repo.path,
+      status: "applied",
+      reason: "No repo drift; applied GitHub reconciliation without opening a PR.",
       repoChanges: plannedRepo.changes,
       githubActions
     };

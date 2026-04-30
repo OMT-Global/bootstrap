@@ -53,9 +53,11 @@ function formatFleetReport(report: Awaited<ReturnType<typeof reconcileFleet>>): 
     `**Fleet ${report.mode}**`,
     ...report.results.map((result) => {
       const changed = result.repoChanges.filter((change) => change.type !== "unchanged").length;
+      const githubActions = result.githubActions.length;
       const details = [
         `${result.repo}: ${result.status}`,
         changed > 0 ? `${changed} repo change(s)` : "no repo drift",
+        githubActions > 0 ? `${githubActions} GitHub action(s)` : undefined,
         result.pullRequestUrl ? `PR ${result.pullRequestUrl}` : undefined,
         result.reason
       ].filter(Boolean);

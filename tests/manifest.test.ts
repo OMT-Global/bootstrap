@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeManifest } from "../src/manifest.js";
+import { DEFAULT_ISSUE_LABELS, normalizeManifest } from "../src/manifest.js";
 
 describe("normalizeManifest", () => {
   it("applies defaults and reviewer-derived governance", () => {
@@ -27,6 +27,7 @@ describe("normalizeManifest", () => {
       }
     ]);
     expect(manifest.github.requiredStatusChecks).toEqual(["CI Gate"]);
+    expect(manifest.github.issueLabels).toEqual(DEFAULT_ISSUE_LABELS);
     expect(manifest.ci.aiAttestation).toEqual({
       enabled: false,
       artifactName: "ai-attestation",
@@ -46,9 +47,6 @@ describe("normalizeManifest", () => {
       reusableWorkflowRepo: "acme/bootstrap",
       reusableWorkflowRef: "refs/heads/main"
     });
-    expect(manifest.agents.enableClaudeWebEnvironment).toBe(true);
-    expect(manifest.agents.enableClaudeDevcontainer).toBe(true);
-    expect(manifest.agents.enableClaudeGitHubAction).toBe(true);
     expect(manifest.environments.stage.reviewers).toEqual(["alice", "acme/platform"]);
     expect(manifest.environments.prod.branches).toEqual(["main"]);
   });
@@ -101,6 +99,35 @@ describe("normalizeManifest", () => {
 
     expect(manifest.repo.managedPaths).toEqual(["project.bootstrap.yaml", "docs/bootstrap/**"]);
     expect(manifest.github.requiredStatusChecks).toEqual(["test"]);
+  });
+
+  it("normalizes explicit issue label colors", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "labeled-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        issueLabels: [
+          {
+            name: "area:frontend",
+            color: "#1F77B4",
+            description: "Frontend work."
+          }
+        ]
+      }
+    });
+
+    expect(manifest.github.issueLabels).toEqual([
+      {
+        name: "area:frontend",
+        color: "1f77b4",
+        description: "Frontend work."
+      }
+    ]);
   });
 
   it("normalizes declared repo-specific workflow lanes", () => {
@@ -208,6 +235,30 @@ describe("normalizeManifest", () => {
 
     expect(manifest.project.name).toBe("bootstrap");
     expect(manifest.project.displayName).toBe("Bootstrap");
+  });
+
+  it("drops explicit legacy Claude agent settings", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "legacy-claude-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      agents: {
+        manageClaudeHome: true,
+        enableClaudeWebEnvironment: true,
+        enableClaudeDevcontainer: true,
+        enableClaudeGitHubAction: true
+      }
+    });
+
+    expect(manifest.agents).toEqual({
+      manageCodexHome: true,
+      codexProfile: "default",
+      sharedSkills: []
+    });
   });
 
   it("normalizes optional organization governance settings", () => {

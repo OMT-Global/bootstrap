@@ -9,8 +9,42 @@ import type {
   CodeownerRule,
   DefaultRepositoryPermission,
   EnvironmentConfig,
+  IssueLabelConfig,
   OrganizationConfig
 } from "./types.js";
+
+export const DEFAULT_ISSUE_LABELS: IssueLabelConfig[] = [
+  { name: "area:frontend", color: "1f77b4", description: "Frontend and user-interface work." },
+  { name: "area:api", color: "2ca02c", description: "API contracts, endpoints, and integrations." },
+  { name: "area:data", color: "9467bd", description: "Data models, persistence, migration, and analytics work." },
+  { name: "area:ledger", color: "8c564b", description: "Ledger, accounting, transaction, or reconciliation work." },
+  { name: "area:rules", color: "bcbd22", description: "Domain rules, policy logic, and decision engines." },
+  { name: "area:ai", color: "17becf", description: "AI, agents, prompts, and model integration work." },
+  { name: "area:infra", color: "7f7f7f", description: "Infrastructure, CI, deployment, and operations work." },
+  { name: "area:security", color: "d62728", description: "Security-sensitive implementation or hardening work." },
+  { name: "area:accessibility", color: "e377c2", description: "Accessibility and inclusive UX work." },
+  { name: "area:qa", color: "ff7f0e", description: "Quality assurance, test coverage, and release validation." },
+  { name: "risk:low", color: "0e8a16", description: "Low implementation or operational risk." },
+  { name: "risk:medium", color: "fbca04", description: "Moderate implementation or operational risk." },
+  { name: "risk:high", color: "d93f0b", description: "High implementation or operational risk." },
+  { name: "risk:domain", color: "5319e7", description: "Domain correctness risk requiring subject-matter review." },
+  { name: "risk:security", color: "b60205", description: "Security risk requiring explicit review." },
+  { name: "risk:prod", color: "000000", description: "Production impact or rollout risk." },
+  { name: "status:needs-spec", color: "cfd3d7", description: "Needs clearer scope, acceptance criteria, or constraints." },
+  { name: "status:ready-for-agent", color: "0e8a16", description: "Ready for assigned agent implementation." },
+  { name: "status:agent-building", color: "1d76db", description: "Agent implementation is in progress." },
+  { name: "status:needs-review", color: "fbca04", description: "Needs review before merge or closure." },
+  { name: "status:needs-human-approval", color: "d93f0b", description: "Needs explicit human approval before proceeding." },
+  { name: "status:ready-to-merge", color: "0e8a16", description: "Ready to merge after required checks pass." },
+  { name: "status:blocked", color: "b60205", description: "Blocked by a dependency, decision, credential, or access gate." },
+  { name: "review:product", color: "0052cc", description: "Needs product review." },
+  { name: "review:architecture", color: "5319e7", description: "Needs architecture review." },
+  { name: "review:security", color: "b60205", description: "Needs security review." },
+  { name: "review:tax", color: "d4c5f9", description: "Needs tax review." },
+  { name: "review:legal", color: "c2e0c6", description: "Needs legal review." },
+  { name: "review:accessibility", color: "e99695", description: "Needs accessibility review." },
+  { name: "review:release", color: "f9d0c4", description: "Needs release review." }
+];
 
 const environmentSchema = z.object({
   reviewers: z.array(z.string()).optional(),
@@ -22,6 +56,12 @@ const environmentSchema = z.object({
 const codeownerSchema = z.object({
   pattern: z.string().min(1),
   owners: z.array(z.string().min(1)).min(1)
+});
+
+const issueLabelSchema = z.object({
+  name: z.string().min(1),
+  color: z.string().regex(/^#?[0-9a-fA-F]{6}$/),
+  description: z.string().min(1).max(100)
 });
 
 const organizationSecuritySchema = z.object({
@@ -72,6 +112,7 @@ const manifestSchema = z.object({
       createRepo: z.boolean().optional(),
       reviewers: z.array(z.string()).optional(),
       codeowners: z.array(codeownerSchema).optional(),
+      issueLabels: z.array(issueLabelSchema).optional(),
       organization: organizationSchema.optional(),
       autoMerge: z.boolean().optional(),
       deleteBranchOnMerge: z.boolean().optional(),
@@ -131,12 +172,7 @@ const manifestSchema = z.object({
   agents: z
     .object({
       manageCodexHome: z.boolean().optional(),
-      manageClaudeHome: z.boolean().optional(),
       codexProfile: z.string().optional(),
-      claudeProfile: z.string().optional(),
-      enableClaudeWebEnvironment: z.boolean().optional(),
-      enableClaudeDevcontainer: z.boolean().optional(),
-      enableClaudeGitHubAction: z.boolean().optional(),
       sharedSkills: z.array(z.string()).optional()
     })
     .optional(),
@@ -206,6 +242,16 @@ function normalizeCodeowners(
       owners: fallbackReviewers.map(normalizeOwnerHandle)
     }
   ];
+}
+
+function normalizeIssueLabels(
+  labels: z.input<typeof issueLabelSchema>[] | undefined
+): IssueLabelConfig[] {
+  return (labels ?? DEFAULT_ISSUE_LABELS).map((label) => ({
+    name: label.name.trim(),
+    color: label.color.replace(/^#/, "").toLowerCase(),
+    description: label.description.trim()
+  }));
 }
 
 function normalizeOrganization(
@@ -291,6 +337,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       createRepo: github.createRepo ?? true,
       reviewers,
       codeowners: normalizeCodeowners(github.codeowners ?? [], reviewers),
+      issueLabels: normalizeIssueLabels(github.issueLabels),
       ...(organization ? { organization } : {}),
       autoMerge: github.autoMerge ?? true,
       deleteBranchOnMerge: github.deleteBranchOnMerge ?? true,
@@ -341,12 +388,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     },
     agents: {
       manageCodexHome: parsed.agents?.manageCodexHome ?? true,
-      manageClaudeHome: parsed.agents?.manageClaudeHome ?? true,
       codexProfile: parsed.agents?.codexProfile ?? "default",
-      claudeProfile: parsed.agents?.claudeProfile ?? "default",
-      enableClaudeWebEnvironment: parsed.agents?.enableClaudeWebEnvironment ?? true,
-      enableClaudeDevcontainer: parsed.agents?.enableClaudeDevcontainer ?? true,
-      enableClaudeGitHubAction: parsed.agents?.enableClaudeGitHubAction ?? true,
       sharedSkills: parsed.agents?.sharedSkills ?? []
     },
     environments: {

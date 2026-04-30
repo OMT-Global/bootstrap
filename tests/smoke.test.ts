@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -45,14 +45,9 @@ describe("repo smoke", () => {
     expect(workflow).toContain("name: CI Gate");
     expect(workflow.match(/name: CI Gate/g)?.length).toBe(1);
 
-    const claudeWorkflow = await readFile(path.join(targetDir, ".github/workflows/claude.yml"), "utf8");
-    expect(claudeWorkflow).toContain("anthropics/claude-code-action@v1");
-
-    const devcontainer = await readFile(path.join(targetDir, ".devcontainer/devcontainer.json"), "utf8");
-    expect(devcontainer).toContain("\"ghcr.io/anthropics/devcontainer-features/claude-code:1\"");
-
-    const claudeCloudSetup = await readFile(path.join(targetDir, "scripts/claude-cloud/setup.sh"), "utf8");
-    expect(claudeCloudSetup).toContain("apt-get install -y gh");
+    await expect(access(path.join(targetDir, ".github/workflows/claude.yml"))).rejects.toThrow();
+    await expect(access(path.join(targetDir, ".devcontainer/devcontainer.json"))).rejects.toThrow();
+    await expect(access(path.join(targetDir, "scripts/claude-cloud/setup.sh"))).rejects.toThrow();
 
     const secondPlan = await planRepo(manifest, targetDir);
     expect(secondPlan.changes.every((change) => change.type === "unchanged")).toBe(true);
@@ -71,12 +66,7 @@ describe("repo smoke", () => {
         managedPaths: [
           "project.bootstrap.yaml",
           "AGENTS.md",
-          "CLAUDE.md",
-          ".devcontainer/**",
-          ".github/workflows/claude.yml",
           "scripts/codex-cloud/**",
-          "scripts/claude-cloud/**",
-          "scripts/claude/**",
           "docs/bootstrap/**"
         ]
       },
@@ -102,6 +92,64 @@ describe("repo smoke", () => {
 
     const secondPlan = await planRepo(manifest, targetDir);
     expect(secondPlan.changes.every((change) => change.type === "unchanged")).toBe(true);
+  });
+
+  it("backs out previously managed Claude files from an already bootstrapped repo", async () => {
+    const targetDir = await makeTempDir();
+    const legacyPaths = [
+      "CLAUDE.md",
+      ".github/workflows/claude.yml",
+      ".devcontainer/devcontainer.json",
+      "scripts/claude-cloud/setup.sh",
+      "scripts/claude/setup-devcontainer.sh",
+      "docs/bootstrap/claude-environment.md"
+    ];
+
+    for (const legacyPath of legacyPaths) {
+      const absolutePath = path.join(targetDir, legacyPath);
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, "legacy Claude bootstrap file\n", "utf8");
+    }
+    await mkdir(path.join(targetDir, ".bootstrap"), { recursive: true });
+    await writeFile(
+      path.join(targetDir, ".bootstrap/bootstrap-state.json"),
+      `${JSON.stringify(
+        {
+          manifestHash: "legacy",
+          templateVersion: "legacy",
+          managedFiles: Object.fromEntries(legacyPaths.map((legacyPath) => [legacyPath, "legacy"]))
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const manifest = normalizeManifest({
+      project: {
+        name: "already-bootstrapped",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      agents: {
+        manageCodexHome: true
+      }
+    });
+
+    const planBeforeApply = await planRepo(manifest, targetDir);
+    expect(
+      legacyPaths.every((legacyPath) =>
+        planBeforeApply.changes.some((change) => change.path === legacyPath && change.type === "delete")
+      )
+    ).toBe(true);
+
+    await applyRepo(manifest, targetDir);
+
+    for (const legacyPath of legacyPaths) {
+      await expect(access(path.join(targetDir, legacyPath))).rejects.toThrow();
+    }
   });
 
   it("stores bootstrap state under .git/info when the target is a git repository", async () => {

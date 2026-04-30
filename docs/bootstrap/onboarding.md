@@ -46,6 +46,15 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - To retrofit an existing bootstrapped repo, add `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` to `repo.managedPaths` when that repo restricts managed paths, then run `bootstrap apply repo --manifest ./project.bootstrap.yaml`.
 - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
 
+## Fleet Reconciliation
+
+- Run `bootstrap reconcile --workspace-root ~/src --report bootstrap-reconcile.json` first; this is plan-only and does not write files.
+- Add `--org OMT-Global` when OpenClaw should enumerate GitHub repos first; missing local checkouts or repos without `project.bootstrap.yaml` are skipped and reported.
+- Use `--repo <name...>` as the initial allowlist when onboarding daily OpenClaw reconciliation.
+- Use `--apply-repo --create-pr` for unattended repo drift so generated changes go through draft PRs instead of default-branch pushes.
+- Use `--apply-github` only after the report shape is trusted because it mutates repository settings, environments, branch protection, and labels directly through the GitHub API.
+- Dirty target worktrees are blocked and reported instead of being overwritten.
+
 ## Release Standard
 
 - Use immutable exact SemVer tags such as `v1.2.3` as the source of truth.
@@ -61,11 +70,4 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 ## Home Profiles
 
 - Run `bootstrap apply home --manifest ./project.bootstrap.yaml` after reviewing the bundled profile content.
-- The bootstrap manages portable Codex and Claude assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
-
-## Claude Setup
-
-- First-party Claude web sessions should use `bash scripts/claude-cloud/setup.sh` in `claude.ai/code`.
-- Interactive Claude work is prepared through `.devcontainer/devcontainer.json`.
-- GitHub-hosted Claude automation lives in `.github/workflows/claude.yml` and is intentionally separate from the required PR checks.
-- Finish GitHub-side auth by running `/install-github-app` in Claude Code or adding `ANTHROPIC_API_KEY` as a repo secret.
+- The bootstrap manages portable Codex assets only. Auth, sessions, caches, and machine-local state stay unmanaged.

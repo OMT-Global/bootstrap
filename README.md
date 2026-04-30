@@ -2,17 +2,17 @@
 
 Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.
 
-Use `project.bootstrap.yaml` as the control plane for repo-local scaffolding, GitHub governance, CI policy, and portable Codex/Claude profile sync. Plan first, then apply repo, GitHub, and home targets deliberately.
+Use `project.bootstrap.yaml` as the control plane for repo-local scaffolding, GitHub governance, CI policy, and portable Codex profile sync. Plan first, then apply repo, GitHub, and home targets deliberately.
 
 ## What The Bootstrap Owns
 
-- GitHub governance, environments, and optional org defaults
+- GitHub governance, issue labels, environments, and optional org defaults
 
-- Repo-local `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and pull request template guidance
+- Repo-local `AGENTS.md`, `CONTRIBUTING.md`, and pull request template guidance
 - Fast PR checks plus heavier extended validation lanes
 - SemVer release automation with floating major/minor compatibility tags
 - Optional signed AI attestation workflow backed by the control-plane reusable contract
-- Portable Codex and Claude home profile sync
+- Portable Codex home profile sync
 - Operator docs for onboarding, hosted agents, and follow-up setup
 
 ## Quickstart
@@ -25,7 +25,21 @@ bootstrap apply home --manifest ./project.bootstrap.yaml
 bootstrap doctor --manifest ./project.bootstrap.yaml
 ```
 
-If `github.organization` is set and `OMT-Global` is an organization, `bootstrap apply github` also reconciles org defaults for new repos.
+Daily fleet reconciliation should start in plan mode and write a report:
+
+```sh
+bootstrap reconcile --workspace-root ~/src --report bootstrap-reconcile.json
+```
+
+To discover GitHub repos first, add `--org OMT-Global`; repositories without local bootstrapped checkouts are skipped in the report.
+
+Once the repo allowlist is trusted, run repo file drift through draft PRs:
+
+```sh
+bootstrap reconcile --workspace-root ~/src --apply-repo --create-pr --report bootstrap-reconcile.json
+```
+
+If `github.organization` is set and `OMT-Global` is an organization, `bootstrap apply github` also reconciles org defaults for new repos. It also syncs `github.issueLabels` for issue routing, risk, status, and review gates.
 
 Confirm branch protection points at the `CI Gate` status and require approval from someone other than the most recent pusher. When GitHub plan limits make auto-merge unavailable for a private repo, use the fallback merge-readiness policy: required checks pass or are intentionally skipped, approvals and conversation resolution are satisfied, no blocking review state remains, and a maintainer performs the merge manually.
 
@@ -66,16 +80,6 @@ This repo now carries the shared Tier A workflow contracts:
 - `.github/workflows/ai-attestation-reusable.yml`
 
 Use `docs/bootstrap/tier-a-ci-contract.md` for the consumer interface and rollout pattern. Use `docs/bootstrap/next-steps.md` as the publish checklist before downstream repos pin to a tag or immutable SHA.
-
-## Claude Code
-
-This bootstrap can prepare these Claude workflows:
-
-- First-party Claude Code on the web via `claude.ai/code` and `bash scripts/claude-cloud/setup.sh`
-- Interactive containerized work via `.devcontainer/devcontainer.json` and `bash scripts/claude/setup-devcontainer.sh`
-- Remote GitHub-hosted automation via `.github/workflows/claude.yml`
-
-The full checklist is in `docs/bootstrap/claude-environment.md`.
 
 ## Repository URL
 

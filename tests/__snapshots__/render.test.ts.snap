@@ -16,10 +16,6 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": false,
-    "path": "CLAUDE.md",
-  },
-  {
-    "executable": false,
     "path": "CONTRIBUTING.md",
   },
   {
@@ -83,22 +79,6 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
     "path": "scripts/codex-cloud/maintenance.sh",
   },
   {
-    "executable": true,
-    "path": "scripts/claude-cloud/setup.sh",
-  },
-  {
-    "executable": false,
-    "path": ".devcontainer/devcontainer.json",
-  },
-  {
-    "executable": true,
-    "path": "scripts/claude/setup-devcontainer.sh",
-  },
-  {
-    "executable": false,
-    "path": ".github/workflows/claude.yml",
-  },
-  {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
   },
@@ -109,10 +89,6 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   {
     "executable": false,
     "path": "docs/bootstrap/versioning.md",
-  },
-  {
-    "executable": false,
-    "path": "docs/bootstrap/claude-environment.md",
   },
   {
     "executable": false,
@@ -137,10 +113,6 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   },
   {
     "executable": false,
-    "path": "CLAUDE.md",
-  },
-  {
-    "executable": false,
     "path": "CONTRIBUTING.md",
   },
   {
@@ -204,22 +176,6 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
     "path": "scripts/codex-cloud/maintenance.sh",
   },
   {
-    "executable": true,
-    "path": "scripts/claude-cloud/setup.sh",
-  },
-  {
-    "executable": false,
-    "path": ".devcontainer/devcontainer.json",
-  },
-  {
-    "executable": true,
-    "path": "scripts/claude/setup-devcontainer.sh",
-  },
-  {
-    "executable": false,
-    "path": ".github/workflows/claude.yml",
-  },
-  {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
   },
@@ -230,10 +186,6 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": false,
     "path": "docs/bootstrap/versioning.md",
-  },
-  {
-    "executable": false,
-    "path": "docs/bootstrap/claude-environment.md",
   },
   {
     "executable": false,
@@ -266,10 +218,6 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": false,
-    "path": "CLAUDE.md",
-  },
-  {
-    "executable": false,
     "path": "CONTRIBUTING.md",
   },
   {
@@ -333,22 +281,6 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
     "path": "scripts/codex-cloud/maintenance.sh",
   },
   {
-    "executable": true,
-    "path": "scripts/claude-cloud/setup.sh",
-  },
-  {
-    "executable": false,
-    "path": ".devcontainer/devcontainer.json",
-  },
-  {
-    "executable": true,
-    "path": "scripts/claude/setup-devcontainer.sh",
-  },
-  {
-    "executable": false,
-    "path": ".github/workflows/claude.yml",
-  },
-  {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
   },
@@ -359,10 +291,6 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   {
     "executable": false,
     "path": "docs/bootstrap/versioning.md",
-  },
-  {
-    "executable": false,
-    "path": "docs/bootstrap/claude-environment.md",
   },
   {
     "executable": false,
@@ -387,10 +315,6 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   },
   {
     "executable": false,
-    "path": "CLAUDE.md",
-  },
-  {
-    "executable": false,
     "path": "CONTRIBUTING.md",
   },
   {
@@ -454,22 +378,6 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
     "path": "scripts/codex-cloud/maintenance.sh",
   },
   {
-    "executable": true,
-    "path": "scripts/claude-cloud/setup.sh",
-  },
-  {
-    "executable": false,
-    "path": ".devcontainer/devcontainer.json",
-  },
-  {
-    "executable": true,
-    "path": "scripts/claude/setup-devcontainer.sh",
-  },
-  {
-    "executable": false,
-    "path": ".github/workflows/claude.yml",
-  },
-  {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
   },
@@ -480,10 +388,6 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": false,
     "path": "docs/bootstrap/versioning.md",
-  },
-  {
-    "executable": false,
-    "path": "docs/bootstrap/claude-environment.md",
   },
   {
     "executable": false,

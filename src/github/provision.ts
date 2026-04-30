@@ -31,6 +31,12 @@ interface GitHubOrganizationSettings {
   secret_scanning_push_protection_enabled_for_new_repositories: boolean;
 }
 
+interface GitHubLabel {
+  name: string;
+  color: string;
+  description: string | null;
+}
+
 interface ReviewerIdentity {
   type: "User" | "Team";
   id: number;
@@ -42,6 +48,54 @@ function requiredStatusChecksLabel(manifest: BootstrapManifest): string {
 
 function hasOrganizationPolicy(manifest: BootstrapManifest): boolean {
   return manifest.github.organization !== undefined;
+}
+
+function labelEndpoint(manifest: BootstrapManifest, labelName: string): string {
+  return `/repos/${manifest.project.owner}/${manifest.project.name}/labels/${encodeURIComponent(labelName)}`;
+}
+
+function labelNeedsUpdate(
+  desired: BootstrapManifest["github"]["issueLabels"][number],
+  existing: GitHubLabel | undefined
+): boolean {
+  if (!existing) {
+    return true;
+  }
+
+  return (
+    existing.name !== desired.name ||
+    existing.color.toLowerCase() !== desired.color.toLowerCase() ||
+    (existing.description ?? "") !== desired.description
+  );
+}
+
+async function getLabel(
+  client: GitHubClient,
+  manifest: BootstrapManifest,
+  labelName: string
+): Promise<GitHubLabel | undefined> {
+  return client.tryApi<GitHubLabel>("GET", labelEndpoint(manifest, labelName));
+}
+
+async function planIssueLabels(
+  manifest: BootstrapManifest,
+  client: GitHubClient
+): Promise<PlannedGitHubAction> {
+  const labelStates = await Promise.all(
+    manifest.github.issueLabels.map(async (label) => ({
+      label,
+      existing: await getLabel(client, manifest, label.name)
+    }))
+  );
+  const driftCount = labelStates.filter(({ label, existing }) => labelNeedsUpdate(label, existing)).length;
+
+  return {
+    id: driftCount > 0 ? "issue-labels" : "issue-labels-sync",
+    description:
+      driftCount > 0
+        ? `Create or update ${driftCount} issue label(s) for ${manifest.project.owner}/${manifest.project.name}.`
+        : `Issue labels for ${manifest.project.owner}/${manifest.project.name} already match the manifest.`
+  };
 }
 
 function organizationPayload(manifest: BootstrapManifest): Record<string, boolean | string> | undefined {
@@ -272,6 +326,10 @@ export async function planGitHub(
       {
         id: "environments",
         description: "Ensure dev, stage, and prod environments exist with reviewer gates and self-review prevention."
+      },
+      {
+        id: "issue-labels",
+        description: `Ensure ${manifest.github.issueLabels.length} issue labels exist for issue routing, risk, status, and review gates.`
       }
     );
     return actions;
@@ -321,6 +379,7 @@ export async function planGitHub(
     id: "environments",
     description: `Ensure environments dev, stage, and prod exist with ${manifest.github.reviewers.length} default reviewer target(s).`
   });
+  actions.push(await planIssueLabels(manifest, client));
 
   return actions;
 }
@@ -496,6 +555,27 @@ export async function applyGitHub(
       });
     }
   }
+
+  for (const label of manifest.github.issueLabels) {
+    const existingLabel = await getLabel(client, manifest, label.name);
+    const payload = {
+      name: label.name,
+      color: label.color,
+      description: label.description
+    };
+
+    if (existingLabel) {
+      if (labelNeedsUpdate(label, existingLabel)) {
+        await client.api("PATCH", labelEndpoint(manifest, existingLabel.name), payload);
+      }
+    } else {
+      await client.api("POST", `/repos/${manifest.project.owner}/${manifest.project.name}/labels`, payload);
+    }
+  }
+  actions.push({
+    id: "issue-labels",
+    description: `Synced ${manifest.github.issueLabels.length} issue labels.`
+  });
 
   return actions;
 }

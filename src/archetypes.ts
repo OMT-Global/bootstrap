@@ -164,7 +164,6 @@ function baseGitignore(manifest: BootstrapManifest): string {
     "coverage/",
     ".playwright-cli/",
     "tmp/",
-    ".claude/",
     ".bootstrap/",
     ".new-project-bootstrap/"
   ];
@@ -215,71 +214,6 @@ function repoAgents(manifest: BootstrapManifest): string {
     - Keep scope tight and favor predictable templates over clever scaffolding.
     - Treat \`project.bootstrap.yaml\` as the source of truth for repo governance, environments, CI policy, and home profile sync.
     - Review \`docs/bootstrap/onboarding.md\` before first merge to confirm reviewers, runner labels, and environment gates match the project.
-  `;
-}
-
-function repoClaude(manifest: BootstrapManifest): string {
-  const projectMapLines = [
-    "- `project.bootstrap.yaml`: source of truth for bootstrap policy",
-    "- `.github/workflows/`: generated fast and extended CI lanes",
-    ...additionalWorkflowLines(manifest),
-    "- `CONTRIBUTING.md`: human contributor workflow and local validation guidance",
-    "- `.github/PULL_REQUEST_TEMPLATE.md`: standard PR summary, issue link, and validation checklist",
-    manifest.agents.enableClaudeWebEnvironment
-      ? "- `scripts/claude-cloud/setup.sh`: first-party Claude Code on the web setup script"
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- `.github/workflows/claude.yml`: opt-in Claude GitHub Action for manual or `@claude` review flows"
-      : null,
-    manifest.agents.enableClaudeDevcontainer
-      ? "- `.devcontainer/devcontainer.json`: interactive Claude Code workspace baseline"
-      : null,
-    "- `.github/workflows/`: repo CI and review workflows",
-    "- `scripts/ci/`: bootstrap CI entrypoints when this repo uses the generated workflow lane",
-    manifest.agents.enableClaudeDevcontainer
-      ? "- `scripts/claude/setup-devcontainer.sh`: installs repo dependencies inside the devcontainer"
-      : null,
-    "- `.githooks/pre-commit`: branch and env-file guardrail when local hooks are bootstrap-managed",
-    "- `docs/bootstrap/onboarding.md`: operator checklist for repo/governance setup",
-    manifest.agents.enableClaudeWebEnvironment || manifest.agents.enableClaudeDevcontainer || manifest.agents.enableClaudeGitHubAction
-      ? "- `docs/bootstrap/claude-environment.md`: Claude setup guide for hosted, interactive, and GitHub-hosted use"
-      : null
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
-
-  const guardrailLines = [
-    requiredStatusCheckGuardrail(manifest),
-    `- Use one approval plus code owners on \`${manifest.project.defaultBranch}\` unless the manifest explicitly changes it.`,
-    "- Contributors and agents must use `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` for PR shape unless a repo intentionally replaces those files.",
-    "- `stage` and `prod` environments require reviewers and prevent self-review by default.",
-    "- Home-level Codex and Claude profile sync is managed by the bootstrap tool, not by ad-hoc manual edits.",
-    manifest.agents.enableClaudeWebEnvironment
-      ? "- Claude Code on the web should use the repo-managed setup script and keep network access limited by default."
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- The generated Claude GitHub Action is a separate review lane. It must not become a required status check."
-      : null,
-    manifest.ci.additionalWorkflows.length > 0
-      ? `- Repo-specific workflow lanes (${manifest.ci.additionalWorkflows.map((workflow) => `\`${workflow.path}\``).join(", ")}) stay adjunct to the standard PR and extended validation lanes.`
-      : null,
-    manifest.agents.enableClaudeDevcontainer
-      ? "- Treat the devcontainer as a trusted-repo workspace. Do not mount extra secrets beyond the persisted `~/.claude` profile unless you explicitly need them."
-      : null
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
-
-  return dedent`
-    # CLAUDE.md
-
-    ## Project Map
-
-${indentBlock(projectMapLines, 4)}
-
-    ## Guardrails
-
-${indentBlock(guardrailLines, 4)}
   `;
 }
 
@@ -334,51 +268,25 @@ function repoReadme(manifest: BootstrapManifest): string {
       Use \`docs/bootstrap/tier-a-ci-contract.md\` for the consumer interface and rollout pattern. Use \`docs/bootstrap/next-steps.md\` as the publish checklist before downstream repos pin to a tag or immutable SHA.
     `
     : "";
-  const claudeBullets = [
-    manifest.agents.enableClaudeWebEnvironment
-      ? "- First-party Claude Code on the web via `claude.ai/code` and `bash scripts/claude-cloud/setup.sh`"
-      : null,
-    manifest.agents.enableClaudeDevcontainer
-      ? "- Interactive containerized work via `.devcontainer/devcontainer.json` and `bash scripts/claude/setup-devcontainer.sh`"
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- Remote GitHub-hosted automation via `.github/workflows/claude.yml`"
-      : null
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
-
-  const claudeSection = claudeBullets.length > 0
-    ? dedent`
-
-      ## Claude Code
-
-      This bootstrap can prepare these Claude workflows:
-
-${indentBlock(claudeBullets, 6)}
-
-      The full checklist is in \`docs/bootstrap/claude-environment.md\`.
-    `
-    : "";
 
   return dedent`
     # ${displayName}
 
     ${manifest.project.description}
 
-    Use \`project.bootstrap.yaml\` as the control plane for repo-local scaffolding, GitHub governance, CI policy, and portable Codex/Claude profile sync. Plan first, then apply repo, GitHub, and home targets deliberately.
+    Use \`project.bootstrap.yaml\` as the control plane for repo-local scaffolding, GitHub governance, CI policy, and portable Codex profile sync. Plan first, then apply repo, GitHub, and home targets deliberately.
 
     ## What The Bootstrap Owns
 
-    - GitHub governance, environments, and optional org defaults
+    - GitHub governance, issue labels, environments, and optional org defaults
     ${manifest.ci.additionalWorkflows.length > 0
       ? "- Optional repo-specific workflow lanes declared in the manifest without replacing the standard CI frame"
       : ""}
-    - Repo-local \`AGENTS.md\`, \`CLAUDE.md\`, \`CONTRIBUTING.md\`, and pull request template guidance
+    - Repo-local \`AGENTS.md\`, \`CONTRIBUTING.md\`, and pull request template guidance
     - Fast PR checks plus heavier extended validation lanes
     ${manifest.release.enabled ? "- SemVer release automation with floating major/minor compatibility tags" : ""}
     ${manifest.ci.aiAttestation.enabled ? "- Optional signed AI attestation workflow backed by the control-plane reusable contract" : ""}
-    - Portable Codex and Claude home profile sync
+    - Portable Codex home profile sync
     - Operator docs for onboarding, hosted agents, and follow-up setup
 
     ## Quickstart
@@ -391,9 +299,23 @@ ${indentBlock(claudeBullets, 6)}
     bootstrap doctor --manifest ./project.bootstrap.yaml
     \`\`\`
 
+    Daily fleet reconciliation should start in plan mode and write a report:
+
+    \`\`\`sh
+    bootstrap reconcile --workspace-root ~/src --report bootstrap-reconcile.json
+    \`\`\`
+
+    To discover GitHub repos first, add \`--org ${manifest.project.owner}\`; repositories without local bootstrapped checkouts are skipped in the report.
+
+    Once the repo allowlist is trusted, run repo file drift through draft PRs:
+
+    \`\`\`sh
+    bootstrap reconcile --workspace-root ~/src --apply-repo --create-pr --report bootstrap-reconcile.json
+    \`\`\`
+
     ${manifest.github.organization
       ? `If \`github.organization\` is set and \`${manifest.project.owner}\` is an organization, \`bootstrap apply github\` also reconciles org defaults for new repos.`
-      : ""}
+      : ""} It also syncs \`github.issueLabels\` for issue routing, risk, status, and review gates.
 
     ${requiredStatusCheckConfirmationLead(manifest)} and require approval from someone other than the most recent pusher. ${autoMergeReadinessPolicy()}
 
@@ -413,7 +335,6 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
 ${indentBlock(releaseSection, 4)}
 ${indentBlock(aiAttestationSection, 4)}
 ${indentBlock(tierASection, 4)}
-${indentBlock(claudeSection, 4)}
 
     ## Repository URL
 
@@ -478,6 +399,10 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
     - [ ] Contributor or PR guidance changes are reflected in \`CONTRIBUTING.md\`, \`.github/PULL_REQUEST_TEMPLATE.md\`, and \`docs/bootstrap/onboarding.md\` when applicable
     - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
+
+    ## Merge Automation
+
+    - [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
 
     ## Notes
 
@@ -582,7 +507,6 @@ function detectSecretsScript(): string {
       'sk-proj-'
       'AKIA[0-9A-Z]{16}'
       'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY'
-      'ANTHROPIC_API_KEY='
       'OPENAI_API_KEY='
       'SUDO_PASS='
       'BW_SESSION='
@@ -841,383 +765,6 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
   `;
 }
 
-function claudeCloudSetupScript(manifest: BootstrapManifest): string {
-  const installBody =
-    manifest.archetype.kind === "python-service"
-      ? dedent`
-          if ! command -v gh >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y gh
-          fi
-
-          if [[ -f pyproject.toml ]]; then
-            if [[ ! -d .venv ]]; then
-              python3 -m venv .venv
-            fi
-            source .venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            python -m pip install -e ".[dev]" >/dev/null 2>&1 || python -m pip install -e . >/dev/null 2>&1 || true
-          fi
-        `
-      : manifest.archetype.kind === "generic-empty"
-        ? dedent`
-            if ! command -v gh >/dev/null 2>&1; then
-              apt-get update
-              apt-get install -y gh
-            fi
-
-            if [[ -f package-lock.json ]]; then
-              npm ci --prefer-offline --no-audit --no-fund
-            elif [[ -f pnpm-lock.yaml ]]; then
-              corepack enable
-              pnpm install --frozen-lockfile
-            elif [[ -f yarn.lock ]]; then
-              corepack enable
-              yarn install --immutable
-            elif [[ -f package.json ]]; then
-              npm install --prefer-offline --no-audit --no-fund
-            fi
-
-            if [[ -f pyproject.toml ]]; then
-              if [[ ! -d .venv ]]; then
-                python3 -m venv .venv
-              fi
-              source .venv/bin/activate
-              python -m pip install --upgrade pip setuptools wheel
-              python -m pip install -e ".[dev]" >/dev/null 2>&1 || python -m pip install -e . >/dev/null 2>&1 || true
-            fi
-          `
-        : dedent`
-            if ! command -v gh >/dev/null 2>&1; then
-              apt-get update
-              apt-get install -y gh
-            fi
-
-            if [[ -f package-lock.json ]]; then
-              npm ci --prefer-offline --no-audit --no-fund
-            elif [[ -f pnpm-lock.yaml ]]; then
-              corepack enable
-              pnpm install --frozen-lockfile
-            elif [[ -f yarn.lock ]]; then
-              corepack enable
-              yarn install --immutable
-            elif [[ -f package.json ]]; then
-              npm install --prefer-offline --no-audit --no-fund
-            fi
-          `;
-
-  return `${dedent`
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    ${installBody}
-  `}\n`;
-}
-
-function claudeDevcontainerFeatures(manifest: BootstrapManifest): Record<string, Record<string, string>> {
-  const features: Record<string, Record<string, string>> = {
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {}
-  };
-
-  if (
-    manifest.archetype.kind === "nextjs-web" ||
-    manifest.archetype.kind === "node-ts-service" ||
-    manifest.archetype.kind === "generic-empty"
-  ) {
-    features["ghcr.io/devcontainers/features/node:1"] = {
-      version: manifest.ci.nodeVersion
-    };
-  }
-
-  if (manifest.archetype.kind === "python-service" || manifest.archetype.kind === "generic-empty") {
-    features["ghcr.io/devcontainers/features/python:1"] = {
-      version: manifest.ci.pythonVersion
-    };
-  }
-
-  return features;
-}
-
-function claudeDevcontainer(manifest: BootstrapManifest): string {
-  return `${JSON.stringify(
-    {
-      name: `${manifest.project.name} Claude Code`,
-      image: "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
-      remoteUser: "vscode",
-      updateRemoteUserUID: true,
-      features: claudeDevcontainerFeatures(manifest),
-      mounts: ["source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind"],
-      postCreateCommand: "bash scripts/claude/setup-devcontainer.sh",
-      customizations: {
-        vscode: {
-          settings: {
-            "terminal.integrated.defaultProfile.linux": "bash"
-          }
-        }
-      }
-    },
-    null,
-    2
-  )}\n`;
-}
-
-function claudeDevcontainerSetupScript(manifest: BootstrapManifest): string {
-  const installBody =
-    manifest.archetype.kind === "python-service"
-      ? dedent`
-          git config --global --add safe.directory "$(pwd)"
-
-          if [[ -f pyproject.toml ]]; then
-            if [[ ! -d .venv ]]; then
-              python3 -m venv .venv
-            fi
-
-            source .venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            python -m pip install -e ".[dev]" >/dev/null 2>&1 || python -m pip install -e . >/dev/null 2>&1 || true
-          fi
-        `
-      : manifest.archetype.kind === "generic-empty"
-        ? dedent`
-            git config --global --add safe.directory "$(pwd)"
-
-            if [[ -f package-lock.json ]]; then
-              npm ci --prefer-offline --no-audit --no-fund
-            elif [[ -f pnpm-lock.yaml ]]; then
-              corepack enable
-              pnpm install --frozen-lockfile
-            elif [[ -f yarn.lock ]]; then
-              corepack enable
-              yarn install --immutable
-            elif [[ -f package.json ]]; then
-              npm install --prefer-offline --no-audit --no-fund
-            fi
-
-            if [[ -f pyproject.toml ]]; then
-              if [[ ! -d .venv ]]; then
-                python3 -m venv .venv
-              fi
-
-              source .venv/bin/activate
-              python -m pip install --upgrade pip setuptools wheel
-              python -m pip install -e ".[dev]" >/dev/null 2>&1 || python -m pip install -e . >/dev/null 2>&1 || true
-            fi
-          `
-        : dedent`
-            git config --global --add safe.directory "$(pwd)"
-
-            if [[ -f package-lock.json ]]; then
-              npm ci --prefer-offline --no-audit --no-fund
-            elif [[ -f pnpm-lock.yaml ]]; then
-              corepack enable
-              pnpm install --frozen-lockfile
-            elif [[ -f yarn.lock ]]; then
-              corepack enable
-              yarn install --immutable
-            elif [[ -f package.json ]]; then
-              npm install --prefer-offline --no-audit --no-fund
-            fi
-          `;
-
-  return `${dedent`
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    ${installBody}
-  `}\n`;
-}
-
-function claudeWorkflow(manifest: BootstrapManifest): string {
-  return dedent`
-    name: Claude Code
-
-    on:
-      workflow_dispatch:
-        inputs:
-          prompt:
-            description: 'Task for Claude to run in this repository'
-            required: true
-            default: 'Review the current branch changes for bugs, CI regressions, and missing tests.'
-      issue_comment:
-        types: [created]
-      pull_request_review_comment:
-        types: [created]
-      pull_request_review:
-        types: [submitted]
-
-    concurrency:
-      group: claude-\${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-      cancel-in-progress: false
-
-    permissions:
-      contents: read
-
-    jobs:
-      claude:
-        if: |
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-          (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-          (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        permissions:
-          contents: write
-          pull-requests: write
-          issues: write
-          id-token: write
-          actions: read
-        steps:
-          - name: Checkout repository
-            uses: actions/checkout@v6
-            with:
-              fetch-depth: 1
-
-          - name: Require Claude auth
-            env:
-              ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
-            run: |
-              if [[ -z "\${ANTHROPIC_API_KEY}" ]]; then
-                echo "Missing repository secret ANTHROPIC_API_KEY. Run /install-github-app in Claude Code or add the secret before using this workflow." >&2
-                exit 1
-              fi
-
-          - name: Run Claude Code
-            uses: anthropics/claude-code-action@v1
-            with:
-              anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
-              track_progress: true
-              use_sticky_comment: true
-              additional_permissions: "actions: read"
-              prompt: |
-                REPO: \${{ github.repository }}
-                DEFAULT BRANCH: ${manifest.project.defaultBranch}
-
-                Use CLAUDE.md and docs/bootstrap/onboarding.md as repo policy context.
-                ${
-                  manifest.github.requiredStatusChecks.length === 1
-                    ? `Keep ${primaryRequiredStatusCheck(manifest)} as the single required PR status check.`
-                    : `Keep required PR status checks aligned with ${requiredStatusChecksPlain(manifest)}.`
-                }
-                Preserve the split fast and extended validation model.
-                Shell-safe jobs may use \`[self-hosted, synology, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`.
-                Docker, service-container, browser, and \`container:\` jobs stay on GitHub-hosted runners.
-                Prefer the smallest safe change and add tests for behavior changes.
-
-                MANUAL TASK: \${{ github.event.inputs.prompt }}
-                If this is not a manual run, ignore the MANUAL TASK line and respond to the current \`@claude\` request instead.
-  `;
-}
-
-function claudeEnvironmentDoc(manifest: BootstrapManifest): string {
-  const featureList = [
-    manifest.agents.enableClaudeWebEnvironment ? "- First-party hosted sessions at `claude.ai/code`" : null,
-    manifest.agents.enableClaudeDevcontainer
-      ? "- Interactive containerized work with `.devcontainer/devcontainer.json`"
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- GitHub-hosted automation with `.github/workflows/claude.yml`"
-      : null
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
-
-  const webSection = manifest.agents.enableClaudeWebEnvironment
-    ? dedent`
-
-      ## Claude Code On The Web
-
-      - Hosted entrypoint: \`https://claude.ai/code\`
-      - Repo: \`${manifest.project.owner}/${manifest.project.name}\`
-      - Setup script: \`bash scripts/claude-cloud/setup.sh\`
-      - Network access: start with limited access; only expand it when a task truly needs more than registries and GitHub
-      - Environment variables: configure them in the Claude environment UI as \`.env\`-style key-value pairs
-      - GitHub integration: connect GitHub, install the Claude GitHub App, then pick this repo as an allowed target
-      - Repo guidance: Claude on the web reads \`CLAUDE.md\` from the repository
-
-      ## Teleport And Remote Sessions
-
-      - Start a hosted task from the terminal with \`claude --remote "your task"\`
-      - Pull a hosted session back into the terminal with \`claude --teleport\`
-      - Hosted tasks clone the default branch unless you specify a branch in the prompt
-      - Teleport requires a clean git state and the same repository/account pairing
-    `
-    : "";
-
-  const devcontainerSection = manifest.agents.enableClaudeDevcontainer
-    ? dedent`
-
-      ## Interactive Devcontainer
-
-      - Open the repo in a devcontainer-capable editor and reopen in container.
-      - The container installs the Claude Code feature plus repo dependencies via \`bash scripts/claude/setup-devcontainer.sh\`.
-      - \`~/.claude\` is mounted into the container so Claude Code auth persists between sessions.
-      - Only use this with trusted repositories. Mounted Claude credentials are available inside the container.
-    `
-    : "";
-
-  const actionSection = manifest.agents.enableClaudeGitHubAction
-    ? dedent`
-
-      ## GitHub Action
-
-      - Workflow file: \`.github/workflows/claude.yml\`
-      - Runner: \`ubuntu-latest\`
-      - Triggers:
-        - manual \`workflow_dispatch\`
-        - PR or issue comments containing \`@claude\`
-        - review comments or review bodies containing \`@claude\`
-      - Auth:
-        - preferred: run \`/install-github-app\` in Claude Code as a repo admin
-        - fallback: add a repository secret named \`ANTHROPIC_API_KEY\`
-    `
-    : "";
-
-  const guardrailLines = [
-    manifest.agents.enableClaudeGitHubAction
-      ? `- Keep the Claude workflow out of the required PR check set. The required checks are ${requiredStatusChecksDisplay(manifest)}.`
-      : null,
-    manifest.agents.enableClaudeWebEnvironment
-      ? "- Prefer Claude Code on the web for long-running async review or fix tasks; use the devcontainer when you need a local interactive container."
-      : null,
-    manifest.agents.enableClaudeDevcontainer
-      ? "- Treat the devcontainer as a trusted-repo workspace because the mounted `~/.claude` profile is available inside the container."
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- Do not relax the action to allow non-write users on public repos unless you intentionally accept the prompt-injection risk."
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- Keep Claude review and automation on GitHub-hosted runners; do not move it onto the self-hosted shell-only fleet."
-      : null
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
-
-  return dedent`
-    # Claude Environment
-
-    Claude Code on the web provides a first-party cloud environment comparable to Codex Web. This bootstrap prepares the hosted path first, then adds optional local and GitHub-native alternatives:
-
-${indentBlock(featureList, 4)}
-
-    ## Project
-
-${indentBlock(projectIdentityLines(manifest), 4)}
-${indentBlock(webSection, 4)}
-${indentBlock(devcontainerSection, 4)}
-${indentBlock(actionSection, 4)}
-
-    ## Guardrails
-
-${indentBlock(guardrailLines, 4)}
-
-    ## Project
-
-    - Default branch: \`${manifest.project.defaultBranch}\`
-  `;
-}
-
 function fastChecksScript(manifest: BootstrapManifest): string {
   const body =
     manifest.archetype.kind === "python-service"
@@ -1402,10 +949,8 @@ function workflowPaths(manifest: BootstrapManifest): { app: string[]; ci: string
   const common = [
     "project.bootstrap.yaml",
     "AGENTS.md",
-    "CLAUDE.md",
     "CONTRIBUTING.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
-    ".devcontainer/**",
     ".githooks/**",
     ".github/workflows/**",
     "scripts/**",
@@ -1612,6 +1157,7 @@ ${indentBlock(setupSteps(manifest), 6)}
               require_line "## Governing Issue"
               require_line "## Validation"
               require_line "## Bootstrap Governance"
+              require_line "## Merge Automation"
               require_line "## Notes"
 
               if grep -Eiq 'Closes #$|#<issue-number>|what changed|why it changed|notable tradeoffs|migration or rollout notes|follow-up work if any' <<<"$PR_BODY"; then
@@ -1626,6 +1172,11 @@ ${indentBlock(setupSteps(manifest), 6)}
 
               if ! grep -Eiq '(^|[[:space:]-])(\\[[xX]\\]|not run|not applicable|n/a)' <<<"$PR_BODY"; then
                 echo "PR body must include validation evidence, a checked validation item, or a reason validation was not run."
+                failed=1
+              fi
+
+              if ! grep -Eiq '(auto-merge is enabled|auto-merge enabled|auto merge is enabled|auto merge enabled|auto-merge.*(unavailable|unsafe|blocked|not supported)|auto merge.*(unavailable|unsafe|blocked|not supported))' <<<"$PR_BODY"; then
+                echo "PR body must state that auto-merge is enabled or explain why it is unavailable or unsafe."
                 failed=1
               fi
 
@@ -1809,22 +1360,6 @@ ${indentBlock(setupSteps(manifest), 6)}
 
 function onboardingDoc(manifest: BootstrapManifest): string {
   const releaseTags = releaseTagExamples(manifest);
-  const claudeSetupLines = [
-    manifest.agents.enableClaudeWebEnvironment
-      ? "- First-party Claude web sessions should use `bash scripts/claude-cloud/setup.sh` in `claude.ai/code`."
-      : null,
-    manifest.agents.enableClaudeDevcontainer
-      ? "- Interactive Claude work is prepared through `.devcontainer/devcontainer.json`."
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- GitHub-hosted Claude automation lives in `.github/workflows/claude.yml` and is intentionally separate from the required PR checks."
-      : null,
-    manifest.agents.enableClaudeGitHubAction
-      ? "- Finish GitHub-side auth by running `/install-github-app` in Claude Code or adding `ANTHROPIC_API_KEY` as a repo secret."
-      : null
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
 
   return dedent`
     # Bootstrap Onboarding
@@ -1872,6 +1407,15 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
     - To retrofit an existing bootstrapped repo, add \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` to \`repo.managedPaths\` when that repo restricts managed paths, then run \`bootstrap apply repo --manifest ./project.bootstrap.yaml\`.
     - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
 
+    ## Fleet Reconciliation
+
+    - Run \`bootstrap reconcile --workspace-root ~/src --report bootstrap-reconcile.json\` first; this is plan-only and does not write files.
+    - Add \`--org ${manifest.project.owner}\` when OpenClaw should enumerate GitHub repos first; missing local checkouts or repos without \`project.bootstrap.yaml\` are skipped and reported.
+    - Use \`--repo <name...>\` as the initial allowlist when onboarding daily OpenClaw reconciliation.
+    - Use \`--apply-repo --create-pr\` for unattended repo drift so generated changes go through draft PRs instead of default-branch pushes.
+    - Use \`--apply-github\` only after the report shape is trusted because it mutates repository settings, environments, branch protection, and labels directly through the GitHub API.
+    - Dirty target worktrees are blocked and reported instead of being overwritten.
+
 ${manifest.release.enabled
   ? indentBlock(
       dedent`
@@ -1901,11 +1445,7 @@ ${manifest.ci.aiAttestation.enabled
     ## Home Profiles
 
     - Run \`bootstrap apply home --manifest ./project.bootstrap.yaml\` after reviewing the bundled profile content.
-    - The bootstrap manages portable Codex and Claude assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
-
-    ## Claude Setup
-
-${indentBlock(claudeSetupLines, 4)}
+    - The bootstrap manages portable Codex assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
   `;
 }
 
@@ -1956,11 +1496,6 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       path: "AGENTS.md",
       reason: "Repo-local Codex instructions",
       contents: `${repoAgents(manifest)}\n`
-    },
-    {
-      path: "CLAUDE.md",
-      reason: "Repo-local Claude instructions",
-      contents: `${repoClaude(manifest)}\n`
     },
     {
       path: "CONTRIBUTING.md",
@@ -2067,40 +1602,6 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: codexCloudMaintenanceScript(manifest),
       executable: true
     },
-    ...(manifest.agents.enableClaudeWebEnvironment
-      ? [
-          {
-            path: "scripts/claude-cloud/setup.sh",
-            reason: "Claude cloud setup script",
-            contents: claudeCloudSetupScript(manifest),
-            executable: true
-          }
-        ]
-      : []),
-    ...(manifest.agents.enableClaudeDevcontainer
-      ? [
-          {
-            path: ".devcontainer/devcontainer.json",
-            reason: "Claude interactive devcontainer",
-            contents: claudeDevcontainer(manifest)
-          },
-          {
-            path: "scripts/claude/setup-devcontainer.sh",
-            reason: "Claude devcontainer dependency bootstrap",
-            contents: claudeDevcontainerSetupScript(manifest),
-            executable: true
-          }
-        ]
-      : []),
-    ...(manifest.agents.enableClaudeGitHubAction
-      ? [
-          {
-            path: ".github/workflows/claude.yml",
-            reason: "Claude GitHub automation workflow",
-            contents: `${claudeWorkflow(manifest)}\n`
-          }
-        ]
-      : []),
     {
       path: "docs/bootstrap/onboarding.md",
       reason: "Operator onboarding checklist",
@@ -2120,17 +1621,6 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
-    ...(manifest.agents.enableClaudeWebEnvironment ||
-    manifest.agents.enableClaudeDevcontainer ||
-    manifest.agents.enableClaudeGitHubAction
-      ? [
-          {
-            path: "docs/bootstrap/claude-environment.md",
-            reason: "Claude environment setup guide",
-            contents: `${claudeEnvironmentDoc(manifest)}\n`
-          }
-        ]
-      : [])
   ];
 
   switch (manifest.archetype.kind) {

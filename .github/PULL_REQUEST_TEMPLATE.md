@@ -19,6 +19,10 @@ Closes #
 - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
 - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
+## Merge Automation
+
+- [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
+
 ## Notes
 
 -

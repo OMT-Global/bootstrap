@@ -167,7 +167,7 @@ function repoDisablesAutoMerge(manifest: BootstrapManifest, repo: GitHubRepo | u
   return Boolean(
     manifest.github.autoMerge &&
       repo &&
-      isPrivateVisibility(repo.visibility) &&
+      isPrivateVisibility(manifest.project.visibility) &&
       repo.allow_auto_merge === false
   );
 }

@@ -6,6 +6,7 @@ interface GitHubRepo {
   full_name: string;
   private: boolean;
   visibility: string;
+  allow_auto_merge?: boolean;
 }
 
 interface GitHubOwner {
@@ -14,6 +15,9 @@ interface GitHubOwner {
 }
 
 interface GitHubOrganizationSettings {
+  plan?: {
+    name?: string;
+  };
   default_repository_permission: string;
   members_can_create_repositories: boolean;
   members_can_create_public_repositories: boolean;
@@ -142,6 +146,40 @@ function isEnvironmentProtectionPlanLimit(error: unknown): boolean {
   return message.includes("Failed to create the environment protection rule. Please ensure the billing plan supports");
 }
 
+function isPrivateVisibility(visibility: BootstrapManifest["project"]["visibility"] | string): boolean {
+  return visibility === "private" || visibility === "internal";
+}
+
+function organizationPlanDisablesPrivateRepoAutoMerge(
+  manifest: BootstrapManifest,
+  owner: GitHubOwner,
+  organization?: GitHubOrganizationSettings
+): boolean {
+  return (
+    manifest.github.autoMerge &&
+    owner.type === "Organization" &&
+    isPrivateVisibility(manifest.project.visibility) &&
+    organization?.plan?.name?.toLowerCase() === "free"
+  );
+}
+
+function repoDisablesAutoMerge(manifest: BootstrapManifest, repo: GitHubRepo | undefined): boolean {
+  return Boolean(
+    manifest.github.autoMerge &&
+      repo &&
+      isPrivateVisibility(manifest.project.visibility) &&
+      repo.allow_auto_merge === false
+  );
+}
+
+function autoMergeFallbackAction(): PlannedGitHubAction {
+  return {
+    id: "auto-merge-plan-limited",
+    description:
+      "Use fallback merge readiness because GitHub auto-merge is unavailable for this private repository on the current plan: required checks must pass or be intentionally skipped, approvals and conversation resolution must be satisfied, no blocking review state may remain, and a maintainer performs the merge manually."
+  };
+}
+
 function environmentBranchPolicy(
   manifest: BootstrapManifest,
   environmentName: "dev" | "stage" | "prod"
@@ -235,6 +273,17 @@ async function getOrganizationSettings(
   return client.api<GitHubOrganizationSettings>("GET", `/orgs/${owner}`);
 }
 
+async function getOptionalOrganizationSettings(
+  client: GitHubClient,
+  owner: string
+): Promise<GitHubOrganizationSettings | undefined> {
+  try {
+    return await getOrganizationSettings(client, owner);
+  } catch {
+    return undefined;
+  }
+}
+
 async function getRepo(
   client: GitHubClient,
   owner: string,
@@ -289,8 +338,14 @@ export async function planGitHub(
   const repo = await getRepo(client, manifest.project.owner, manifest.project.name);
   const owner = await getOwner(client, manifest.project.owner);
 
+  let organization: GitHubOrganizationSettings | undefined;
   if (owner.type === "Organization" && hasOrganizationPolicy(manifest)) {
-    const organization = await getOrganizationSettings(client, manifest.project.owner);
+    organization = await getOrganizationSettings(client, manifest.project.owner);
+  } else if (owner.type === "Organization") {
+    organization = await getOptionalOrganizationSettings(client, manifest.project.owner);
+  }
+
+  if (owner.type === "Organization" && hasOrganizationPolicy(manifest) && organization) {
     actions.push({
       id: organizationNeedsUpdate(manifest, organization) ? "organization" : "organization-sync",
       description: organizationNeedsUpdate(manifest, organization)
@@ -310,6 +365,12 @@ export async function planGitHub(
       ? `Update repo settings for ${manifest.project.owner}/${manifest.project.name}.`
       : `Create repo ${manifest.project.owner}/${manifest.project.name}.`
   });
+  if (
+    repoDisablesAutoMerge(manifest, repo) ||
+    organizationPlanDisablesPrivateRepoAutoMerge(manifest, owner, organization)
+  ) {
+    actions.push(autoMergeFallbackAction());
+  }
   actions.push({
     id: "branch-protection",
     description: `Ensure ${manifest.project.defaultBranch} requires ${manifest.github.requiredApprovals} approval(s), last-push approval, code owners, stale-review dismissal, linear history, and status checks ${requiredStatusChecksLabel(manifest)}.`
@@ -337,6 +398,11 @@ export async function applyGitHub(
   const repo = await getRepo(client, manifest.project.owner, manifest.project.name);
   const owner = await getOwner(client, manifest.project.owner);
   const actions: PlannedGitHubAction[] = [];
+
+  let organization: GitHubOrganizationSettings | undefined;
+  if (owner.type === "Organization") {
+    organization = await getOptionalOrganizationSettings(client, manifest.project.owner);
+  }
 
   if (owner.type === "Organization" && hasOrganizationPolicy(manifest)) {
     const payload = organizationPayload(manifest);
@@ -401,6 +467,14 @@ export async function applyGitHub(
       id: "repo-update",
       description: `Updated repo settings for ${manifest.project.owner}/${manifest.project.name}.`
     });
+  }
+
+  const syncedRepo = await getRepo(client, manifest.project.owner, manifest.project.name);
+  if (
+    repoDisablesAutoMerge(manifest, syncedRepo) ||
+    organizationPlanDisablesPrivateRepoAutoMerge(manifest, owner, organization)
+  ) {
+    actions.push(autoMergeFallbackAction());
   }
 
   try {

@@ -186,6 +186,102 @@ describe("GitHub provisioning", () => {
     );
   });
 
+  it("plans fallback merge readiness when GitHub Free cannot auto-merge private repos", async () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme",
+        visibility: "private"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        autoMerge: true
+      }
+    });
+
+    const actions = await planGitHub(
+      manifest,
+      {
+        isAvailable: async () => true,
+        isAuthenticated: async () => true,
+        tryApi: async (method: string, endpoint: string) => {
+          if (endpoint === "/repos/acme/example") {
+            return {
+              name: "example",
+              full_name: "acme/example",
+              private: true,
+              visibility: "private",
+              allow_auto_merge: false
+            };
+          }
+          return undefined;
+        },
+        api: async (method: string, endpoint: string) => {
+          if (endpoint === "/users/acme") {
+            return { login: "acme", type: "Organization" };
+          }
+          if (endpoint === "/orgs/acme") {
+            return { plan: { name: "free" } };
+          }
+          return {};
+        }
+      } as never
+    );
+
+    const fallback = actions.find((action) => action.id === "auto-merge-plan-limited");
+    expect(fallback?.description).toContain("fallback merge readiness");
+    expect(fallback?.description).toContain("maintainer performs the merge manually");
+  });
+
+  it("does not plan fallback merge readiness when making a private repo public", async () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme",
+        visibility: "public"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        autoMerge: true
+      }
+    });
+
+    const actions = await planGitHub(
+      manifest,
+      {
+        isAvailable: async () => true,
+        isAuthenticated: async () => true,
+        tryApi: async (method: string, endpoint: string) => {
+          if (endpoint === "/repos/acme/example") {
+            return {
+              name: "example",
+              full_name: "acme/example",
+              private: true,
+              visibility: "private",
+              allow_auto_merge: false
+            };
+          }
+          return undefined;
+        },
+        api: async (method: string, endpoint: string) => {
+          if (endpoint === "/users/acme") {
+            return { login: "acme", type: "Organization" };
+          }
+          if (endpoint === "/orgs/acme") {
+            return { plan: { name: "free" } };
+          }
+          return {};
+        }
+      } as never
+    );
+
+    expect(actions.map((action) => action.id)).not.toContain("auto-merge-plan-limited");
+  });
+
   it("falls back to bare environments when private-repo protection rules are unsupported", async () => {
     const manifest = normalizeManifest({
       project: {
@@ -255,6 +351,47 @@ describe("GitHub provisioning", () => {
       }),
       {}
     ]);
+  });
+
+  it("reports fallback merge readiness after apply when auto-merge remains disabled", async () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "example",
+        owner: "acme",
+        visibility: "private"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        createRepo: false,
+        autoMerge: true
+      }
+    });
+
+    const client = {
+      isAvailable: async () => true,
+      isAuthenticated: async () => true,
+      tryApi: async () => ({
+        name: "example",
+        full_name: "acme/example",
+        private: true,
+        visibility: "private",
+        allow_auto_merge: false
+      }),
+      api: async (method: string, endpoint: string) => {
+        if (endpoint === "/users/acme") {
+          return { login: "acme", type: "Organization" };
+        }
+        if (endpoint === "/orgs/acme") {
+          return { plan: { name: "free" } };
+        }
+        return {};
+      }
+    };
+
+    const actions = await applyGitHub(manifest, client as never);
+    expect(actions.map((action) => action.id)).toContain("auto-merge-plan-limited");
   });
 
   it("defaults GitHub review protection to require approval from someone other than the last pusher", () => {

@@ -41,6 +41,7 @@ describe("renderManagedFiles", () => {
       expect(prTemplate?.contents).toContain("## Governing Issue");
       expect(prTemplate?.contents).toContain("## Validation");
       expect(prTemplate?.contents).toContain("## Bootstrap Governance");
+      expect(prTemplate?.contents).toContain("fallback merge-readiness policy applies");
       expect(prTemplate?.contents).toContain("## Notes");
 
       expect(files.some((file) => file.path === "CLAUDE.md")).toBe(false);
@@ -94,13 +95,15 @@ describe("renderManagedFiles", () => {
     expect(readme?.contents).toContain("# Bootstrap");
     expect(readme?.contents).toContain("- Repository: `acme/bootstrap`");
     expect(readme?.contents).toContain("require approval from someone other than the most recent pusher");
+    expect(readme?.contents).toContain("fallback merge-readiness policy");
     expect(onboarding?.contents).toContain("- Product name: `Bootstrap`");
     expect(onboarding?.contents).toContain("- Repository: `acme/bootstrap`");
     expect(onboarding?.contents).toContain(
       "require one approval, code owner review, and approval from someone other than the most recent pusher"
     );
     expect(onboarding?.contents).toContain("PR Fast CI validates the required PR description sections");
-    expect(onboarding?.contents).toContain("merge via automation after checks pass");
+    expect(onboarding?.contents).toContain("allow auto-merge` are enabled when the GitHub plan supports them");
+    expect(onboarding?.contents).toContain("Fallback merge readiness requires");
   });
 
   it("documents required PR template enforcement in generated agent instructions", () => {

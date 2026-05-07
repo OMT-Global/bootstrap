@@ -27,3 +27,4 @@ Contributions should start from a GitHub issue that is assigned or explicitly en
 - Link the governing issue with a closing keyword when the PR should close it.
 - PR authors may not approve their own PRs.
 - A healthy PR should converge toward auto-merge after required checks pass or are intentionally skipped, approvals are satisfied, and no blocking review state remains.
+- When GitHub plan limits make auto-merge unavailable for a private repo, use the fallback merge-readiness policy: required checks pass or are intentionally skipped, approvals and conversation resolution are satisfied, no blocking review state remains, and a maintainer performs the merge manually.

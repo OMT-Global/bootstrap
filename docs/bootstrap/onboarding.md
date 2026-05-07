@@ -14,7 +14,8 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Confirm branch protection points at the `CI Gate` status.
 - Confirm `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` are present as the required contributor and PR guidance surfaces.
 - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before CI Gate can pass.
-- Confirm `delete branch on merge` and `allow auto-merge` are enabled so reviewed PRs merge via automation after checks pass.
+- Confirm `delete branch on merge` and `allow auto-merge` are enabled when the GitHub plan supports them; otherwise record the plan-limit evidence and use the fallback merge-readiness policy.
+- Fallback merge readiness requires passing or intentionally skipped required checks, satisfied approvals, resolved conversations, no blocking review state, and a manual maintainer merge.
 
 ## Org Governance
 

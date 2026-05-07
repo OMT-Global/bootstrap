@@ -51,6 +51,18 @@ function requiredStatusCheckConfirmation(manifest: BootstrapManifest): string {
     : `Confirm branch protection points at the expected required status checks: ${requiredStatusChecksDisplay(manifest)}.`;
 }
 
+function requiredStatusCheckConfirmationLead(manifest: BootstrapManifest): string {
+  return requiredStatusCheckConfirmation(manifest).replace(/\.$/, "");
+}
+
+function autoMergeReadinessPolicy(): string {
+  return "When GitHub plan limits make auto-merge unavailable for a private repo, use the fallback merge-readiness policy: required checks pass or are intentionally skipped, approvals and conversation resolution are satisfied, no blocking review state remains, and a maintainer performs the merge manually.";
+}
+
+function autoMergeOnboardingConfirmation(): string {
+  return "Confirm `delete branch on merge` and `allow auto-merge` are enabled when the GitHub plan supports them; otherwise record the plan-limit evidence and use the fallback merge-readiness policy.";
+}
+
 function additionalWorkflowLines(manifest: BootstrapManifest): string[] {
   return manifest.ci.additionalWorkflows.map(
     (workflow) => `- \`${workflow.path}\`: ${workflow.purpose}`
@@ -194,6 +206,7 @@ function repoAgents(manifest: BootstrapManifest): string {
     - Worker agents should act from assigned or explicitly enabled issues, not free-roaming backlog grabs.
     - If an agent authors a PR, that same agent may not approve it. This is a hard rule.
     - Healthy PRs should converge toward auto-merge once required checks are green or intentionally skipped, approvals are satisfied, and no blocking review state remains.
+    - ${autoMergeReadinessPolicy()}
     - PRs should link and close their governing issue where possible so issue state remains the durable work contract.
 
     ## Local Conventions
@@ -304,7 +317,7 @@ function repoReadme(manifest: BootstrapManifest): string {
       ? `If \`github.organization\` is set and \`${manifest.project.owner}\` is an organization, \`bootstrap apply github\` also reconciles org defaults for new repos.`
       : ""} It also syncs \`github.issueLabels\` for issue routing, risk, status, and review gates.
 
-    ${requiredStatusCheckConfirmation(manifest)} and require approval from someone other than the most recent pusher.
+    ${requiredStatusCheckConfirmationLead(manifest)} and require approval from someone other than the most recent pusher. ${autoMergeReadinessPolicy()}
 
     ## Contributor And PR Guidance
 
@@ -360,6 +373,7 @@ function contributingDoc(manifest: BootstrapManifest): string {
     - Link the governing issue with a closing keyword when the PR should close it.
     - PR authors may not approve their own PRs.
     - A healthy PR should converge toward auto-merge after required checks pass or are intentionally skipped, approvals are satisfied, and no blocking review state remains.
+    - ${autoMergeReadinessPolicy()}
   `;
 }
 
@@ -383,6 +397,7 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
 
     - [ ] Changes are scoped to the linked issue
     - [ ] Contributor or PR guidance changes are reflected in \`CONTRIBUTING.md\`, \`.github/PULL_REQUEST_TEMPLATE.md\`, and \`docs/bootstrap/onboarding.md\` when applicable
+    - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
     ## Merge Automation
@@ -1361,7 +1376,8 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - ${requiredStatusCheckConfirmation(manifest)}
     - Confirm \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` are present as the required contributor and PR guidance surfaces.
     - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before ${primaryRequiredStatusCheck(manifest)} can pass.
-    - Confirm \`delete branch on merge\` and \`allow auto-merge\` are enabled so reviewed PRs merge via automation after checks pass.
+    - ${autoMergeOnboardingConfirmation()}
+    - Fallback merge readiness requires passing or intentionally skipped required checks, satisfied approvals, resolved conversations, no blocking review state, and a manual maintainer merge.
 
 ${indentBlock(organizationGovernanceSection(manifest), 4)}
 ${indentBlock(additionalWorkflowSection(manifest), 4)}

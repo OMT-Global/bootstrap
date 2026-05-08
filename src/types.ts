@@ -69,6 +69,7 @@ export interface BootstrapManifest {
     reviewers: string[];
     codeowners: CodeownerRule[];
     issueLabels: IssueLabelConfig[];
+    flowGovernance: boolean;
     organization?: OrganizationConfig;
     autoMerge: boolean;
     deleteBranchOnMerge: boolean;

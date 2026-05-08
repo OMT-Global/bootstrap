@@ -225,4 +225,34 @@ describe("renderManagedFiles", () => {
     expect(onboarding?.contents).toContain("Do not repurpose them as the required PR gate");
     expect(prWorkflow?.contents).toContain("name: CI Gate");
   });
+
+  it("renders flow governance labels and templates when enabled", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "flow-enabled-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      github: {
+        flowGovernance: true
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
+    const implementation = files.find((file) => file.path === ".github/ISSUE_TEMPLATE/implementation.yml");
+    const blocker = files.find((file) => file.path === ".github/ISSUE_TEMPLATE/flow_blocker.yml");
+
+    expect(manifest.github.issueLabels.some((label) => label.name === "state:needs-repair")).toBe(true);
+    expect(manifest.github.issueLabels.some((label) => label.name === "lane:daedalus")).toBe(true);
+    expect(prTemplate?.contents).toContain("\n## Flow Contract\n");
+    expect(prTemplate?.contents).toContain("\n- [ ] Auto-merge is appropriate when gates pass");
+    expect(prTemplate?.contents).not.toContain("    ## Flow Contract");
+    expect(implementation?.contents).toContain("Autonomy class");
+    expect(implementation?.contents).toContain("Recommended lane");
+    expect(blocker?.contents).toContain("Required unblock action");
+  });
+
 });

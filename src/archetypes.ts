@@ -377,6 +377,28 @@ function contributingDoc(manifest: BootstrapManifest): string {
   `;
 }
 
+function flowPullRequestSection(manifest: BootstrapManifest): string {
+  if (!manifest.github.flowGovernance) {
+    return "";
+  }
+
+  return dedent`
+    ## Flow Contract
+
+    - Owner lane:
+    - Repair owner:
+    - Autonomy class:
+    - Risk class:
+
+    ## Flow Merge Readiness
+
+    - [ ] Every blocker has a next actor and next action
+    - [ ] No active blocking requested changes remain
+    - [ ] Non-author approval is present when required
+    - [ ] Auto-merge is appropriate when gates pass
+  `;
+}
+
 function pullRequestTemplate(manifest: BootstrapManifest): string {
   return dedent`
     ## Summary
@@ -400,6 +422,8 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
     - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
+${flowPullRequestSection(manifest)}
+
     ## Merge Automation
 
     - [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
@@ -407,6 +431,121 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
     ## Notes
 
     -
+  `;
+}
+
+function implementationIssueTemplate(): string {
+  return dedent`
+    name: Implementation work
+    description: Durable contract for autonomous or review-gated implementation work
+    title: ""
+    labels:
+      - state:intake
+    body:
+      - type: textarea
+        id: problem
+        attributes:
+          label: Problem / intent
+          description: What should change and why?
+        validations:
+          required: true
+      - type: textarea
+        id: acceptance
+        attributes:
+          label: Acceptance criteria
+          description: Concrete conditions that make this done.
+        validations:
+          required: true
+      - type: textarea
+        id: validation
+        attributes:
+          label: Validation commands
+          description: Commands or checks the worker should run.
+        validations:
+          required: true
+      - type: dropdown
+        id: autonomy
+        attributes:
+          label: Autonomy class
+          options:
+            - Class 0 - Observe only
+            - Class 1 - Safe autonomous
+            - Class 2 - Review-gated autonomous
+            - Class 3 - Human decision required
+            - Class 4 - Forbidden unattended
+        validations:
+          required: true
+      - type: dropdown
+        id: lane
+        attributes:
+          label: Recommended lane
+          options:
+            - Pheidon
+            - Apollo
+            - Ares
+            - Daedalus
+            - Hephaestus
+            - Hermes
+            - Human
+        validations:
+          required: true
+  `;
+}
+
+function flowBlockerIssueTemplate(): string {
+  return dedent`
+    name: Flow blocker
+    description: Record a blocked unit of work with a next actor and unblock target
+    title: "Flow blocker: "
+    labels:
+      - state:blocked-infra
+    body:
+      - type: textarea
+        id: blocked_item
+        attributes:
+          label: Blocked issue/PR
+          description: Link the blocked item.
+        validations:
+          required: true
+      - type: dropdown
+        id: blocked_type
+        attributes:
+          label: Blocker type
+          options:
+            - Human decision
+            - Infrastructure
+            - Scope
+            - Auth/credential
+            - External dependency
+        validations:
+          required: true
+      - type: textarea
+        id: evidence
+        attributes:
+          label: Evidence
+          description: Logs, checks, review comments, or command output proving the block.
+        validations:
+          required: true
+      - type: dropdown
+        id: next_actor
+        attributes:
+          label: Next actor
+          options:
+            - Pheidon
+            - Apollo
+            - Ares
+            - Daedalus
+            - Hephaestus
+            - Hermes
+            - Human
+        validations:
+          required: true
+      - type: textarea
+        id: unblock
+        attributes:
+          label: Required unblock action
+        validations:
+          required: true
   `;
 }
 
@@ -1528,6 +1667,20 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Pull request guidance template",
       contents: `${pullRequestTemplate(manifest)}\n`
     },
+    ...(manifest.github.flowGovernance
+      ? [
+          {
+            path: ".github/ISSUE_TEMPLATE/implementation.yml",
+            reason: "Flow implementation issue template",
+            contents: `${implementationIssueTemplate()}\n`
+          },
+          {
+            path: ".github/ISSUE_TEMPLATE/flow_blocker.yml",
+            reason: "Flow blocker issue template",
+            contents: `${flowBlockerIssueTemplate()}\n`
+          }
+        ]
+      : []),
     {
       path: ".github/workflows/pr-fast-ci.yml",
       reason: "Fast pull request workflow",

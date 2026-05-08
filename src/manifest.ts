@@ -44,6 +44,33 @@ export const DEFAULT_ISSUE_LABELS: IssueLabelConfig[] = [
   { name: "review:legal", color: "c2e0c6", description: "Needs legal review." },
   { name: "review:accessibility", color: "e99695", description: "Needs accessibility review." },
   { name: "review:release", color: "f9d0c4", description: "Needs release review." }
+ ];
+
+export const DEFAULT_FLOW_LABELS: IssueLabelConfig[] = [
+  { name: "lane:apollo", color: "8dd3c7", description: "Scope, backlog, synthesis, and issue-contract work." },
+  { name: "lane:ares", color: "fb8072", description: "Validation, adversarial review, and test-pressure work." },
+  { name: "lane:daedalus", color: "80b1d3", description: "Implementation and substantive code repair work." },
+  { name: "lane:hephaestus", color: "fdb462", description: "CI, build, lockfile, mergeability, and artifact work." },
+  { name: "lane:hermes", color: "bebada", description: "macOS/platform-native or special execution work." },
+  { name: "lane:pheidon", color: "b3de69", description: "Orchestration, gate, governance, and controller action." },
+  { name: "state:intake", color: "d9d9d9", description: "Captured but not yet planned." },
+  { name: "state:ready-for-planning", color: "ccebc5", description: "Ready for planning refinement." },
+  { name: "state:ready-for-implementation", color: "bc80bd", description: "Ready for assigned implementation." },
+  { name: "state:needs-review", color: "ffffb3", description: "Needs review before advancing." },
+  { name: "state:needs-repair", color: "fb8072", description: "Needs repair before advancing." },
+  { name: "state:repairing", color: "fdb462", description: "Repair is actively assigned." },
+  { name: "state:ready-for-approval", color: "b3de69", description: "Pheidon/gate approval is next." },
+  { name: "state:waiting-checks", color: "ffffb3", description: "Waiting on checks or merge queue." },
+  { name: "state:auto-merge-armed", color: "b3de69", description: "Auto-merge is enabled." },
+  { name: "state:blocked-human", color: "e41a1c", description: "Human decision required." },
+  { name: "state:blocked-infra", color: "984ea3", description: "Infrastructure/tooling/auth blocker." },
+  { name: "state:blocked-scope", color: "ff7f00", description: "Scope or acceptance criteria blocker." },
+  { name: "state:paused", color: "999999", description: "Intentionally paused." },
+  { name: "autonomy:observe", color: "d9d9d9", description: "Class 0; observe only." },
+  { name: "autonomy:safe", color: "b3de69", description: "Class 1; safe autonomous work allowed." },
+  { name: "autonomy:review-gated", color: "ffffb3", description: "Class 2; review-gated autonomous work." },
+  { name: "autonomy:human-required", color: "fb8072", description: "Class 3; human decision required." },
+  { name: "autonomy:forbidden-unattended", color: "000000", description: "Class 4; forbidden unattended." }
 ];
 
 const environmentSchema = z.object({
@@ -113,6 +140,7 @@ const manifestSchema = z.object({
       reviewers: z.array(z.string()).optional(),
       codeowners: z.array(codeownerSchema).optional(),
       issueLabels: z.array(issueLabelSchema).optional(),
+      flowGovernance: z.boolean().optional(),
       organization: organizationSchema.optional(),
       autoMerge: z.boolean().optional(),
       deleteBranchOnMerge: z.boolean().optional(),
@@ -245,13 +273,24 @@ function normalizeCodeowners(
 }
 
 function normalizeIssueLabels(
-  labels: z.input<typeof issueLabelSchema>[] | undefined
+  labels: z.input<typeof issueLabelSchema>[] | undefined,
+  flowGovernance: boolean
 ): IssueLabelConfig[] {
-  return (labels ?? DEFAULT_ISSUE_LABELS).map((label) => ({
-    name: label.name.trim(),
-    color: label.color.replace(/^#/, "").toLowerCase(),
-    description: label.description.trim()
-  }));
+  const base = labels ?? DEFAULT_ISSUE_LABELS;
+  const merged = flowGovernance ? [...base, ...DEFAULT_FLOW_LABELS] : base;
+  const seen = new Set<string>();
+  return merged
+    .filter((label) => {
+      const name = label.name.trim();
+      if (seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    })
+    .map((label) => ({
+      name: label.name.trim(),
+      color: label.color.replace(/^#/, "").toLowerCase(),
+      description: label.description.trim()
+    }));
 }
 
 function normalizeOrganization(
@@ -304,6 +343,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
   const github = parsed.github ?? {};
   const organization = normalizeOrganization(github.organization);
   const repoFeatures = github.repoFeatures ?? {};
+  const flowGovernance = github.flowGovernance ?? false;
   const environments = parsed.environments ?? {};
 
   const defaultEnvironment = (overrides?: z.input<typeof environmentSchema>): EnvironmentConfig => ({
@@ -337,7 +377,8 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       createRepo: github.createRepo ?? true,
       reviewers,
       codeowners: normalizeCodeowners(github.codeowners ?? [], reviewers),
-      issueLabels: normalizeIssueLabels(github.issueLabels),
+      issueLabels: normalizeIssueLabels(github.issueLabels, flowGovernance),
+      flowGovernance,
       ...(organization ? { organization } : {}),
       autoMerge: github.autoMerge ?? true,
       deleteBranchOnMerge: github.deleteBranchOnMerge ?? true,

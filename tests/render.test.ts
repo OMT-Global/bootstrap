@@ -57,7 +57,7 @@ describe("renderManagedFiles", () => {
       const contributing = files.find((file) => file.path === "CONTRIBUTING.md");
       expect(contributing?.contents).toContain("Use `.github/PULL_REQUEST_TEMPLATE.md`");
 
-      expect(prTemplate?.contents).toContain("Closes #");
+      expect(prTemplate?.contents).toContain("Refs #<issue-number>");
     });
   }
 
@@ -272,10 +272,16 @@ describe("renderManagedFiles", () => {
     const blocker = files.find((file) => file.path === ".github/ISSUE_TEMPLATE/flow_blocker.yml");
 
     expect(manifest.github.issueLabels.some((label) => label.name === "state:needs-repair")).toBe(true);
+    expect(manifest.github.issueLabels.some((label) => label.name === "state:implementing")).toBe(true);
     expect(manifest.github.issueLabels.some((label) => label.name === "lane:daedalus")).toBe(true);
+    expect(manifest.github.issueLabels.some((label) => label.name === "kind:governance")).toBe(true);
+    expect(manifest.github.issueLabels.some((label) => label.name === "priority:p2")).toBe(true);
     expect(prTemplate?.contents).toContain("\n## Flow Contract\n");
     expect(prTemplate?.contents).toContain("\n- [ ] Auto-merge is appropriate when gates pass");
+    expect(prTemplate?.contents).toMatch(/^## Summary/m);
+    expect(prTemplate?.contents).toMatch(/^## Merge Automation/m);
     expect(prTemplate?.contents).not.toContain("    ## Flow Contract");
+    expect(prTemplate?.contents).not.toContain("    ## Summary");
     expect(implementation?.contents).toContain("Autonomy class");
     expect(implementation?.contents).toContain("Recommended lane");
     expect(blocker?.contents).toContain("Required unblock action");

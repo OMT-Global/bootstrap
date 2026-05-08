@@ -407,7 +407,7 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
 
     ## Governing Issue
 
-    Closes #
+    Refs #<issue-number>  <!-- use Closes/Fixes/Resolves only when this PR fully completes the issue; otherwise use Refs/Part of, owner/repo#123, a full GitHub issue URL, or explain why no issue is linked -->
 
     ## Validation
 
@@ -422,7 +422,7 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
     - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
-${flowPullRequestSection(manifest)}
+${indentBlock(flowPullRequestSection(manifest), 4)}
 
     ## Merge Automation
 

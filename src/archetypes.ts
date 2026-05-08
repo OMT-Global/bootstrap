@@ -1347,7 +1347,7 @@ ${indentBlock(setupSteps(manifest), 6)}
                 failed=1
               fi
 
-              if ! grep -Eiq '(^|[[:space:]-])(((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?)[[:space:]]+|part[[:space:]]+of[[:space:]]+)(#|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#|https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/)[0-9]+|https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+|no issue is linked|no linked issue|without a linked issue|no governing issue)' <<<"$PR_BODY"; then
+              if ! grep -Eiq '(^|[[:space:]-])(((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part[[:space:]]+of)[[:space:]]+)?(#|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/)[0-9]+|no issue is linked|no linked issue|without a linked issue|no governing issue)' <<<"$PR_BODY"; then
                 echo "PR body must close/link an issue or explicitly explain why no issue is linked."
                 failed=1
               fi

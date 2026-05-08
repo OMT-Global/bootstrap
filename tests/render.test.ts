@@ -35,9 +35,9 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("['self-hosted', 'synology'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");
-      expect(prWorkflow?.contents).toContain("resolve[sd]?|refs?");
-      expect(prWorkflow?.contents).toContain("part[[:space:]]+of");
-      expect(prWorkflow?.contents).toContain("https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+");
+      expect(prWorkflow?.contents).toContain("refs?|part[[:space:]]+of");
+      expect(prWorkflow?.contents).toContain("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#");
+      expect(prWorkflow?.contents).toContain("https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/");
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
       const dependabot = files.find((file) => file.path === ".github/dependabot.yml");

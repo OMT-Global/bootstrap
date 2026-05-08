@@ -5,6 +5,7 @@ import { z } from "zod";
 import { readTextIfExists } from "./lib/fs.js";
 import type {
   AdditionalWorkflowConfig,
+  DependabotConfig,
   BootstrapManifest,
   CodeownerRule,
   DefaultRepositoryPermission,
@@ -114,6 +115,21 @@ const additionalWorkflowSchema = z.object({
   purpose: z.string().min(1)
 });
 
+const dependabotEcosystemSchema = z.object({
+  packageEcosystem: z.enum(["npm", "github-actions", "docker"]),
+  directory: z.string().min(1).optional(),
+  interval: z.enum(["daily", "weekly", "monthly"]).optional(),
+  groupMinorAndPatch: z.boolean().optional(),
+  ignoreMajorUpdates: z.boolean().optional()
+});
+
+const dependabotSchema = z.object({
+  enabled: z.boolean().optional(),
+  securityUpdates: z.boolean().optional(),
+  versionUpdates: z.boolean().optional(),
+  ecosystems: z.array(dependabotEcosystemSchema).optional()
+});
+
 const manifestSchema = z.object({
   version: z.literal(1).optional(),
   project: z.object({
@@ -172,6 +188,7 @@ const manifestSchema = z.object({
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
       additionalWorkflows: z.array(additionalWorkflowSchema).optional(),
+      dependabot: dependabotSchema.optional(),
       aiAttestation: z
         .object({
           enabled: z.boolean().optional(),
@@ -335,6 +352,28 @@ function normalizeAdditionalWorkflows(
   }));
 }
 
+function normalizeDependabot(
+  dependabot: z.input<typeof dependabotSchema> | undefined
+): DependabotConfig {
+  const ecosystems = dependabot?.ecosystems ?? [
+    { packageEcosystem: "npm" as const, directory: "/", interval: "weekly" as const },
+    { packageEcosystem: "github-actions" as const, directory: "/", interval: "weekly" as const }
+  ];
+
+  return {
+    enabled: dependabot?.enabled ?? true,
+    securityUpdates: dependabot?.securityUpdates ?? true,
+    versionUpdates: dependabot?.versionUpdates ?? true,
+    ecosystems: ecosystems.map((ecosystem) => ({
+      packageEcosystem: ecosystem.packageEcosystem,
+      directory: (ecosystem.directory ?? "/").replace(/\\/g, "/"),
+      interval: ecosystem.interval ?? "weekly",
+      groupMinorAndPatch: ecosystem.groupMinorAndPatch ?? ecosystem.packageEcosystem === "npm",
+      ignoreMajorUpdates: ecosystem.ignoreMajorUpdates ?? true
+    }))
+  };
+}
+
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
@@ -406,6 +445,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
       additionalWorkflows: normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows),
+      dependabot: normalizeDependabot(parsed.ci?.dependabot),
       aiAttestation: {
         enabled: parsed.ci?.aiAttestation?.enabled ?? false,
         artifactName: parsed.ci?.aiAttestation?.artifactName ?? "ai-attestation",

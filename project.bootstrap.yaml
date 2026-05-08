@@ -155,6 +155,21 @@ ci:
     - release-readiness
   nightlyCron: 0 7 * * *
   additionalWorkflows: []
+  dependabot:
+    enabled: true
+    securityUpdates: true
+    versionUpdates: true
+    ecosystems:
+      - packageEcosystem: npm
+        directory: /
+        interval: weekly
+        groupMinorAndPatch: true
+        ignoreMajorUpdates: true
+      - packageEcosystem: github-actions
+        directory: /
+        interval: weekly
+        groupMinorAndPatch: false
+        ignoreMajorUpdates: true
   aiAttestation:
     enabled: true
     artifactName: ai-attestation

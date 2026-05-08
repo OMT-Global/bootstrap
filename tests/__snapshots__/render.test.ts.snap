@@ -48,6 +48,10 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": false,
+    "path": ".github/dependabot.yml",
+  },
+  {
+    "executable": false,
     "path": ".github/workflows/release-tag.yml",
   },
   {
@@ -142,6 +146,10 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": false,
     "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/dependabot.yml",
   },
   {
     "executable": false,
@@ -250,6 +258,10 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": false,
+    "path": ".github/dependabot.yml",
+  },
+  {
+    "executable": false,
     "path": ".github/workflows/release-tag.yml",
   },
   {
@@ -344,6 +356,10 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": false,
     "path": ".github/workflows/extended-validation.yml",
+  },
+  {
+    "executable": false,
+    "path": ".github/dependabot.yml",
   },
   {
     "executable": false,

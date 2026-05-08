@@ -37,12 +37,17 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
+      const dependabot = files.find((file) => file.path === ".github/dependabot.yml");
       expect(prTemplate?.contents).toContain("## Summary");
       expect(prTemplate?.contents).toContain("## Governing Issue");
       expect(prTemplate?.contents).toContain("## Validation");
       expect(prTemplate?.contents).toContain("## Bootstrap Governance");
       expect(prTemplate?.contents).toContain("fallback merge-readiness policy applies");
       expect(prTemplate?.contents).toContain("## Notes");
+      expect(dependabot?.contents).toContain('package-ecosystem: "npm"');
+      expect(dependabot?.contents).toContain('package-ecosystem: "github-actions"');
+      expect(dependabot?.contents).toContain("npm-minor-patch");
+      expect(dependabot?.contents).toContain("version-update:semver-major");
 
       expect(files.some((file) => file.path === "CLAUDE.md")).toBe(false);
       expect(files.some((file) => file.path === ".github/workflows/claude.yml")).toBe(false);
@@ -55,6 +60,27 @@ describe("renderManagedFiles", () => {
       expect(prTemplate?.contents).toContain("Closes #");
     });
   }
+
+  it("can disable Dependabot version update rendering", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "quiet-deps",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      ci: {
+        dependabot: {
+          versionUpdates: false
+        }
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    expect(files.some((file) => file.path === ".github/dependabot.yml")).toBe(false);
+    expect(manifest.ci.dependabot.securityUpdates).toBe(true);
+  });
 
   it("uses the primary required status check name in the generated PR workflow", () => {
     const manifest = normalizeManifest({

@@ -53,7 +53,7 @@ export const DEFAULT_FLOW_LABELS: IssueLabelConfig[] = [
   { name: "lane:daedalus", color: "80b1d3", description: "Implementation and substantive code repair work." },
   { name: "lane:hephaestus", color: "fdb462", description: "CI, build, lockfile, mergeability, and artifact work." },
   { name: "lane:hermes", color: "bebada", description: "macOS/platform-native or special execution work." },
-  { name: "lane:pheidon", color: "b3de69", description: "Orchestration, gate, governance, and controller action." },
+  { name: "lane:pheidon", color: "b3de69", description: "Orchestration, gate, governance, and explicit controller action." },
   { name: "state:intake", color: "d9d9d9", description: "Captured but not yet planned." },
   { name: "state:ready-for-planning", color: "ccebc5", description: "Ready for Apollo/Pheidon planning refinement." },
   { name: "state:ready-for-implementation", color: "bc80bd", description: "Issue has enough contract to assign implementation." },

@@ -395,7 +395,7 @@ function flowPullRequestSection(manifest: BootstrapManifest): string {
     - [ ] Every blocker has a next actor and next action
     - [ ] No active blocking requested changes remain
     - [ ] Non-author approval is present when required
-    - [ ] Auto-merge is appropriate when gates pass
+    - [ ] PR author enabled auto-merge where GitHub allows it, or recorded why it is unavailable/unsafe
   `;
 }
 
@@ -419,14 +419,14 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
 
     - [ ] Changes are scoped to the linked issue
     - [ ] Contributor or PR guidance changes are reflected in \`CONTRIBUTING.md\`, \`.github/PULL_REQUEST_TEMPLATE.md\`, and \`docs/bootstrap/onboarding.md\` when applicable
-    - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
+    - [ ] PR author enabled auto-merge where GitHub allows it, or GitHub plan-limit evidence/unavailable reason is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
 ${indentBlock(flowPullRequestSection(manifest), 4)}
 
     ## Merge Automation
 
-    - [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
+    - [ ] PR author enabled auto-merge with \`gh pr merge --auto --squash\`, or the reason it is unavailable/unsafe is noted below
 
     ## Notes
 
@@ -1357,8 +1357,8 @@ ${indentBlock(setupSteps(manifest), 6)}
                 failed=1
               fi
 
-              if ! grep -Eiq '(auto-merge is enabled|auto-merge enabled|auto merge is enabled|auto merge enabled|auto-merge.*(unavailable|unsafe|blocked|not supported)|auto merge.*(unavailable|unsafe|blocked|not supported))' <<<"$PR_BODY"; then
-                echo "PR body must state that auto-merge is enabled or explain why it is unavailable or unsafe."
+              if ! grep -Eiq 'auto-merge (is )?(enabled|armed)|enabled auto-merge|gh pr merge --auto|auto_merge|auto merge enabled|auto-merge (is )?(unavailable|unsafe|not available|not safe)|plan-limit|fallback merge-readiness' <<<"$PR_BODY"; then
+                echo "PR body must state that the PR author enabled auto-merge, or explain why auto-merge is unavailable/unsafe."
                 failed=1
               fi
 

@@ -1357,7 +1357,8 @@ ${indentBlock(setupSteps(manifest), 6)}
                 failed=1
               fi
 
-              if ! grep -Eiq 'auto-merge (is )?(enabled|armed)|enabled auto-merge|gh pr merge --auto|auto_merge|auto merge enabled|auto-merge (is )?(unavailable|unsafe|not available|not safe)|plan-limit|fallback merge-readiness' <<<"$PR_BODY"; then
+              auto_merge_evidence="$(grep -Eiv '^[[:space:]]*-[[:space:]]+\\[[[:space:]]\\][[:space:]]' <<<"$PR_BODY" || true)"
+              if ! grep -Eiq 'auto-merge (is )?(enabled|armed)|enabled auto-merge|gh pr merge --auto|auto_merge|auto merge enabled|auto-merge (is )?(unavailable|unsafe|not available|not safe)|plan-limit|fallback merge-readiness' <<<"$auto_merge_evidence"; then
                 echo "PR body must state that the PR author enabled auto-merge, or explain why auto-merge is unavailable/unsafe."
                 failed=1
               fi

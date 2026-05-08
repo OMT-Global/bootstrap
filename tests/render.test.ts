@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { renderManagedFiles } from "../src/archetypes.js";
 import { normalizeManifest } from "../src/manifest.js";
 
+const autoMergeEvidencePattern =
+  /auto-merge (is )?(enabled|armed)|enabled auto-merge|gh pr merge --auto|auto_merge|auto merge enabled|auto-merge (is )?(unavailable|unsafe|not available|not safe)|plan-limit|fallback merge-readiness/i;
+
+function autoMergeEvidenceLines(body: string): string {
+  return body
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*-\s+\[\s\]\s/.test(line))
+    .join("\n");
+}
+
 describe("renderManagedFiles", () => {
   const archetypes = ["nextjs-web", "node-ts-service", "python-service", "generic-empty"] as const;
 
@@ -38,6 +48,8 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("refs?|part[[:space:]]+of");
       expect(prWorkflow?.contents).toContain("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#");
       expect(prWorkflow?.contents).toContain("https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/");
+      expect(prWorkflow?.contents).toContain("auto_merge_evidence=");
+      expect(prWorkflow?.contents).toContain('<<<"$auto_merge_evidence"');
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
       const dependabot = files.find((file) => file.path === ".github/dependabot.yml");
@@ -103,6 +115,34 @@ describe("renderManagedFiles", () => {
     const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
     expect(prWorkflow?.contents).toContain("name: test");
     expect(prWorkflow?.contents).not.toContain("name: CI Gate");
+  });
+
+  it("does not accept untouched auto-merge checklist text as merge automation evidence", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "merge-gated-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
+    const templateBody = prTemplate?.contents ?? "";
+
+    expect(autoMergeEvidencePattern.test(templateBody)).toBe(true);
+    expect(autoMergeEvidencePattern.test(autoMergeEvidenceLines(templateBody))).toBe(false);
+
+    const bodyWithAuthorStatement = `${templateBody}\nAuto-merge is unavailable because review is pending.`;
+    expect(autoMergeEvidencePattern.test(autoMergeEvidenceLines(bodyWithAuthorStatement))).toBe(true);
+
+    const bodyWithCheckedChecklist = templateBody.replace(
+      "- [ ] PR author enabled auto-merge with",
+      "- [x] PR author enabled auto-merge with"
+    );
+    expect(autoMergeEvidencePattern.test(autoMergeEvidenceLines(bodyWithCheckedChecklist))).toBe(true);
   });
 
   it("uses the display name in docs while keeping the repository slug visible", () => {

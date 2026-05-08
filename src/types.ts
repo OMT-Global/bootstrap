@@ -30,6 +30,21 @@ export interface AdditionalWorkflowConfig {
   purpose: string;
 }
 
+export interface DependabotEcosystemConfig {
+  packageEcosystem: "npm" | "github-actions" | "docker";
+  directory: string;
+  interval: "daily" | "weekly" | "monthly";
+  groupMinorAndPatch: boolean;
+  ignoreMajorUpdates: boolean;
+}
+
+export interface DependabotConfig {
+  enabled: boolean;
+  securityUpdates: boolean;
+  versionUpdates: boolean;
+  ecosystems: DependabotEcosystemConfig[];
+}
+
 export interface OrganizationSecurityDefaults {
   dependabotAlerts: boolean;
   dependabotSecurityUpdates: boolean;
@@ -97,6 +112,7 @@ export interface BootstrapManifest {
     extendedChecks: string[];
     nightlyCron: string;
     additionalWorkflows: AdditionalWorkflowConfig[];
+    dependabot: DependabotConfig;
     aiAttestation: {
       enabled: boolean;
       artifactName: string;

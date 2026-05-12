@@ -154,6 +154,48 @@ const customScriptsSchema = z.object({
   releaseVerification: z.string().min(1).optional()
 });
 
+const DEFAULT_RELEASE_CHANGELOG_CATEGORIES = [
+  { title: "Features", labels: ["type:feature"] },
+  { title: "Fixes", labels: ["type:bug"] },
+  { title: "Operations", labels: ["area:infra", "area:qa"] },
+  { title: "Documentation", labels: ["kind:docs", "documentation"] }
+];
+
+const releaseChangelogCategorySchema = z.object({
+  title: z.string().min(1),
+  labels: z.array(z.string().min(1)).min(1)
+});
+
+const releaseChangelogSchema = z.object({
+  enabled: z.boolean().optional(),
+  mode: z.enum(["github-generated-notes"]).optional(),
+  categories: z.array(releaseChangelogCategorySchema).optional()
+});
+
+const releaseVersionSchema = z.object({
+  type: z.enum(["npm", "python", "container"]),
+  path: z.string().min(1)
+});
+
+const releaseArtifactSchema = z.object({
+  directory: z.string().min(1).optional(),
+  checksum: z.enum(["sha256", "none"]).optional(),
+  sbom: z.enum(["required", "optional", "disabled"]).optional()
+});
+
+const releaseContainerPublishSchema = z.object({
+  image: z.string().min(1),
+  updateMajorTag: z.boolean().optional(),
+  updateMinorTag: z.boolean().optional(),
+  updateLatestTag: z.boolean().optional()
+});
+
+const releasePublishSchema = z.object({
+  githubReleaseAssets: z.boolean().optional(),
+  packages: z.array(z.string().min(1)).optional(),
+  containers: z.array(releaseContainerPublishSchema).optional()
+});
+
 const manifestSchema = z.object({
   version: z.literal(1).optional(),
   project: z.object({
@@ -240,7 +282,11 @@ const manifestSchema = z.object({
       updateMajorTag: z.boolean().optional(),
       updateMinorTag: z.boolean().optional(),
       reusableWorkflowRepo: z.string().min(1).optional(),
-      reusableWorkflowRef: z.string().min(1).optional()
+      reusableWorkflowRef: z.string().min(1).optional(),
+      changelog: releaseChangelogSchema.optional(),
+      versions: z.array(releaseVersionSchema).optional(),
+      artifacts: releaseArtifactSchema.optional(),
+      publish: releasePublishSchema.optional()
     })
     .optional(),
   agents: z
@@ -524,7 +570,29 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       updateMajorTag: parsed.release?.updateMajorTag ?? true,
       updateMinorTag: parsed.release?.updateMinorTag ?? true,
       reusableWorkflowRepo: parsed.release?.reusableWorkflowRepo ?? `${parsed.project.owner}/bootstrap`,
-      reusableWorkflowRef: parsed.release?.reusableWorkflowRef ?? "refs/heads/main"
+      reusableWorkflowRef: parsed.release?.reusableWorkflowRef ?? "refs/heads/main",
+      changelog: {
+        enabled: parsed.release?.changelog?.enabled ?? true,
+        mode: parsed.release?.changelog?.mode ?? "github-generated-notes",
+        categories: parsed.release?.changelog?.categories ?? DEFAULT_RELEASE_CHANGELOG_CATEGORIES
+      },
+      versions: parsed.release?.versions ?? [],
+      artifacts: {
+        directory: parsed.release?.artifacts?.directory ?? "dist/release",
+        checksum: parsed.release?.artifacts?.checksum ?? "sha256",
+        sbom: parsed.release?.artifacts?.sbom ?? "optional"
+      },
+      publish: {
+        githubReleaseAssets: parsed.release?.publish?.githubReleaseAssets ?? true,
+        packages: parsed.release?.publish?.packages ?? [],
+        containers:
+          parsed.release?.publish?.containers?.map((container) => ({
+            image: container.image,
+            updateMajorTag: container.updateMajorTag ?? true,
+            updateMinorTag: container.updateMinorTag ?? true,
+            updateLatestTag: container.updateLatestTag ?? false
+          })) ?? []
+      }
     },
     agents: {
       manageCodexHome: parsed.agents?.manageCodexHome ?? true,

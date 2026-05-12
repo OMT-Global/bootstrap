@@ -13,10 +13,30 @@ on:
         required: false
         default: "scripts/ci/run-release-verification.sh"
         type: string
+      version-script:
+        description: Optional release version validation/update script path relative to the repository root
+        required: false
+        default: "scripts/ci/run-release-version.sh"
+        type: string
+      build-script:
+        description: Optional release artifact build script path relative to the repository root
+        required: false
+        default: "scripts/ci/run-release-build.sh"
+        type: string
       publish-script:
         description: Release publish script path relative to the repository root
         required: false
         default: "scripts/ci/run-release-publish.sh"
+        type: string
+      release-notes-file:
+        description: Optional release notes file path produced before GitHub Release creation
+        required: false
+        default: "dist/release/RELEASE_NOTES.md"
+        type: string
+      default-branch:
+        description: Default release branch for new minor and major releases
+        required: false
+        default: "main"
         type: string
       create-github-release:
         description: Create a GitHub release after publish succeeds
@@ -52,6 +72,56 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Derive release metadata
+        id: release_meta
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        run: |
+          set -euo pipefail
+
+          prefix="${TAG_PREFIX}"
+          tag="${RELEASE_TAG}"
+          escaped_prefix="$(printf '%s' "${prefix}" | sed 's/[][(){}.^$*+?|\\-]/\\&/g')"
+
+          if [[ ! "${tag}" =~ ^${escaped_prefix}([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tag '${tag}' does not match the required exact SemVer pattern '${prefix}X.Y.Z'." >&2
+            exit 1
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[3]}"
+          commit="$(git rev-list -n 1 "${tag}")"
+
+          git fetch origin "+refs/heads/*:refs/remotes/origin/*" --prune
+
+          default_ref="origin/${DEFAULT_BRANCH}"
+          maintenance_ref="origin/release/${major}.${minor}"
+          allowed=false
+          if git merge-base --is-ancestor "${commit}" "${default_ref}"; then
+            allowed=true
+          elif git show-ref --verify --quiet "refs/remotes/${maintenance_ref}" &&
+             git merge-base --is-ancestor "${commit}" "${maintenance_ref}"; then
+            allowed=true
+          fi
+
+          if [[ "${allowed}" != "true" ]]; then
+            echo "Release tag '${tag}' must point at ${default_ref} or ${maintenance_ref}." >&2
+            exit 1
+          fi
+
+          previous_tag="$(git tag --list "${prefix}[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | grep -v "^${tag}$" | head -n 1 || true)"
+
+          {
+            echo "tag=${tag}"
+            echo "major=${major}"
+            echo "minor=${minor}"
+            echo "patch=${patch}"
+            echo "commit=${commit}"
+            echo "previous_tag=${previous_tag}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Verify release contract
         run: |
           if [[ ! -x "${{ inputs.verify-script }}" ]]; then
@@ -59,6 +129,20 @@ jobs:
             exit 1
           fi
           bash "${{ inputs.verify-script }}"
+      - name: Run release version hook
+        run: |
+          if [[ -x "${{ inputs.version-script }}" ]]; then
+            bash "${{ inputs.version-script }}"
+          else
+            echo "No executable release version hook is configured: ${{ inputs.version-script }}"
+          fi
+      - name: Build release artifacts
+        run: |
+          if [[ -x "${{ inputs.build-script }}" ]]; then
+            bash "${{ inputs.build-script }}"
+          else
+            echo "No executable release artifact build hook is configured: ${{ inputs.build-script }}"
+          fi
       - name: Publish release artifacts
         run: |
           if [[ ! -x "${{ inputs.publish-script }}" ]]; then
@@ -66,9 +150,27 @@ jobs:
             exit 1
           fi
           bash "${{ inputs.publish-script }}"
+      - name: Create GitHub release
+        if: ${{ inputs.create-github-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ -z "${tag}" ]]; then
+            echo "GITHUB_REF_NAME is required to create a GitHub release." >&2
+            exit 1
+          fi
+
+          if [[ -s "${{ inputs.release-notes-file }}" ]]; then
+            gh release create "${tag}" --notes-file "${{ inputs.release-notes-file }}" ||
+              gh release edit "${tag}" --notes-file "${{ inputs.release-notes-file }}" --latest
+          else
+            gh release create "${tag}" --generate-notes ||
+              gh release edit "${tag}" --latest
+          fi
       - name: Promote floating SemVer tags
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
           TAG_PREFIX: ${{ inputs.tag-prefix }}
           UPDATE_MAJOR_TAG: ${{ inputs.update-major-tag }}
           UPDATE_MINOR_TAG: ${{ inputs.update-minor-tag }}
@@ -102,14 +204,3 @@ jobs:
             git tag -fa "${major_tag}" "${commit}" -m "Advance ${major_tag} to ${tag}"
             git push origin "refs/tags/${major_tag}" --force
           fi
-      - name: Create GitHub release
-        if: ${{ inputs.create-github-release }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          if [[ -z "${tag}" ]]; then
-            echo "GITHUB_REF_NAME is required to create a GitHub release." >&2
-            exit 1
-          fi
-          gh release create "${tag}" --generate-notes || gh release edit "${tag}" --latest

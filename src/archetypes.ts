@@ -395,7 +395,7 @@ function flowPullRequestSection(manifest: BootstrapManifest): string {
     - [ ] Every blocker has a next actor and next action
     - [ ] No active blocking requested changes remain
     - [ ] Non-author approval is present when required
-    - [ ] Auto-merge is appropriate when gates pass
+    - [ ] PR author enabled auto-merge where GitHub allows it, or recorded why it is unavailable/unsafe
   `;
 }
 
@@ -407,7 +407,7 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
 
     ## Governing Issue
 
-    Closes #
+    Refs #<issue-number>  <!-- use Closes/Fixes/Resolves only when this PR fully completes the issue; otherwise use Refs/Part of, owner/repo#123, a full GitHub issue URL, or explain why no issue is linked -->
 
     ## Validation
 
@@ -419,14 +419,14 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
 
     - [ ] Changes are scoped to the linked issue
     - [ ] Contributor or PR guidance changes are reflected in \`CONTRIBUTING.md\`, \`.github/PULL_REQUEST_TEMPLATE.md\`, and \`docs/bootstrap/onboarding.md\` when applicable
-    - [ ] Auto-merge is enabled, or GitHub plan-limit evidence is recorded and the fallback merge-readiness policy applies
+    - [ ] PR author enabled auto-merge where GitHub allows it, or GitHub plan-limit evidence/unavailable reason is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
-${flowPullRequestSection(manifest)}
+${indentBlock(flowPullRequestSection(manifest), 4)}
 
     ## Merge Automation
 
-    - [ ] Auto-merge is enabled, or the reason it is unavailable or unsafe is noted below
+    - [ ] PR author enabled auto-merge with \`gh pr merge --auto --squash\`, or the reason it is unavailable/unsafe is noted below
 
     ## Notes
 
@@ -1347,7 +1347,7 @@ ${indentBlock(setupSteps(manifest), 6)}
                 failed=1
               fi
 
-              if ! grep -Eiq '(^|[[:space:]-])((close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+|no issue is linked|no linked issue|without a linked issue|no governing issue)' <<<"$PR_BODY"; then
+              if ! grep -Eiq '(^|[[:space:]-])(((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part[[:space:]]+of)[[:space:]]+)?(#|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/)[0-9]+|no issue is linked|no linked issue|without a linked issue|no governing issue)' <<<"$PR_BODY"; then
                 echo "PR body must close/link an issue or explicitly explain why no issue is linked."
                 failed=1
               fi
@@ -1357,8 +1357,9 @@ ${indentBlock(setupSteps(manifest), 6)}
                 failed=1
               fi
 
-              if ! grep -Eiq '(auto-merge is enabled|auto-merge enabled|auto merge is enabled|auto merge enabled|auto-merge.*(unavailable|unsafe|blocked|not supported)|auto merge.*(unavailable|unsafe|blocked|not supported))' <<<"$PR_BODY"; then
-                echo "PR body must state that auto-merge is enabled or explain why it is unavailable or unsafe."
+              auto_merge_evidence="$(grep -Eiv '^[[:space:]]*-[[:space:]]+\\[[[:space:]]\\][[:space:]]' <<<"$PR_BODY" || true)"
+              if ! grep -Eiq 'auto-merge (is )?(enabled|armed)|enabled auto-merge|gh pr merge --auto|auto_merge|auto merge enabled|auto-merge (is )?(unavailable|unsafe|not available|not safe)|plan-limit|fallback merge-readiness' <<<"$auto_merge_evidence"; then
+                echo "PR body must state that the PR author enabled auto-merge, or explain why auto-merge is unavailable/unsafe."
                 failed=1
               fi
 

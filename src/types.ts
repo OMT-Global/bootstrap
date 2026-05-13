@@ -58,6 +58,46 @@ export interface CustomScriptsConfig {
   releaseVerification?: string;
 }
 
+export type ReleaseChangelogMode = "github-generated-notes";
+export type ReleaseVersionType = "npm" | "python" | "container";
+export type ReleaseChecksumType = "sha256" | "none";
+export type ReleaseSbomMode = "required" | "optional" | "disabled";
+
+export interface ReleaseChangelogCategory {
+  title: string;
+  labels: string[];
+}
+
+export interface ReleaseChangelogConfig {
+  enabled: boolean;
+  mode: ReleaseChangelogMode;
+  categories: ReleaseChangelogCategory[];
+}
+
+export interface ReleaseVersionSurface {
+  type: ReleaseVersionType;
+  path: string;
+}
+
+export interface ReleaseArtifactConfig {
+  directory: string;
+  checksum: ReleaseChecksumType;
+  sbom: ReleaseSbomMode;
+}
+
+export interface ReleaseContainerPublishConfig {
+  image: string;
+  updateMajorTag: boolean;
+  updateMinorTag: boolean;
+  updateLatestTag: boolean;
+}
+
+export interface ReleasePublishConfig {
+  githubReleaseAssets: boolean;
+  packages: string[];
+  containers: ReleaseContainerPublishConfig[];
+}
+
 export interface OrganizationSecurityDefaults {
   dependabotAlerts: boolean;
   dependabotSecurityUpdates: boolean;
@@ -150,6 +190,10 @@ export interface BootstrapManifest {
     updateMinorTag: boolean;
     reusableWorkflowRepo: string;
     reusableWorkflowRef: string;
+    changelog: ReleaseChangelogConfig;
+    versions: ReleaseVersionSurface[];
+    artifacts: ReleaseArtifactConfig;
+    publish: ReleasePublishConfig;
   };
   agents: {
     manageCodexHome: boolean;

@@ -45,7 +45,28 @@ describe("normalizeManifest", () => {
       updateMajorTag: true,
       updateMinorTag: true,
       reusableWorkflowRepo: "acme/bootstrap",
-      reusableWorkflowRef: "refs/heads/main"
+      reusableWorkflowRef: "refs/heads/main",
+      changelog: {
+        enabled: true,
+        mode: "github-generated-notes",
+        categories: [
+          { title: "Features", labels: ["type:feature"] },
+          { title: "Fixes", labels: ["type:bug"] },
+          { title: "Operations", labels: ["area:infra", "area:qa"] },
+          { title: "Documentation", labels: ["kind:docs", "documentation"] }
+        ]
+      },
+      versions: [],
+      artifacts: {
+        directory: "dist/release",
+        checksum: "sha256",
+        sbom: "optional"
+      },
+      publish: {
+        githubReleaseAssets: true,
+        packages: [],
+        containers: []
+      }
     });
     expect(manifest.environments.stage.reviewers).toEqual(["alice", "acme/platform"]);
     expect(manifest.environments.prod.branches).toEqual(["main"]);
@@ -206,7 +227,30 @@ describe("normalizeManifest", () => {
         createGitHubRelease: false,
         updateMajorTag: true,
         updateMinorTag: false,
-        reusableWorkflowRef: "refs/tags/v1"
+        reusableWorkflowRef: "refs/tags/v1",
+        changelog: {
+          enabled: false,
+          categories: [{ title: "Infrastructure", labels: ["area:infra"] }]
+        },
+        versions: [
+          { type: "npm", path: "package.json" },
+          { type: "python", path: "pyproject.toml" }
+        ],
+        artifacts: {
+          directory: "build/release",
+          checksum: "none",
+          sbom: "disabled"
+        },
+        publish: {
+          githubReleaseAssets: false,
+          packages: ["npm"],
+          containers: [
+            {
+              image: "ghcr.io/omt-global/release-repo",
+              updateLatestTag: true
+            }
+          ]
+        }
       }
     });
 
@@ -217,7 +261,67 @@ describe("normalizeManifest", () => {
       updateMajorTag: true,
       updateMinorTag: false,
       reusableWorkflowRepo: "OMT-Global/bootstrap",
-      reusableWorkflowRef: "refs/tags/v1"
+      reusableWorkflowRef: "refs/tags/v1",
+      changelog: {
+        enabled: false,
+        mode: "github-generated-notes",
+        categories: [{ title: "Infrastructure", labels: ["area:infra"] }]
+      },
+      versions: [
+        { type: "npm", path: "package.json" },
+        { type: "python", path: "pyproject.toml" }
+      ],
+      artifacts: {
+        directory: "build/release",
+        checksum: "none",
+        sbom: "disabled"
+      },
+      publish: {
+        githubReleaseAssets: false,
+        packages: ["npm"],
+        containers: [
+          {
+            image: "ghcr.io/omt-global/release-repo",
+            updateMajorTag: true,
+            updateMinorTag: true,
+            updateLatestTag: true
+          }
+        ]
+      }
+    });
+  });
+
+  it("normalizes release automation extension defaults", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "release-repo",
+        owner: "OMT-Global"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    expect(manifest.release.changelog).toEqual({
+      enabled: true,
+      mode: "github-generated-notes",
+      categories: [
+        { title: "Features", labels: ["type:feature"] },
+        { title: "Fixes", labels: ["type:bug"] },
+        { title: "Operations", labels: ["area:infra", "area:qa"] },
+        { title: "Documentation", labels: ["kind:docs", "documentation"] }
+      ]
+    });
+    expect(manifest.release.versions).toEqual([]);
+    expect(manifest.release.artifacts).toEqual({
+      directory: "dist/release",
+      checksum: "sha256",
+      sbom: "optional"
+    });
+    expect(manifest.release.publish).toEqual({
+      githubReleaseAssets: true,
+      packages: [],
+      containers: []
     });
   });
 

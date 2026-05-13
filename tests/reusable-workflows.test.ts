@@ -41,6 +41,16 @@ describe("reusable workflows", () => {
       "Create GitHub release",
       "Promote floating SemVer tags"
     ]);
+    const deriveMetadata = releaseJob.steps.find((step: any) => step.name === "Derive release metadata");
+    const promoteTags = releaseJob.steps.find((step: any) => step.name === "Promote floating SemVer tags");
+    expect(deriveMetadata.run).toContain("semver_component='(0|[1-9][0-9]*)'");
+    expect(promoteTags.run).toContain("semver_component='(0|[1-9][0-9]*)'");
+    expect(deriveMetadata.run).toContain(
+      "^${escaped_prefix}${semver_component}\\.${semver_component}\\.${semver_component}$"
+    );
+    expect(promoteTags.run).toContain(
+      "^${escaped_prefix}${semver_component}\\.${semver_component}\\.${semver_component}$"
+    );
   });
 
   it("defines the reusable AI attestation workflow contract", () => {

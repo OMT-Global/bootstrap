@@ -85,7 +85,8 @@ jobs:
           tag="${RELEASE_TAG}"
           escaped_prefix="$(printf '%s' "${prefix}" | sed 's/[][(){}.^$*+?|\\-]/\\&/g')"
 
-          if [[ ! "${tag}" =~ ^${escaped_prefix}([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          semver_component='(0|[1-9][0-9]*)'
+          if [[ ! "${tag}" =~ ^${escaped_prefix}${semver_component}\.${semver_component}\.${semver_component}$ ]]; then
             echo "Release tag '${tag}' does not match the required exact SemVer pattern '${prefix}X.Y.Z'." >&2
             exit 1
           fi
@@ -181,7 +182,8 @@ jobs:
           tag="${RELEASE_TAG}"
           escaped_prefix="$(printf '%s' "${prefix}" | sed 's/[][(){}.^$*+?|\\-]/\\&/g')"
 
-          if [[ ! "${tag}" =~ ^${escaped_prefix}([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          semver_component='(0|[1-9][0-9]*)'
+          if [[ ! "${tag}" =~ ^${escaped_prefix}${semver_component}\.${semver_component}\.${semver_component}$ ]]; then
             echo "Release tag '${tag}' does not match the required exact SemVer pattern '${prefix}X.Y.Z'." >&2
             exit 1
           fi

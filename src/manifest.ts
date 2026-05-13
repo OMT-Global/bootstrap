@@ -141,6 +141,19 @@ const dependabotSchema = z.object({
   ecosystems: z.array(dependabotEcosystemSchema).optional()
 });
 
+const macosCheckSchema = z.object({
+  enabled: z.boolean().optional(),
+  paths: z.array(z.string().min(1)).optional(),
+  runsOn: z.array(z.string().min(1)).optional(),
+  command: z.string().min(1).optional()
+});
+
+const customScriptsSchema = z.object({
+  fast: z.string().min(1).optional(),
+  extended: z.string().min(1).optional(),
+  releaseVerification: z.string().min(1).optional()
+});
+
 const manifestSchema = z.object({
   version: z.literal(1).optional(),
   project: z.object({
@@ -199,6 +212,11 @@ const manifestSchema = z.object({
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
       additionalWorkflows: z.array(additionalWorkflowSchema).optional(),
+      appPaths: z.array(z.string().min(1)).optional(),
+      ciPaths: z.array(z.string().min(1)).optional(),
+      extendedPaths: z.array(z.string().min(1)).optional(),
+      macosCheck: macosCheckSchema.optional(),
+      customScripts: customScriptsSchema.optional(),
       dependabot: dependabotSchema.optional(),
       aiAttestation: z
         .object({
@@ -385,6 +403,31 @@ function normalizeDependabot(
   };
 }
 
+function normalizePaths(paths: string[] | undefined): string[] {
+  return (paths ?? []).map((entry) => entry.replace(/\\/g, "/"));
+}
+
+function normalizeMacOSCheck(
+  check: z.input<typeof macosCheckSchema> | undefined
+): BootstrapManifest["ci"]["macosCheck"] {
+  return {
+    enabled: check?.enabled ?? false,
+    paths: normalizePaths(check?.paths),
+    runsOn: check?.runsOn ?? ["macos-14"],
+    command: check?.command ?? "xcodebuild -version"
+  };
+}
+
+function normalizeCustomScripts(
+  scripts: z.input<typeof customScriptsSchema> | undefined
+): BootstrapManifest["ci"]["customScripts"] {
+  return {
+    ...(scripts?.fast ? { fast: scripts.fast } : {}),
+    ...(scripts?.extended ? { extended: scripts.extended } : {}),
+    ...(scripts?.releaseVerification ? { releaseVerification: scripts.releaseVerification } : {})
+  };
+}
+
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
@@ -456,6 +499,11 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
       additionalWorkflows: normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows),
+      appPaths: normalizePaths(parsed.ci?.appPaths),
+      ciPaths: normalizePaths(parsed.ci?.ciPaths),
+      extendedPaths: normalizePaths(parsed.ci?.extendedPaths),
+      macosCheck: normalizeMacOSCheck(parsed.ci?.macosCheck),
+      customScripts: normalizeCustomScripts(parsed.ci?.customScripts),
       dependabot: normalizeDependabot(parsed.ci?.dependabot),
       aiAttestation: {
         enabled: parsed.ci?.aiAttestation?.enabled ?? false,

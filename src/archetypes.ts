@@ -905,6 +905,14 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
 }
 
 function fastChecksScript(manifest: BootstrapManifest): string {
+  if (manifest.ci.customScripts.fast) {
+    return `${dedent`
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+    `}\n${manifest.ci.customScripts.fast.trimEnd()}\n`;
+  }
+
   const body =
     manifest.archetype.kind === "python-service"
       ? pythonFastChecks()
@@ -920,6 +928,14 @@ function fastChecksScript(manifest: BootstrapManifest): string {
 }
 
 function extendedChecksScript(manifest: BootstrapManifest): string {
+  if (manifest.ci.customScripts.extended) {
+    return `${dedent`
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+    `}\n${manifest.ci.customScripts.extended.trimEnd()}\n`;
+  }
+
   const body =
     manifest.archetype.kind === "python-service"
       ? pythonExtendedChecks()
@@ -934,7 +950,15 @@ function extendedChecksScript(manifest: BootstrapManifest): string {
   `}\n${body}\n`;
 }
 
-function releaseVerificationScript(): string {
+function releaseVerificationScript(manifest: BootstrapManifest): string {
+  if (manifest.ci.customScripts.releaseVerification) {
+    return `${dedent`
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+    `}\n${manifest.ci.customScripts.releaseVerification.trimEnd()}\n`;
+  }
+
   return `${dedent`
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1096,32 +1120,44 @@ function workflowPaths(manifest: BootstrapManifest): { app: string[]; ci: string
     "docs/bootstrap/**"
   ];
 
+  let paths: { app: string[]; ci: string[]; extended: string[] };
+
   switch (manifest.archetype.kind) {
     case "nextjs-web":
-      return {
+      paths = {
         app: [...common, "app/**", "components/**", "src/**", "public/**", "package.json", "tsconfig.json"],
         ci: [...common, ".env.example", "CODEOWNERS"],
         extended: ["tests/**", "playwright/**", "docker/**", "infra/**"]
       };
+      break;
     case "node-ts-service":
-      return {
+      paths = {
         app: [...common, "src/**", "tests/**", "package.json", "tsconfig.json"],
         ci: [...common, ".env.example", "CODEOWNERS"],
         extended: ["docker/**", "infra/**", "ops/**"]
       };
+      break;
     case "python-service":
-      return {
+      paths = {
         app: [...common, "src/**", "tests/**", "pyproject.toml", ".python-version"],
         ci: [...common, ".env.example", "CODEOWNERS"],
         extended: ["docker/**", "infra/**", "ops/**"]
       };
+      break;
     case "generic-empty":
-      return {
+      paths = {
         app: [...common, "README.md", "docs/**"],
         ci: [...common, ".env.example", "CODEOWNERS"],
         extended: ["infra/**", "ops/**"]
       };
+      break;
   }
+
+  return {
+    app: [...paths.app, ...manifest.ci.appPaths],
+    ci: [...paths.ci, ...manifest.ci.ciPaths],
+    extended: [...paths.extended, ...manifest.ci.extendedPaths]
+  };
 }
 
 function setupSteps(manifest: BootstrapManifest): string {
@@ -1785,7 +1821,7 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           {
             path: "scripts/ci/run-release-verification.sh",
             reason: "Release verification entrypoint",
-            contents: releaseVerificationScript(),
+            contents: releaseVerificationScript(manifest),
             executable: true
           },
           {

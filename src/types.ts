@@ -45,6 +45,19 @@ export interface DependabotConfig {
   ecosystems: DependabotEcosystemConfig[];
 }
 
+export interface MacOSCheckConfig {
+  enabled: boolean;
+  paths: string[];
+  runsOn: string[];
+  command: string;
+}
+
+export interface CustomScriptsConfig {
+  fast?: string;
+  extended?: string;
+  releaseVerification?: string;
+}
+
 export interface OrganizationSecurityDefaults {
   dependabotAlerts: boolean;
   dependabotSecurityUpdates: boolean;
@@ -112,6 +125,11 @@ export interface BootstrapManifest {
     extendedChecks: string[];
     nightlyCron: string;
     additionalWorkflows: AdditionalWorkflowConfig[];
+    appPaths: string[];
+    ciPaths: string[];
+    extendedPaths: string[];
+    macosCheck: MacOSCheckConfig;
+    customScripts: CustomScriptsConfig;
     dependabot: DependabotConfig;
     aiAttestation: {
       enabled: boolean;

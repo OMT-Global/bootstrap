@@ -1,0 +1,19 @@
+changelog:
+  categories:
+    - title: Features
+      labels:
+        - "type:feature"
+    - title: Fixes
+      labels:
+        - "type:bug"
+    - title: Operations
+      labels:
+        - "area:infra"
+        - "area:qa"
+    - title: Documentation
+      labels:
+        - "kind:docs"
+        - "documentation"
+    - title: Other Changes
+      labels:
+        - "*"

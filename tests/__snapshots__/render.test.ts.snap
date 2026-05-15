@@ -55,6 +55,10 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
     "path": ".github/workflows/release-tag.yml",
   },
   {
+    "executable": false,
+    "path": ".github/release.yml",
+  },
+  {
     "executable": true,
     "path": "scripts/check-detect-secrets.sh",
   },
@@ -69,6 +73,14 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   {
     "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-version.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-build.sh",
   },
   {
     "executable": true,
@@ -156,6 +168,10 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
     "path": ".github/workflows/release-tag.yml",
   },
   {
+    "executable": false,
+    "path": ".github/release.yml",
+  },
+  {
     "executable": true,
     "path": "scripts/check-detect-secrets.sh",
   },
@@ -170,6 +186,14 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-version.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-build.sh",
   },
   {
     "executable": true,
@@ -265,6 +289,10 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
     "path": ".github/workflows/release-tag.yml",
   },
   {
+    "executable": false,
+    "path": ".github/release.yml",
+  },
+  {
     "executable": true,
     "path": "scripts/check-detect-secrets.sh",
   },
@@ -279,6 +307,14 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   {
     "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-version.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-build.sh",
   },
   {
     "executable": true,
@@ -366,6 +402,10 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
     "path": ".github/workflows/release-tag.yml",
   },
   {
+    "executable": false,
+    "path": ".github/release.yml",
+  },
+  {
     "executable": true,
     "path": "scripts/check-detect-secrets.sh",
   },
@@ -380,6 +420,14 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-version.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/run-release-build.sh",
   },
   {
     "executable": true,

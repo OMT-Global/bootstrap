@@ -27,6 +27,7 @@ describe("reusable workflows", () => {
     expect((workflow.on as any).workflow_call.inputs["release-notes-file"].default).toBe(
       "dist/release/RELEASE_NOTES.md"
     );
+    expect((workflow.on as any).workflow_call.inputs["artifact-dir"].default).toBe("dist/release");
     expect((workflow.on as any).workflow_call.inputs["tag-prefix"].default).toBe("v");
     expect((workflow.on as any).workflow_call.inputs["update-major-tag"].default).toBe(true);
     const releaseJob = (workflow.jobs as any).release;
@@ -38,6 +39,7 @@ describe("reusable workflows", () => {
       "Run release version hook",
       "Build release artifacts",
       "Publish release artifacts",
+      "Generate release notes",
       "Create GitHub release",
       "Promote floating SemVer tags"
     ]);

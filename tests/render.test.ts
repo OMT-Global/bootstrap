@@ -251,7 +251,10 @@ describe("renderManagedFiles", () => {
     const files = renderManagedFiles(manifest);
     const releaseWorkflow = files.find((file) => file.path === ".github/workflows/release-tag.yml");
     const verifyScript = files.find((file) => file.path === "scripts/ci/run-release-verification.sh");
+    const versionScript = files.find((file) => file.path === "scripts/ci/run-release-version.sh");
+    const buildScript = files.find((file) => file.path === "scripts/ci/run-release-build.sh");
     const publishScript = files.find((file) => file.path === "scripts/ci/run-release-publish.sh");
+    const changelogConfig = files.find((file) => file.path === ".github/release.yml");
     const versioningDoc = files.find((file) => file.path === "docs/bootstrap/versioning.md");
 
     expect(releaseWorkflow?.contents).toContain("name: Release");
@@ -259,10 +262,51 @@ describe("renderManagedFiles", () => {
       "uses: OMT-Global/bootstrap/.github/workflows/release.yml@refs/tags/v1"
     );
     expect(releaseWorkflow?.contents).toContain("tag-prefix: 'v'");
+    expect(releaseWorkflow?.contents).toContain("version-script: scripts/ci/run-release-version.sh");
+    expect(releaseWorkflow?.contents).toContain("build-script: scripts/ci/run-release-build.sh");
+    expect(releaseWorkflow?.contents).toContain("artifact-dir: dist/release");
     expect(verifyScript?.contents).toContain("bash scripts/ci/run-fast-checks.sh");
+    expect(versionScript?.contents).toContain("No release version surfaces are configured");
+    expect(versionScript?.contents).toContain('version="${tag#"${prefix}"}"');
+    expect(buildScript?.contents).toContain('artifact_dir="dist/release"');
+    expect(buildScript?.contents).toContain("SHA256SUMS");
+    expect(buildScript?.contents).toContain("No release artifacts were produced");
     expect(publishScript?.contents).toContain("Create exact release tags such as v1.2.3");
+    expect(changelogConfig?.contents).toContain("changelog:");
+    expect(changelogConfig?.contents).toContain("- title: Features");
+    expect(changelogConfig?.contents).toContain('- "*"');
     expect(versioningDoc?.contents).toContain("Semantic Versioning");
     expect(versioningDoc?.contents).toContain("release/X.Y");
+    expect(versioningDoc?.contents).toContain("Version Validation");
+    expect(versioningDoc?.contents).toContain("Release Artifacts");
+    expect(versioningDoc?.contents).toContain("Release Notes");
+  });
+
+  it("renders npm and python version validation in the release version hook", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "versioned-repo",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "node-ts-service"
+      },
+      release: {
+        enabled: true,
+        versions: [
+          { type: "npm", path: "package.json" },
+          { type: "python", path: "pyproject.toml" }
+        ]
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const versionScript = files.find((file) => file.path === "scripts/ci/run-release-version.sh");
+
+    expect(versionScript?.contents).toContain('npm_file="package.json"');
+    expect(versionScript?.contents).toContain('py_file="pyproject.toml"');
+    expect(versionScript?.contents).toContain("does not match release tag");
+    expect(versionScript?.contents).not.toContain("No release version surfaces are configured");
   });
 
   it("documents repo-specific workflow lanes without replacing the standard CI frame", () => {

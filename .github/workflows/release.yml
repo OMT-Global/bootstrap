@@ -33,6 +33,11 @@ on:
         required: false
         default: "dist/release/RELEASE_NOTES.md"
         type: string
+      artifact-dir:
+        description: Directory whose files are uploaded as GitHub Release assets
+        required: false
+        default: "dist/release"
+        type: string
       default-branch:
         description: Default release branch for new minor and major releases
         required: false
@@ -151,6 +156,28 @@ jobs:
             exit 1
           fi
           bash "${{ inputs.publish-script }}"
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.release_meta.outputs.previous_tag }}
+          NOTES_FILE: ${{ inputs.release-notes-file }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$(dirname "${NOTES_FILE}")"
+
+          args=(--method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f "tag_name=${RELEASE_TAG}")
+          if [[ -n "${PREVIOUS_TAG}" ]]; then
+            args+=(-f "previous_tag_name=${PREVIOUS_TAG}")
+          fi
+
+          if gh api "${args[@]}" --jq '.body' > "${NOTES_FILE}" && [[ -s "${NOTES_FILE}" ]]; then
+            echo "Wrote categorized release notes to ${NOTES_FILE}."
+          else
+            echo "Falling back to a minimal release notes file for ${RELEASE_TAG}." >&2
+            printf '# %s\n' "${RELEASE_TAG}" > "${NOTES_FILE}"
+          fi
       - name: Create GitHub release
         if: ${{ inputs.create-github-release }}
         env:
@@ -168,6 +195,19 @@ jobs:
           else
             gh release create "${tag}" --generate-notes ||
               gh release edit "${tag}" --latest
+          fi
+
+          artifact_dir="${{ inputs.artifact-dir }}"
+          if [[ -d "${artifact_dir}" ]]; then
+            mapfile -t assets < <(find "${artifact_dir}" -maxdepth 1 -type f | sort)
+            if [[ ${#assets[@]} -gt 0 ]]; then
+              gh release upload "${tag}" "${assets[@]}" --clobber
+              echo "Uploaded ${#assets[@]} release asset(s) from ${artifact_dir}."
+            else
+              echo "No release assets found in ${artifact_dir}; skipping asset upload."
+            fi
+          else
+            echo "Artifact directory ${artifact_dir} does not exist; skipping asset upload."
           fi
       - name: Promote floating SemVer tags
         env:

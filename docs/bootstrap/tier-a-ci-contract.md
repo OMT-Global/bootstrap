@@ -17,7 +17,10 @@ This document is the control-plane contract for Tier A `OMT-Global` repos.
   - Carries slower repo-specific validation
 - `release`
   - Reusable workflow
-  - Separates verification from publish
+  - Separates verification, version validation, build, and publish
+  - Validates repo version surfaces (`package.json`, `pyproject.toml`, container metadata) against the pushed tag before build
+  - Builds `dist/release/` artifacts, generates SHA256 checksums, and uploads them as release assets
+  - Generates categorized release notes from `.github/release.yml` and writes them to `dist/release/RELEASE_NOTES.md`
   - Promotes floating `vX.Y` and `vX` tags from immutable exact `vX.Y.Z` tags
   - Uses OIDC-capable permissions by default
 - `ai-attestation`
@@ -69,7 +72,11 @@ jobs:
     with:
       runs-on: '["ubuntu-latest"]'
       verify-script: scripts/ci/run-release-verification.sh
+      version-script: scripts/ci/run-release-version.sh
+      build-script: scripts/ci/run-release-build.sh
       publish-script: scripts/ci/run-release-publish.sh
+      release-notes-file: dist/release/RELEASE_NOTES.md
+      artifact-dir: dist/release
       create-github-release: true
       tag-prefix: v
       update-major-tag: true
@@ -81,6 +88,8 @@ Release policy:
 - create immutable exact tags such as `v1.2.3`
 - let automation advance `v1.2` and `v1` to that same commit
 - cut patch releases from `release/X.Y`, and cut new minor or major releases from `main`
+- land version bumps in a pull request before tagging; the release workflow validates, it does not create post-tag commits
+- configure version surfaces, artifact directory, checksums, and changelog categories under `release` in `project.bootstrap.yaml`
 
 Example AI attestation caller:
 

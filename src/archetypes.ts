@@ -980,6 +980,128 @@ function releasePublishScript(manifest: BootstrapManifest): string {
   `}\n`;
 }
 
+function releaseVersionScript(manifest: BootstrapManifest): string {
+  const prefix = manifest.release.tagPrefix;
+  const versions = manifest.release.versions;
+
+  const header = dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    tag="\${GITHUB_REF_NAME:-}"
+    if [[ -z "\${tag}" ]]; then
+      echo "GITHUB_REF_NAME is required to validate release versions." >&2
+      exit 1
+    fi
+    prefix="${prefix}"
+    version="\${tag#"\${prefix}"}"
+  `;
+
+  if (versions.length === 0) {
+    return `${header}\n\n${dedent`
+      echo "No release version surfaces are configured in project.bootstrap.yaml."
+      echo "Skipping version validation for \${tag}; version bump pull requests must merge before the release tag is pushed."
+    `}\n`;
+  }
+
+  const blocks = versions.map((entry) => {
+    if (entry.type === "npm") {
+      return dedent`
+        npm_file="${entry.path}"
+        if [[ ! -f "\${npm_file}" ]]; then
+          echo "Expected npm version file \${npm_file} is missing." >&2
+          exit 1
+        fi
+        npm_version="$(grep -m1 -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "\${npm_file}" | sed -E 's/.*"([^"]+)"[[:space:]]*$/\\1/')"
+        if [[ "\${npm_version}" != "\${version}" ]]; then
+          echo "\${npm_file} version \${npm_version} does not match release tag \${tag} (expected \${version})." >&2
+          echo "Land the version bump in a pull request before pushing the release tag." >&2
+          exit 1
+        fi
+        echo "\${npm_file} matches \${tag}."
+      `;
+    }
+
+    if (entry.type === "python") {
+      return dedent`
+        py_file="${entry.path}"
+        if [[ ! -f "\${py_file}" ]]; then
+          echo "Expected Python version file \${py_file} is missing." >&2
+          exit 1
+        fi
+        py_version="$(grep -m1 -oE '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[^"]+"' "\${py_file}" | sed -E 's/.*"([^"]+)".*/\\1/')"
+        if [[ "\${py_version}" != "\${version}" ]]; then
+          echo "\${py_file} version \${py_version} does not match release tag \${tag} (expected \${version})." >&2
+          echo "Land the version bump in a pull request before pushing the release tag." >&2
+          exit 1
+        fi
+        echo "\${py_file} matches \${tag}."
+      `;
+    }
+
+    return dedent`
+      echo "Container release version for ${entry.path} is derived from \${tag} at publish time; no in-repo file to validate."
+    `;
+  });
+
+  return `${header}\n\n${blocks.join("\n\n")}\n`;
+}
+
+function releaseBuildScript(manifest: BootstrapManifest): string {
+  const dir = manifest.release.artifacts.directory;
+  const checksumBlock =
+    manifest.release.artifacts.checksum === "sha256"
+      ? dedent`
+          (
+            cd "\${artifact_dir}"
+            : > SHA256SUMS
+            for entry in "\${artifacts[@]}"; do
+              sha256sum -- "\${entry#"\${artifact_dir}/"}" >> SHA256SUMS
+            done
+          )
+          echo "Wrote \${artifact_dir}/SHA256SUMS for \${#artifacts[@]} artifact(s)."
+        `
+      : dedent`
+          echo "Checksum generation is disabled in project.bootstrap.yaml; skipping SHA256SUMS."
+        `;
+
+  return `${dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    artifact_dir="${dir}"
+    mkdir -p "\${artifact_dir}"
+
+    # Add repo-specific build steps above this line to populate \${artifact_dir}
+    # with downloadable release assets before checksums are generated.
+
+    mapfile -t artifacts < <(find "\${artifact_dir}" -maxdepth 1 -type f ! -name SHA256SUMS | sort)
+    if [[ \${#artifacts[@]} -eq 0 ]]; then
+      echo "No release artifacts were produced in \${artifact_dir}."
+      echo "This repo ships no downloadable assets; add build steps to scripts/ci/run-release-build.sh when it does."
+      exit 0
+    fi
+  `}\n${checksumBlock}\n`;
+}
+
+function releaseChangelogConfig(manifest: BootstrapManifest): string {
+  const categories = [
+    ...manifest.release.changelog.categories,
+    { title: "Other Changes", labels: ["*"] }
+  ];
+
+  const body = categories
+    .map(
+      (category) =>
+        `    - title: ${category.title}\n      labels:\n${category.labels
+          .map((label) => `        - "${label}"`)
+          .join("\n")}`
+    )
+    .join("\n");
+
+  return `changelog:\n  categories:\n${body}\n`;
+}
+
 function nextJsStarter(): RenderedFile[] {
   return [
     {
@@ -1284,7 +1406,11 @@ function releaseCallerWorkflow(manifest: BootstrapManifest): string {
         with:
           runs-on: '["ubuntu-latest"]'
           verify-script: scripts/ci/run-release-verification.sh
+          version-script: scripts/ci/run-release-version.sh
+          build-script: scripts/ci/run-release-build.sh
           publish-script: scripts/ci/run-release-publish.sh
+          release-notes-file: ${manifest.release.artifacts.directory}/RELEASE_NOTES.md
+          artifact-dir: ${manifest.release.artifacts.directory}
           create-github-release: ${manifest.release.createGitHubRelease ? "true" : "false"}
           tag-prefix: '${manifest.release.tagPrefix}'
           update-major-tag: ${manifest.release.updateMajorTag ? "true" : "false"}
@@ -1694,8 +1820,32 @@ function releaseVersioningDoc(manifest: BootstrapManifest): string {
 
     - \`.github/workflows/release-tag.yml\` runs when an exact SemVer tag matching \`${manifest.release.tagPrefix}*.*.*\` is pushed.
     - \`scripts/ci/run-release-verification.sh\` runs the repo release gate before publication.
+    - \`scripts/ci/run-release-version.sh\` validates that the repo version surfaces match the pushed tag before build and publish.
+    - \`scripts/ci/run-release-build.sh\` populates the release artifact directory and writes SHA256 checksums when enabled.
     - \`scripts/ci/run-release-publish.sh\` is the repo hook for artifact publication; the generated default is a no-op until the repo needs more than GitHub releases.
     - The shared reusable release workflow creates or updates the GitHub release and then advances the floating compatibility tags when enabled in \`project.bootstrap.yaml\`.
+
+    ## Version Validation
+
+    - Version bumps land in a normal pull request before the release tag is pushed; the workflow never creates post-tag commits.
+    - Configure version surfaces under \`release.versions\` in \`project.bootstrap.yaml\` with a \`type\` of \`npm\`, \`python\`, or \`container\` and the file \`path\`.
+    - \`scripts/ci/run-release-version.sh\` fails the release when a configured \`package.json\` or \`pyproject.toml\` version does not equal the tag (with the \`${manifest.release.tagPrefix}\` prefix stripped). Container surfaces are derived from the tag at publish time.
+    - With no configured surfaces the hook prints an explicit no-op rather than silently passing.
+
+    ## Release Artifacts
+
+    - The default release artifact directory is \`${manifest.release.artifacts.directory}/\`.
+    - \`scripts/ci/run-release-build.sh\` is where repo-specific build steps populate that directory; with no artifacts it prints an explicit no-op message instead of failing silently.
+    - Checksum generation is \`${manifest.release.artifacts.checksum}\`; when set to \`sha256\` a \`SHA256SUMS\` file is written alongside the artifacts.
+    - The reusable workflow uploads every file in the artifact directory to the GitHub Release.
+    - SBOM/provenance is \`${manifest.release.artifacts.sbom}\` and is designed into the manifest for repos that opt in.
+
+    ## Release Notes
+
+    - Release notes are generated automatically for every exact tag from changes since the previous exact SemVer tag.
+    - The default implementation uses GitHub generated notes; \`.github/release.yml\` maps bootstrap labels to categories.
+    - Override categories under \`release.changelog.categories\` in \`project.bootstrap.yaml\`. The default categories are Features, Fixes, Operations, and Documentation, with everything else under Other Changes.
+    - The reusable workflow writes the notes to \`${manifest.release.artifacts.directory}/RELEASE_NOTES.md\` before creating the GitHub Release.
   `;
 }
 
@@ -1789,6 +1939,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
+    ...(manifest.release.enabled && manifest.release.changelog.enabled
+      ? [
+          {
+            path: ".github/release.yml",
+            reason: "Categorized release notes configuration",
+            contents: releaseChangelogConfig(manifest)
+          }
+        ]
+      : []),
     ...(manifest.ci.aiAttestation.enabled
       ? [
           {
@@ -1822,6 +1981,18 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
             path: "scripts/ci/run-release-verification.sh",
             reason: "Release verification entrypoint",
             contents: releaseVerificationScript(manifest),
+            executable: true
+          },
+          {
+            path: "scripts/ci/run-release-version.sh",
+            reason: "Release version validation entrypoint",
+            contents: releaseVersionScript(manifest),
+            executable: true
+          },
+          {
+            path: "scripts/ci/run-release-build.sh",
+            reason: "Release artifact build entrypoint",
+            contents: releaseBuildScript(manifest),
             executable: true
           },
           {

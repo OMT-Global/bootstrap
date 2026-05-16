@@ -16,7 +16,11 @@ jobs:
     with:
       runs-on: '["ubuntu-latest"]'
       verify-script: scripts/ci/run-release-verification.sh
+      version-script: scripts/ci/run-release-version.sh
+      build-script: scripts/ci/run-release-build.sh
       publish-script: scripts/ci/run-release-publish.sh
+      release-notes-file: dist/release/RELEASE_NOTES.md
+      artifact-dir: dist/release
       create-github-release: true
       tag-prefix: 'v'
       update-major-tag: true

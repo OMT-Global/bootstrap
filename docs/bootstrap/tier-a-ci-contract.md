@@ -69,6 +69,7 @@ on:
 jobs:
   release:
     uses: OMT-Global/bootstrap/.github/workflows/release.yml@refs/heads/main
+    secrets: inherit
     with:
       runs-on: '["ubuntu-latest"]'
       verify-script: scripts/ci/run-release-verification.sh
@@ -82,6 +83,14 @@ jobs:
       update-major-tag: true
       update-minor-tag: true
 ```
+
+Release hooks that need signing, notarization, or external publish credentials
+must read them from environment variables. The reusable release workflow passes
+declared caller secrets through to hook scripts, and the caller must include
+`secrets: inherit` or explicitly map those values. For macOS app releases this
+includes Dockyard-compatible variables such as
+`DOCKYARD_DEVELOPER_ID_APPLICATION`, `DOCKYARD_KEYCHAIN_ACCESS_GROUP`,
+`DOCKYARD_NOTARY_KEYCHAIN_PROFILE`, and optional Sparkle paths.
 
 Release policy:
 

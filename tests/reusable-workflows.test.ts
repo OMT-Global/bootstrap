@@ -44,11 +44,19 @@ describe("reusable workflows", () => {
       "Promote floating SemVer tags"
     ]);
     const deriveMetadata = releaseJob.steps.find((step: any) => step.name === "Derive release metadata");
+    const createRelease = releaseJob.steps.find((step: any) => step.name === "Create GitHub release");
     const promoteTags = releaseJob.steps.find((step: any) => step.name === "Promote floating SemVer tags");
     expect(deriveMetadata.run).toContain("semver_component='(0|[1-9][0-9]*)'");
+    expect(deriveMetadata.run).toContain("prerelease_identifier=");
+    expect(deriveMetadata.run).toContain("is_prerelease=${is_prerelease}");
+    expect(createRelease.run).toContain("release_create_args=(--prerelease --latest=false)");
+    expect(createRelease.run).toContain("release_edit_args=(--prerelease)");
+    expect(createRelease.env.IS_PRERELEASE).toBe("${{ steps.release_meta.outputs.is_prerelease }}");
+    expect(promoteTags.env.IS_PRERELEASE).toBe("${{ steps.release_meta.outputs.is_prerelease }}");
+    expect(promoteTags.run).toContain("Skipping floating SemVer tag promotion for prerelease");
     expect(promoteTags.run).toContain("semver_component='(0|[1-9][0-9]*)'");
     expect(deriveMetadata.run).toContain(
-      "^${escaped_prefix}${semver_component}\\.${semver_component}\\.${semver_component}$"
+      "^${escaped_prefix}${semver_component}\\.${semver_component}\\.${semver_component}${prerelease_pattern}$"
     );
     expect(promoteTags.run).toContain(
       "^${escaped_prefix}${semver_component}\\.${semver_component}\\.${semver_component}$"

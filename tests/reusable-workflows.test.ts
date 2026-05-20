@@ -30,8 +30,19 @@ describe("reusable workflows", () => {
     expect((workflow.on as any).workflow_call.inputs["artifact-dir"].default).toBe("dist/release");
     expect((workflow.on as any).workflow_call.inputs["tag-prefix"].default).toBe("v");
     expect((workflow.on as any).workflow_call.inputs["update-major-tag"].default).toBe(true);
+    const releaseSecrets = (workflow.on as any).workflow_call.secrets;
+    expect(releaseSecrets.DOCKYARD_DEVELOPER_ID_APPLICATION.required).toBe(false);
+    expect(releaseSecrets.DOCKYARD_KEYCHAIN_ACCESS_GROUP.required).toBe(false);
+    expect(releaseSecrets.DOCKYARD_NOTARY_KEYCHAIN_PROFILE.required).toBe(false);
     const releaseJob = (workflow.jobs as any).release;
     expect(releaseJob).toBeTruthy();
+    expect(releaseJob.env.DOCKYARD_DEVELOPER_ID_APPLICATION).toBe(
+      "${{ secrets.DOCKYARD_DEVELOPER_ID_APPLICATION }}"
+    );
+    expect(releaseJob.env.DOCKYARD_KEYCHAIN_ACCESS_GROUP).toBe("${{ secrets.DOCKYARD_KEYCHAIN_ACCESS_GROUP }}");
+    expect(releaseJob.env.DOCKYARD_NOTARY_KEYCHAIN_PROFILE).toBe(
+      "${{ secrets.DOCKYARD_NOTARY_KEYCHAIN_PROFILE }}"
+    );
     const stepNames = releaseJob.steps.map((step: any) => step.name).filter(Boolean);
     expect(stepNames).toEqual([
       "Derive release metadata",
@@ -44,9 +55,11 @@ describe("reusable workflows", () => {
       "Promote floating SemVer tags"
     ]);
     const deriveMetadata = releaseJob.steps.find((step: any) => step.name === "Derive release metadata");
+    const publishArtifacts = releaseJob.steps.find((step: any) => step.name === "Publish release artifacts");
     const createRelease = releaseJob.steps.find((step: any) => step.name === "Create GitHub release");
     const promoteTags = releaseJob.steps.find((step: any) => step.name === "Promote floating SemVer tags");
     expect(deriveMetadata.run).toContain("semver_component='(0|[1-9][0-9]*)'");
+    expect(publishArtifacts.env.GH_TOKEN).toBe("${{ github.token }}");
     expect(deriveMetadata.run).toContain("prerelease_identifier=");
     expect(deriveMetadata.run).toContain("is_prerelease=${is_prerelease}");
     expect(createRelease.run).toContain("release_create_args=(--prerelease --latest=false)");

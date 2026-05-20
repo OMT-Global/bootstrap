@@ -63,6 +63,25 @@ on:
         required: false
         default: true
         type: boolean
+    secrets:
+      DOCKYARD_DEVELOPER_ID_APPLICATION:
+        description: Optional Dockyard Developer ID signing identity for release hooks
+        required: false
+      DOCKYARD_KEYCHAIN_ACCESS_GROUP:
+        description: Optional Dockyard keychain access group for release hooks
+        required: false
+      DOCKYARD_NOTARY_KEYCHAIN_PROFILE:
+        description: Optional Dockyard notarytool keychain profile for release hooks
+        required: false
+      DOCKYARD_SPARKLE_PRIVATE_KEY_FILE:
+        description: Optional Dockyard Sparkle private key file path for release hooks
+        required: false
+      DOCKYARD_SPARKLE_SIGN_UPDATE:
+        description: Optional Dockyard Sparkle sign_update executable path for release hooks
+        required: false
+      SPARKLE_FRAMEWORK_PATH:
+        description: Optional Sparkle framework path used by release hooks
+        required: false
 
 permissions:
   contents: write
@@ -73,6 +92,13 @@ jobs:
   release:
     name: release
     runs-on: ${{ fromJSON(inputs.runs-on) }}
+    env:
+      DOCKYARD_DEVELOPER_ID_APPLICATION: ${{ secrets.DOCKYARD_DEVELOPER_ID_APPLICATION }}
+      DOCKYARD_KEYCHAIN_ACCESS_GROUP: ${{ secrets.DOCKYARD_KEYCHAIN_ACCESS_GROUP }}
+      DOCKYARD_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.DOCKYARD_NOTARY_KEYCHAIN_PROFILE }}
+      DOCKYARD_SPARKLE_PRIVATE_KEY_FILE: ${{ secrets.DOCKYARD_SPARKLE_PRIVATE_KEY_FILE }}
+      DOCKYARD_SPARKLE_SIGN_UPDATE: ${{ secrets.DOCKYARD_SPARKLE_SIGN_UPDATE }}
+      SPARKLE_FRAMEWORK_PATH: ${{ secrets.SPARKLE_FRAMEWORK_PATH }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -158,6 +184,8 @@ jobs:
             echo "No executable release artifact build hook is configured: ${{ inputs.build-script }}"
           fi
       - name: Publish release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ ! -x "${{ inputs.publish-script }}" ]]; then
             echo "Missing executable publish script: ${{ inputs.publish-script }}" >&2

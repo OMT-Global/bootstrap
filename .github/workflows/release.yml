@@ -91,14 +91,21 @@ jobs:
           escaped_prefix="$(printf '%s' "${prefix}" | sed 's/[][(){}.^$*+?|\\-]/\\&/g')"
 
           semver_component='(0|[1-9][0-9]*)'
-          if [[ ! "${tag}" =~ ^${escaped_prefix}${semver_component}\.${semver_component}\.${semver_component}$ ]]; then
-            echo "Release tag '${tag}' does not match the required exact SemVer pattern '${prefix}X.Y.Z'." >&2
+          prerelease_identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          prerelease_pattern="(-${prerelease_identifier}(\.${prerelease_identifier})*)?"
+          if [[ ! "${tag}" =~ ^${escaped_prefix}${semver_component}\.${semver_component}\.${semver_component}${prerelease_pattern}$ ]]; then
+            echo "Release tag '${tag}' does not match the required SemVer pattern '${prefix}X.Y.Z[-prerelease]'." >&2
             exit 1
           fi
 
           major="${BASH_REMATCH[1]}"
           minor="${BASH_REMATCH[2]}"
           patch="${BASH_REMATCH[3]}"
+          prerelease="${BASH_REMATCH[4]:-}"
+          is_prerelease=false
+          if [[ -n "${prerelease}" ]]; then
+            is_prerelease=true
+          fi
           commit="$(git rev-list -n 1 "${tag}")"
 
           git fetch origin "+refs/heads/*:refs/remotes/origin/*" --prune
@@ -125,6 +132,7 @@ jobs:
             echo "major=${major}"
             echo "minor=${minor}"
             echo "patch=${patch}"
+            echo "is_prerelease=${is_prerelease}"
             echo "commit=${commit}"
             echo "previous_tag=${previous_tag}"
           } >> "${GITHUB_OUTPUT}"
@@ -182,6 +190,7 @@ jobs:
         if: ${{ inputs.create-github-release }}
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ steps.release_meta.outputs.is_prerelease }}
         run: |
           tag="${GITHUB_REF_NAME}"
           if [[ -z "${tag}" ]]; then
@@ -189,12 +198,21 @@ jobs:
             exit 1
           fi
 
-          if [[ -s "${{ inputs.release-notes-file }}" ]]; then
-            gh release create "${tag}" --notes-file "${{ inputs.release-notes-file }}" ||
-              gh release edit "${tag}" --notes-file "${{ inputs.release-notes-file }}" --latest
+          release_create_args=()
+          release_edit_args=()
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            release_create_args=(--prerelease --latest=false)
+            release_edit_args=(--prerelease)
           else
-            gh release create "${tag}" --generate-notes ||
-              gh release edit "${tag}" --latest
+            release_edit_args=(--latest)
+          fi
+
+          if [[ -s "${{ inputs.release-notes-file }}" ]]; then
+            gh release create "${tag}" --notes-file "${{ inputs.release-notes-file }}" "${release_create_args[@]}" ||
+              gh release edit "${tag}" --notes-file "${{ inputs.release-notes-file }}" "${release_edit_args[@]}"
+          else
+            gh release create "${tag}" --generate-notes "${release_create_args[@]}" ||
+              gh release edit "${tag}" "${release_edit_args[@]}"
           fi
 
           artifact_dir="${{ inputs.artifact-dir }}"
@@ -215,8 +233,14 @@ jobs:
           TAG_PREFIX: ${{ inputs.tag-prefix }}
           UPDATE_MAJOR_TAG: ${{ inputs.update-major-tag }}
           UPDATE_MINOR_TAG: ${{ inputs.update-minor-tag }}
+          IS_PRERELEASE: ${{ steps.release_meta.outputs.is_prerelease }}
         run: |
           set -euo pipefail
+
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            echo "Skipping floating SemVer tag promotion for prerelease ${RELEASE_TAG}."
+            exit 0
+          fi
 
           prefix="${TAG_PREFIX}"
           tag="${RELEASE_TAG}"

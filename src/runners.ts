@@ -11,6 +11,8 @@ const INCOMPATIBLE_CAPABILITIES = new Set<RunnerCapability>([
   "container-job"
 ]);
 
+const SHELL_SAFE_SELF_HOSTED_LABELS = ["self-hosted", "linux", "shell-only"];
+
 export function resolveRunsOn(
   runnerPolicy: RunnerPolicy,
   visibility: ProjectVisibility,
@@ -28,7 +30,10 @@ export function resolveRunsOn(
     return "ubuntu-latest";
   }
 
-  return ["self-hosted", "synology", "shell-only", visibility === "public" ? "public" : "private"];
+  return [
+    ...SHELL_SAFE_SELF_HOSTED_LABELS,
+    visibility === "public" ? "public" : "private"
+  ];
 }
 
 export function formatRunsOn(runsOn: RunsOn): string {

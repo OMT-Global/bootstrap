@@ -42,7 +42,7 @@ describe("renderManagedFiles", () => {
       const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
       expect(prWorkflow?.contents).toContain("name: CI Gate");
       expect(prWorkflow?.contents).toContain("types: [opened, edited, synchronize, reopened, ready_for_review]");
-      expect(prWorkflow?.contents).toContain("['self-hosted', 'synology'");
+      expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");
       expect(prWorkflow?.contents).toContain("refs?|part[[:space:]]+of");

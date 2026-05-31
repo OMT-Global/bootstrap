@@ -6,7 +6,7 @@ on:
       runs-on:
         description: JSON array runner selector for the release job
         required: false
-        default: '["ubuntu-latest"]'
+        default: '["self-hosted","linux","shell-only","public"]'
         type: string
       verify-script:
         description: Release verification script path relative to the repository root

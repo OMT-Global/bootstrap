@@ -6,7 +6,7 @@ describe("resolveRunsOn", () => {
   it("routes shell-safe jobs to the self-hosted private pool", () => {
     expect(resolveRunsOn("hybrid-safe", "private", ["shell"])).toEqual([
       "self-hosted",
-      "synology",
+      "linux",
       "shell-only",
       "private"
     ]);

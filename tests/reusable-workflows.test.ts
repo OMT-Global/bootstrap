@@ -9,6 +9,8 @@ function loadWorkflow(relativePath: string) {
 }
 
 describe("reusable workflows", () => {
+  const shellSafePublicRunner = '["self-hosted","linux","shell-only","public"]';
+
   it("defines the security PR reusable workflow contract", () => {
     const workflow = loadWorkflow(".github/workflows/security-pr.yml");
     expect(workflow.name).toBe("Security PR");
@@ -20,7 +22,7 @@ describe("reusable workflows", () => {
   it("defines the reusable release workflow contract", () => {
     const workflow = loadWorkflow(".github/workflows/release.yml");
     expect(workflow.name).toBe("Reusable Release");
-    expect((workflow.on as any).workflow_call.inputs["runs-on"].default).toBe('["ubuntu-latest"]');
+    expect((workflow.on as any).workflow_call.inputs["runs-on"].default).toBe(shellSafePublicRunner);
     expect((workflow.on as any).workflow_call.inputs["verify-script"].default).toContain("run-release-verification");
     expect((workflow.on as any).workflow_call.inputs["version-script"].default).toContain("run-release-version");
     expect((workflow.on as any).workflow_call.inputs["build-script"].default).toContain("run-release-build");

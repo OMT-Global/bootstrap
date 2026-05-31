@@ -30,7 +30,11 @@ permissions:
 
 jobs:
   attest:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
     steps:
@@ -89,7 +93,11 @@ jobs:
           retention-days: ${{ inputs.retention_days }}
 
   verify:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     needs: attest
     steps:
       - name: Install cosign

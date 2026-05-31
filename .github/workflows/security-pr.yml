@@ -34,7 +34,11 @@ jobs:
   dependency-review:
     name: dependency-review
     if: ${{ inputs.dependency-review }}
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     permissions:
       contents: read
       pull-requests: read
@@ -47,7 +51,11 @@ jobs:
   codeql:
     name: codeql
     if: ${{ inputs.codeql-languages != '' }}
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     permissions:
       actions: read
       contents: read
@@ -69,7 +77,11 @@ jobs:
   osv:
     name: osv
     if: ${{ inputs.run-osv }}
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     permissions:
       contents: read
       security-events: write
@@ -87,7 +99,11 @@ jobs:
   semgrep:
     name: semgrep
     if: ${{ inputs.run-semgrep }}
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     permissions:
       contents: read
       security-events: write

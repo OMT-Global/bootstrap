@@ -30,13 +30,41 @@ permissions:
 
 jobs:
   attest:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Ensure envsubst is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v envsubst >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "envsubst is required by cosign-installer, but apt-get is unavailable." >&2
+            exit 1
+          fi
+
+          if [[ "$(id -u)" == "0" ]]; then
+            apt-get update
+            apt-get install -y --no-install-recommends gettext-base
+          elif command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gettext-base
+          else
+            echo "envsubst is missing and this runner cannot install gettext-base." >&2
+            exit 1
+          fi
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.1
@@ -89,9 +117,37 @@ jobs:
           retention-days: ${{ inputs.retention_days }}
 
   verify:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - shell-only
+      - public
     needs: attest
     steps:
+      - name: Ensure envsubst is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v envsubst >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "envsubst is required by cosign-installer, but apt-get is unavailable." >&2
+            exit 1
+          fi
+
+          if [[ "$(id -u)" == "0" ]]; then
+            apt-get update
+            apt-get install -y --no-install-recommends gettext-base
+          elif command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gettext-base
+          else
+            echo "envsubst is missing and this runner cannot install gettext-base." >&2
+            exit 1
+          fi
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.1
 

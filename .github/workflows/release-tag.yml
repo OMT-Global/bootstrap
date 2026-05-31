@@ -14,7 +14,7 @@ jobs:
   release:
     uses: OMT-Global/bootstrap/.github/workflows/release.yml@refs/heads/main
     with:
-      runs-on: '["ubuntu-latest"]'
+      runs-on: '["self-hosted","linux","shell-only","public"]'
       verify-script: scripts/ci/run-release-verification.sh
       version-script: scripts/ci/run-release-version.sh
       build-script: scripts/ci/run-release-build.sh

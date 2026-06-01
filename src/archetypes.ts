@@ -1795,6 +1795,7 @@ function releasePublishReusableWorkflow(): string {
               RELEASE_ISSUE: \${{ inputs.release_issue }}
               REQUIRE_RELEASE_ISSUE: \${{ inputs.require_release_issue }}
               REQUIRE_SIGNED_TAG: \${{ inputs.require_signed_tag }}
+              REQUIRE_POSTPUBLISH_VERIFICATION: \${{ inputs.require_postpublish_verification }}
               CREATE_GITHUB_RELEASE: \${{ inputs.create_github_release }}
               UPDATE_MAJOR_TAG: \${{ inputs.update_major_tag }}
               UPDATE_MINOR_TAG: \${{ inputs.update_minor_tag }}
@@ -1807,6 +1808,9 @@ function releasePublishReusableWorkflow(): string {
               set -euo pipefail
               [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
               tag_sha="$(git rev-parse "$TAG^{commit}")"
+              if [[ "$REQUIRE_SIGNED_TAG" == "true" ]]; then
+                git tag -v "$TAG" >/dev/null
+              fi
               rm -rf "$ARTIFACT_DIR"; mkdir -p "$ARTIFACT_DIR"
               gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"
               [[ -f "$ARTIFACT_DIR/release-evidence.json" ]] || { echo "Missing preflight release-evidence.json." >&2; exit 1; }
@@ -1839,7 +1843,13 @@ function releasePublishReusableWorkflow(): string {
                 [[ "$UPDATE_MINOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}.\${minor}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}.\${minor}"
                 [[ "$UPDATE_MAJOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}"
               fi
-              [[ -x "$POSTPUBLISH_SCRIPT" ]] && "$POSTPUBLISH_SCRIPT" "$TAG" || true
+              if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
+                if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
+                  "$POSTPUBLISH_SCRIPT" "$TAG"
+                else
+                  "$POSTPUBLISH_SCRIPT" "$TAG" || true
+                fi
+              fi
               printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
           - uses: actions/upload-artifact@v4
             with:

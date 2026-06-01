@@ -1,0 +1,52 @@
+name: Release Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact release tag, e.g. v1.2.3
+        required: true
+        type: string
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options: [rc, beta, stable, maintenance]
+      preflight_run_id:
+        description: Successful Release Preflight run ID
+        required: true
+        type: string
+      validation_run_id:
+        description: Successful Full Release Validation run ID
+        required: true
+        type: string
+      release_issue:
+        description: Release issue number
+        required: false
+        type: string
+
+jobs:
+  publish:
+    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@refs/heads/main
+    with:
+      tag: ${{ inputs.tag }}
+      channel: ${{ inputs.channel }}
+      preflight_run_id: ${{ inputs.preflight_run_id }}
+      validation_run_id: ${{ inputs.validation_run_id }}
+      release_issue: ${{ inputs.release_issue }}
+      publish_script: scripts/release/publish.sh
+      postpublish_script: scripts/release/postpublish.sh
+      artifact_dir: dist/release
+      release_notes_file: dist/release/RELEASE_NOTES.md
+      create_github_release: true
+      update_major_tag: true
+      update_minor_tag: true
+      tag_prefix: 'v'
+      default_branch: main
+      require_release_issue: true
+      require_signed_tag: false
+      require_postpublish_verification: true
+      evidence_artifact_name: release-evidence
+      publish_environment: release-publish
+    secrets: inherit

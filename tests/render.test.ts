@@ -282,6 +282,51 @@ describe("renderManagedFiles", () => {
     expect(versioningDoc?.contents).toContain("Release Notes");
   });
 
+  it("renders governed release automation when requested", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "governed-release-repo",
+        owner: "OMT-Global"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      release: {
+        enabled: true,
+        maturity: "governed",
+        reusableWorkflowRef: "refs/tags/bootstrap-v1"
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const paths = files.map((file) => file.path);
+    const preflight = files.find((file) => file.path === ".github/workflows/release-preflight.yml");
+    const publish = files.find((file) => file.path === ".github/workflows/release-publish.yml");
+    const reusablePublish = files.find(
+      (file) => file.path === ".github/workflows/release-publish-reusable.yml"
+    );
+    const releaseTrain = files.find((file) => file.path === "docs/release-train.md");
+    const issueTemplate = files.find((file) => file.path === ".github/ISSUE_TEMPLATE/release_train.yml");
+
+    expect(paths).not.toContain(".github/workflows/release-tag.yml");
+    expect(paths).toContain(".github/workflows/release-preflight-reusable.yml");
+    expect(paths).toContain(".github/workflows/full-release-validation-reusable.yml");
+    expect(paths).toContain(".github/workflows/release-publish-reusable.yml");
+    expect(paths).toContain(".github/workflows/release-postpublish-reusable.yml");
+    expect(paths).toContain("scripts/release/preflight.sh");
+    expect(paths).toContain("scripts/release/postpublish.sh");
+    expect(paths).toContain("docs/bootstrap/release-evidence-schema.md");
+    expect(preflight?.contents).toContain(
+      "uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@refs/tags/bootstrap-v1"
+    );
+    expect(publish?.contents).toContain("require_release_issue: true");
+    expect(publish?.contents).toContain("require_signed_tag: false");
+    expect(reusablePublish?.contents).toContain("gh run download");
+    expect(reusablePublish?.contents).toContain("UPDATE_MAJOR_TAG");
+    expect(releaseTrain?.contents).toContain("Publish must consume the artifact bundle proven by preflight");
+    expect(issueTemplate?.contents).toContain("preflight_run_id recorded");
+  });
+
   it("renders npm and python version validation in the release version hook", () => {
     const manifest = normalizeManifest({
       project: {

@@ -1,0 +1,63 @@
+name: Release Train
+about: Governed release train for an OMT-Global repository
+title: "Release: vX.Y.Z"
+labels:
+  - release:train
+  - review:release
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v1.2.3 or v1.2.3-rc.1
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      options:
+        - rc
+        - beta
+        - stable
+        - maintenance
+    validations:
+      required: true
+  - type: input
+    id: release_branch
+    attributes:
+      label: Release branch
+      placeholder: release/1.2
+  - type: input
+    id: target_sha
+    attributes:
+      label: Target SHA
+      placeholder: Full commit SHA for the release candidate
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: User-facing changes, fixes, risks, exclusions.
+    validations:
+      required: true
+  - type: textarea
+    id: gates
+    attributes:
+      label: Gates
+      value: |
+        - [ ] Release branch created
+        - [ ] Scope locked
+        - [ ] Changelog/release notes prepared
+        - [ ] Version surfaces updated
+        - [ ] Preflight passed
+        - [ ] preflight_run_id recorded:
+        - [ ] Full validation passed
+        - [ ] validation_run_id recorded:
+        - [ ] Exact tag created
+        - [ ] Publish approval granted
+        - [ ] Artifacts published
+        - [ ] GitHub Release created or updated
+        - [ ] Release evidence uploaded
+        - [ ] Postpublish verification passed
+        - [ ] Floating tags/channels promoted if applicable
+        - [ ] Release issue closed

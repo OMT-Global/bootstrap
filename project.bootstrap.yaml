@@ -181,6 +181,7 @@ ci:
     reusableWorkflowRef: refs/heads/main
 release:
   enabled: true
+  maturity: governed
   tagPrefix: v
   createGitHubRelease: true
   updateMajorTag: true

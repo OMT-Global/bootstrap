@@ -40,6 +40,7 @@ describe("normalizeManifest", () => {
     });
     expect(manifest.release).toEqual({
       enabled: true,
+      maturity: "simple",
       tagPrefix: "v",
       createGitHubRelease: true,
       updateMajorTag: true,
@@ -223,6 +224,7 @@ describe("normalizeManifest", () => {
       },
       release: {
         enabled: true,
+        maturity: "governed",
         tagPrefix: "bootstrap-v",
         createGitHubRelease: false,
         updateMajorTag: true,
@@ -256,6 +258,7 @@ describe("normalizeManifest", () => {
 
     expect(manifest.release).toEqual({
       enabled: true,
+      maturity: "governed",
       tagPrefix: "bootstrap-v",
       createGitHubRelease: false,
       updateMajorTag: true,

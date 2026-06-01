@@ -1,0 +1,91 @@
+name: Reusable Release Publish
+
+on:
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
+      preflight_run_id: { required: true, type: string }
+      validation_run_id: { required: true, type: string }
+      channel: { required: true, type: string }
+      runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
+      publish_script: { required: false, type: string, default: scripts/release/publish.sh }
+      postpublish_script: { required: false, type: string, default: scripts/release/postpublish.sh }
+      artifact_dir: { required: false, type: string, default: dist/release }
+      release_notes_file: { required: false, type: string, default: dist/release/RELEASE_NOTES.md }
+      create_github_release: { required: false, type: boolean, default: true }
+      update_major_tag: { required: false, type: boolean, default: true }
+      update_minor_tag: { required: false, type: boolean, default: true }
+      tag_prefix: { required: false, type: string, default: v }
+      release_issue: { required: false, type: string, default: "" }
+      require_release_issue: { required: false, type: boolean, default: true }
+      require_signed_tag: { required: false, type: boolean, default: false }
+      require_postpublish_verification: { required: false, type: boolean, default: true }
+      evidence_artifact_name: { required: false, type: string, default: release-evidence }
+      publish_environment: { required: false, type: string, default: release-publish }
+
+permissions:
+  contents: write
+  actions: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ${{ fromJSON(inputs.runs_on || '["ubuntu-latest"]') }}
+    environment: ${{ inputs.publish_environment || 'release-publish' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Publish proven release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+          RELEASE_ISSUE: ${{ inputs.release_issue }}
+          REQUIRE_RELEASE_ISSUE: ${{ inputs.require_release_issue }}
+          REQUIRE_SIGNED_TAG: ${{ inputs.require_signed_tag }}
+          CREATE_GITHUB_RELEASE: ${{ inputs.create_github_release }}
+          UPDATE_MAJOR_TAG: ${{ inputs.update_major_tag }}
+          UPDATE_MINOR_TAG: ${{ inputs.update_minor_tag }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+          RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
+          PUBLISH_SCRIPT: ${{ inputs.publish_script }}
+          POSTPUBLISH_SCRIPT: ${{ inputs.postpublish_script }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
+          tag_sha="$(git rev-parse "$TAG^{commit}")"
+          rm -rf "$ARTIFACT_DIR"; mkdir -p "$ARTIFACT_DIR"
+          gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"
+          [[ -f "$ARTIFACT_DIR/release-evidence.json" ]] || { echo "Missing preflight release-evidence.json." >&2; exit 1; }
+          gh run view "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion' | grep -qx success
+          [[ -x "$PUBLISH_SCRIPT" ]] && "$PUBLISH_SCRIPT"
+          if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
+            release_args=()
+            [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+              && gh release upload "$TAG" "$ARTIFACT_DIR"/* --repo "$GITHUB_REPOSITORY" --clobber \
+              || gh release create "$TAG" "$ARTIFACT_DIR"/* --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "${release_args[@]}"
+          fi
+          if [[ "$TAG" != *"-rc."* && "$TAG" != *"-beta."* ]]; then
+            version="${TAG#"$TAG_PREFIX"}"; IFS=. read -r major minor patch <<<"$version"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            [[ "$UPDATE_MINOR_TAG" == "true" ]] && git tag -f "${TAG_PREFIX}${major}.${minor}" "$tag_sha" && git push -f origin "refs/tags/${TAG_PREFIX}${major}.${minor}"
+            [[ "$UPDATE_MAJOR_TAG" == "true" ]] && git tag -f "${TAG_PREFIX}${major}" "$tag_sha" && git push -f origin "refs/tags/${TAG_PREFIX}${major}"
+          fi
+          [[ -x "$POSTPUBLISH_SCRIPT" ]] && "$POSTPUBLISH_SCRIPT" "$TAG" || true
+          printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.evidence_artifact_name }}-publish
+          path: ${{ inputs.artifact_dir }}/postpublish-evidence.json

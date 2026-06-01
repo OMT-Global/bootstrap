@@ -1418,6 +1418,744 @@ function releaseCallerWorkflow(manifest: BootstrapManifest): string {
   `;
 }
 
+function governedReleaseWorkflowRef(manifest: BootstrapManifest, workflow: string): string {
+  return `${manifest.release.reusableWorkflowRepo}/.github/workflows/${workflow}@${manifest.release.reusableWorkflowRef}`;
+}
+
+function releasePreflightCallerWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Release Preflight
+
+    on:
+      workflow_dispatch:
+        inputs:
+          version:
+            description: Release version, e.g. ${manifest.release.tagPrefix}1.2.3-rc.1
+            required: true
+            type: string
+          channel:
+            description: Release channel
+            required: true
+            default: rc
+            type: choice
+            options: [rc, beta, stable, maintenance]
+          target_ref:
+            description: Branch, tag, or full SHA to preflight
+            required: true
+            type: string
+          release_issue:
+            description: Release issue number
+            required: false
+            type: string
+
+    jobs:
+      preflight:
+        uses: ${governedReleaseWorkflowRef(manifest, "release-preflight-reusable.yml")}
+        with:
+          version: \${{ inputs.version }}
+          channel: \${{ inputs.channel }}
+          target_ref: \${{ inputs.target_ref }}
+          release_issue: \${{ inputs.release_issue }}
+          prep_script: scripts/release/prep.sh
+          preflight_script: scripts/release/preflight.sh
+          build_script: scripts/release/build.sh
+          artifact_dir: ${manifest.release.artifacts.directory}
+          release_notes_file: ${manifest.release.artifacts.directory}/RELEASE_NOTES.md
+          tag_prefix: '${manifest.release.tagPrefix}'
+          default_branch: ${manifest.project.defaultBranch}
+          evidence_artifact_name: release-evidence
+          evidence_retention_days: 365
+  `;
+}
+
+function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Full Release Validation
+
+    on:
+      workflow_dispatch:
+        inputs:
+          target_ref:
+            description: Branch, tag, or full SHA to validate
+            required: true
+            type: string
+          release_profile:
+            description: Validation depth
+            required: true
+            default: standard
+            type: choice
+            options: [smoke, standard, full]
+
+    jobs:
+      validate:
+        uses: ${governedReleaseWorkflowRef(manifest, "full-release-validation-reusable.yml")}
+        with:
+          target_ref: \${{ inputs.target_ref }}
+          release_profile: \${{ inputs.release_profile }}
+          validate_script: scripts/release/validate.sh
+          artifact_dir: ${manifest.release.artifacts.directory}
+          release_package_artifact_name: release-package
+          evidence_artifact_name: release-evidence
+          evidence_retention_days: 365
+  `;
+}
+
+function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Release Publish
+
+    on:
+      workflow_dispatch:
+        inputs:
+          tag:
+            description: Exact release tag, e.g. ${manifest.release.tagPrefix}1.2.3
+            required: true
+            type: string
+          channel:
+            description: Release channel
+            required: true
+            default: stable
+            type: choice
+            options: [rc, beta, stable, maintenance]
+          preflight_run_id:
+            description: Successful Release Preflight run ID
+            required: true
+            type: string
+          validation_run_id:
+            description: Successful Full Release Validation run ID
+            required: true
+            type: string
+          release_issue:
+            description: Release issue number
+            required: false
+            type: string
+
+    jobs:
+      publish:
+        uses: ${governedReleaseWorkflowRef(manifest, "release-publish-reusable.yml")}
+        with:
+          tag: \${{ inputs.tag }}
+          channel: \${{ inputs.channel }}
+          preflight_run_id: \${{ inputs.preflight_run_id }}
+          validation_run_id: \${{ inputs.validation_run_id }}
+          release_issue: \${{ inputs.release_issue }}
+          publish_script: scripts/release/publish.sh
+          postpublish_script: scripts/release/postpublish.sh
+          artifact_dir: ${manifest.release.artifacts.directory}
+          release_notes_file: ${manifest.release.artifacts.directory}/RELEASE_NOTES.md
+          create_github_release: ${manifest.release.createGitHubRelease ? "true" : "false"}
+          update_major_tag: ${manifest.release.updateMajorTag ? "true" : "false"}
+          update_minor_tag: ${manifest.release.updateMinorTag ? "true" : "false"}
+          tag_prefix: '${manifest.release.tagPrefix}'
+          default_branch: ${manifest.project.defaultBranch}
+          require_release_issue: true
+          require_signed_tag: ${manifest.release.maturity === "regulated" ? "true" : "false"}
+          require_postpublish_verification: true
+          evidence_artifact_name: release-evidence
+          publish_environment: release-publish
+        secrets: inherit
+  `;
+}
+
+function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Release Postpublish
+
+    on:
+      workflow_dispatch:
+        inputs:
+          tag:
+            description: Exact release tag to verify
+            required: true
+            type: string
+          channel:
+            description: Release channel
+            required: true
+            default: stable
+            type: choice
+            options: [rc, beta, stable, maintenance]
+          release_issue:
+            description: Release issue number
+            required: false
+            type: string
+
+    jobs:
+      postpublish:
+        uses: ${governedReleaseWorkflowRef(manifest, "release-postpublish-reusable.yml")}
+        with:
+          tag: \${{ inputs.tag }}
+          channel: \${{ inputs.channel }}
+          release_issue: \${{ inputs.release_issue }}
+          postpublish_script: scripts/release/postpublish.sh
+          artifact_dir: ${manifest.release.artifacts.directory}
+          evidence_artifact_name: release-evidence
+  `;
+}
+
+function releasePreflightReusableWorkflow(): string {
+  return dedent`
+    name: Reusable Release Preflight
+
+    on:
+      workflow_call:
+        inputs:
+          version: { required: true, type: string }
+          channel: { required: true, type: string }
+          target_ref: { required: true, type: string }
+          runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
+          artifact_dir: { required: false, type: string, default: dist/release }
+          release_notes_file: { required: false, type: string, default: dist/release/RELEASE_NOTES.md }
+          release_issue: { required: false, type: string, default: "" }
+          prep_script: { required: false, type: string, default: scripts/release/prep.sh }
+          preflight_script: { required: false, type: string, default: scripts/release/preflight.sh }
+          build_script: { required: false, type: string, default: scripts/release/build.sh }
+          tag_prefix: { required: false, type: string, default: v }
+          default_branch: { required: false, type: string, default: main }
+          evidence_artifact_name: { required: false, type: string, default: release-evidence }
+          evidence_retention_days: { required: false, type: number, default: 365 }
+
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
+    jobs:
+      preflight:
+        runs-on: \${{ fromJSON(inputs.runs_on || '["ubuntu-latest"]') }}
+        defaults:
+          run:
+            shell: bash
+        steps:
+          - uses: actions/checkout@v4
+            with:
+              ref: \${{ inputs.target_ref }}
+              fetch-depth: 0
+
+          - name: Preflight release candidate
+            env:
+              VERSION: \${{ inputs.version }}
+              CHANNEL: \${{ inputs.channel }}
+              TARGET_REF: \${{ inputs.target_ref }}
+              RELEASE_ISSUE: \${{ inputs.release_issue }}
+              ARTIFACT_DIR: \${{ inputs.artifact_dir }}
+              RELEASE_NOTES_FILE: \${{ inputs.release_notes_file }}
+              PREP_SCRIPT: \${{ inputs.prep_script }}
+              PREFLIGHT_SCRIPT: \${{ inputs.preflight_script }}
+              BUILD_SCRIPT: \${{ inputs.build_script }}
+              TAG_PREFIX: \${{ inputs.tag_prefix }}
+              DEFAULT_BRANCH: \${{ inputs.default_branch }}
+            run: |
+              set -euo pipefail
+              semver='(0|[1-9][0-9]*)'
+              escaped_prefix="$(printf '%s' "$TAG_PREFIX" | sed -E 's/[][(){}.^$+*?|\\]/\\&/g')"
+              [[ "$VERSION" =~ ^\${escaped_prefix}\${semver}\\.\${semver}\\.\${semver}(-(rc|beta)\\.[0-9]+)?$ ]] || { echo "Invalid release version: $VERSION" >&2; exit 1; }
+              target_sha="$(git rev-parse HEAD)"
+              prep_status=skipped; preflight_status=skipped; build_status=skipped
+              [[ -x "$PREP_SCRIPT" ]] && "$PREP_SCRIPT" && prep_status=passed
+              [[ -x "$PREFLIGHT_SCRIPT" ]] && "$PREFLIGHT_SCRIPT" && preflight_status=passed
+              [[ -x "$BUILD_SCRIPT" ]] && "$BUILD_SCRIPT" && build_status=passed
+              mkdir -p "$ARTIFACT_DIR" "$(dirname "$RELEASE_NOTES_FILE")"
+              [[ -f "$RELEASE_NOTES_FILE" ]] || printf '# Release Notes\\n\\nCandidate: %s\\n' "$VERSION" >"$RELEASE_NOTES_FILE"
+              : >"$ARTIFACT_DIR/SHA256SUMS"
+              find "$ARTIFACT_DIR" -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-evidence.json -print0 | sort -z | xargs -0 shasum -a 256 >>"$ARTIFACT_DIR/SHA256SUMS"
+              cat >"$ARTIFACT_DIR/release-evidence.json" <<JSON
+              {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","version":"\${VERSION}","channel":"\${CHANNEL}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","release_issue":"\${RELEASE_ISSUE}","preflight_run_id":"\${GITHUB_RUN_ID}","checks":{"prep":"\${prep_status}","preflight":"\${preflight_status}","build":"\${build_status}"}}
+              JSON
+
+          - uses: actions/upload-artifact@v4
+            with:
+              name: release-package
+              path: \${{ inputs.artifact_dir }}/
+              retention-days: \${{ inputs.evidence_retention_days }}
+
+          - uses: actions/upload-artifact@v4
+            with:
+              name: \${{ inputs.evidence_artifact_name }}
+              path: |
+                \${{ inputs.artifact_dir }}/release-evidence.json
+                \${{ inputs.artifact_dir }}/SHA256SUMS
+                \${{ inputs.release_notes_file }}
+              retention-days: \${{ inputs.evidence_retention_days }}
+  `;
+}
+
+function fullReleaseValidationReusableWorkflow(): string {
+  return dedent`
+    name: Reusable Full Release Validation
+
+    on:
+      workflow_call:
+        inputs:
+          target_ref: { required: true, type: string }
+          release_profile: { required: true, type: string }
+          runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
+          validate_script: { required: false, type: string, default: scripts/release/validate.sh }
+          artifact_dir: { required: false, type: string, default: dist/release }
+          evidence_artifact_name: { required: false, type: string, default: release-evidence }
+          evidence_retention_days: { required: false, type: number, default: 365 }
+
+    permissions:
+      contents: read
+      actions: read
+
+    jobs:
+      validate:
+        runs-on: \${{ fromJSON(inputs.runs_on || '["ubuntu-latest"]') }}
+        defaults:
+          run:
+            shell: bash
+        steps:
+          - uses: actions/checkout@v4
+            with:
+              ref: \${{ inputs.target_ref }}
+              fetch-depth: 0
+          - name: Run release validation
+            env:
+              TARGET_REF: \${{ inputs.target_ref }}
+              RELEASE_PROFILE: \${{ inputs.release_profile }}
+              VALIDATE_SCRIPT: \${{ inputs.validate_script }}
+              ARTIFACT_DIR: \${{ inputs.artifact_dir }}
+            run: |
+              set -euo pipefail
+              mkdir -p "$ARTIFACT_DIR"
+              validate_status=skipped
+              standard_status=skipped
+              [[ -x "$VALIDATE_SCRIPT" ]] && "$VALIDATE_SCRIPT" && validate_status=passed
+              if [[ -f package.json ]] && node -e "const p=require('./package.json'); process.exit(p.scripts?.check ? 0 : 1)" >/dev/null 2>&1; then
+                npm run check
+                standard_status=passed
+              fi
+              target_sha="$(git rev-parse HEAD)"
+              cat >"$ARTIFACT_DIR/validation-evidence.json" <<JSON
+              {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","validation_run_id":"\${GITHUB_RUN_ID}","release_profile":"\${RELEASE_PROFILE}","checks":{"validate_script":"\${validate_status}","standard_checks":"\${standard_status}"}}
+              JSON
+          - uses: actions/upload-artifact@v4
+            with:
+              name: \${{ inputs.evidence_artifact_name }}-validation
+              path: \${{ inputs.artifact_dir }}/validation-evidence.json
+              retention-days: \${{ inputs.evidence_retention_days }}
+  `;
+}
+
+function releasePublishReusableWorkflow(): string {
+  return dedent`
+    name: Reusable Release Publish
+
+    on:
+      workflow_call:
+        inputs:
+          tag: { required: true, type: string }
+          preflight_run_id: { required: true, type: string }
+          validation_run_id: { required: true, type: string }
+          channel: { required: true, type: string }
+          runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
+          publish_script: { required: false, type: string, default: scripts/release/publish.sh }
+          postpublish_script: { required: false, type: string, default: scripts/release/postpublish.sh }
+          artifact_dir: { required: false, type: string, default: dist/release }
+          release_notes_file: { required: false, type: string, default: dist/release/RELEASE_NOTES.md }
+          create_github_release: { required: false, type: boolean, default: true }
+          update_major_tag: { required: false, type: boolean, default: true }
+          update_minor_tag: { required: false, type: boolean, default: true }
+          tag_prefix: { required: false, type: string, default: v }
+          release_issue: { required: false, type: string, default: "" }
+          require_release_issue: { required: false, type: boolean, default: true }
+          require_signed_tag: { required: false, type: boolean, default: false }
+          require_postpublish_verification: { required: false, type: boolean, default: true }
+          evidence_artifact_name: { required: false, type: string, default: release-evidence }
+          publish_environment: { required: false, type: string, default: release-publish }
+
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    jobs:
+      publish:
+        runs-on: \${{ fromJSON(inputs.runs_on || '["ubuntu-latest"]') }}
+        environment: \${{ inputs.publish_environment || 'release-publish' }}
+        defaults:
+          run:
+            shell: bash
+        steps:
+          - uses: actions/checkout@v4
+            with:
+              ref: \${{ inputs.tag }}
+              fetch-depth: 0
+          - name: Publish proven release artifact
+            env:
+              GH_TOKEN: \${{ github.token }}
+              TAG: \${{ inputs.tag }}
+              CHANNEL: \${{ inputs.channel }}
+              PREFLIGHT_RUN_ID: \${{ inputs.preflight_run_id }}
+              VALIDATION_RUN_ID: \${{ inputs.validation_run_id }}
+              RELEASE_ISSUE: \${{ inputs.release_issue }}
+              REQUIRE_RELEASE_ISSUE: \${{ inputs.require_release_issue }}
+              REQUIRE_SIGNED_TAG: \${{ inputs.require_signed_tag }}
+              CREATE_GITHUB_RELEASE: \${{ inputs.create_github_release }}
+              UPDATE_MAJOR_TAG: \${{ inputs.update_major_tag }}
+              UPDATE_MINOR_TAG: \${{ inputs.update_minor_tag }}
+              TAG_PREFIX: \${{ inputs.tag_prefix }}
+              ARTIFACT_DIR: \${{ inputs.artifact_dir }}
+              RELEASE_NOTES_FILE: \${{ inputs.release_notes_file }}
+              PUBLISH_SCRIPT: \${{ inputs.publish_script }}
+              POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
+            run: |
+              set -euo pipefail
+              [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
+              tag_sha="$(git rev-parse "$TAG^{commit}")"
+              rm -rf "$ARTIFACT_DIR"; mkdir -p "$ARTIFACT_DIR"
+              gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"
+              [[ -f "$ARTIFACT_DIR/release-evidence.json" ]] || { echo "Missing preflight release-evidence.json." >&2; exit 1; }
+              gh run view "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion' | grep -qx success
+              [[ -x "$PUBLISH_SCRIPT" ]] && "$PUBLISH_SCRIPT"
+              if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
+                release_args=()
+                [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
+                gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \\
+                  && gh release upload "$TAG" "$ARTIFACT_DIR"/* --repo "$GITHUB_REPOSITORY" --clobber \\
+                  || gh release create "$TAG" "$ARTIFACT_DIR"/* --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "\${release_args[@]}"
+              fi
+              if [[ "$TAG" != *"-rc."* && "$TAG" != *"-beta."* ]]; then
+                version="\${TAG#"$TAG_PREFIX"}"; IFS=. read -r major minor patch <<<"$version"
+                git config user.name "github-actions[bot]"
+                git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                [[ "$UPDATE_MINOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}.\${minor}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}.\${minor}"
+                [[ "$UPDATE_MAJOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}"
+              fi
+              [[ -x "$POSTPUBLISH_SCRIPT" ]] && "$POSTPUBLISH_SCRIPT" "$TAG" || true
+              printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
+          - uses: actions/upload-artifact@v4
+            with:
+              name: \${{ inputs.evidence_artifact_name }}-publish
+              path: \${{ inputs.artifact_dir }}/postpublish-evidence.json
+  `;
+}
+
+function releasePostpublishReusableWorkflow(): string {
+  return dedent`
+    name: Reusable Release Postpublish
+
+    on:
+      workflow_call:
+        inputs:
+          tag: { required: true, type: string }
+          channel: { required: true, type: string }
+          release_issue: { required: false, type: string, default: "" }
+          postpublish_script: { required: false, type: string, default: scripts/release/postpublish.sh }
+          artifact_dir: { required: false, type: string, default: dist/release }
+          evidence_artifact_name: { required: false, type: string, default: release-evidence }
+
+    permissions:
+      contents: read
+      actions: read
+
+    jobs:
+      postpublish:
+        runs-on: ubuntu-latest
+        defaults:
+          run:
+            shell: bash
+        steps:
+          - uses: actions/checkout@v4
+            with:
+              ref: \${{ inputs.tag }}
+              fetch-depth: 0
+          - name: Verify published release
+            env:
+              GH_TOKEN: \${{ github.token }}
+              TAG: \${{ inputs.tag }}
+              CHANNEL: \${{ inputs.channel }}
+              RELEASE_ISSUE: \${{ inputs.release_issue }}
+              POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
+              ARTIFACT_DIR: \${{ inputs.artifact_dir }}
+            run: |
+              set -euo pipefail
+              mkdir -p "$ARTIFACT_DIR"
+              gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+              asset_count="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
+              [[ "$asset_count" -ge 1 ]] || { echo "Release has no assets." >&2; exit 1; }
+              [[ -x "$POSTPUBLISH_SCRIPT" ]] && "$POSTPUBLISH_SCRIPT" "$TAG" || true
+              printf '{"schema_version":1,"repo":"%s","tag":"%s","channel":"%s","release_issue":"%s","postpublish_run_id":"%s","release_assets":%s}\\n' "$GITHUB_REPOSITORY" "$TAG" "$CHANNEL" "$RELEASE_ISSUE" "$GITHUB_RUN_ID" "$asset_count" >"$ARTIFACT_DIR/postpublish-evidence.json"
+          - uses: actions/upload-artifact@v4
+            with:
+              name: \${{ inputs.evidence_artifact_name }}-postpublish
+              path: \${{ inputs.artifact_dir }}/postpublish-evidence.json
+  `;
+}
+
+function releaseTrainIssueTemplate(): string {
+  return dedent`
+    name: Release Train
+    about: Governed release train for an OMT-Global repository
+    title: "Release: vX.Y.Z"
+    labels:
+      - release:train
+      - review:release
+    body:
+      - type: input
+        id: version
+        attributes:
+          label: Version
+          placeholder: v1.2.3 or v1.2.3-rc.1
+        validations:
+          required: true
+      - type: dropdown
+        id: channel
+        attributes:
+          label: Channel
+          options:
+            - rc
+            - beta
+            - stable
+            - maintenance
+        validations:
+          required: true
+      - type: input
+        id: release_branch
+        attributes:
+          label: Release branch
+          placeholder: release/1.2
+      - type: input
+        id: target_sha
+        attributes:
+          label: Target SHA
+          placeholder: Full commit SHA for the release candidate
+      - type: textarea
+        id: scope
+        attributes:
+          label: Scope
+          description: User-facing changes, fixes, risks, exclusions.
+        validations:
+          required: true
+      - type: textarea
+        id: gates
+        attributes:
+          label: Gates
+          value: |
+            - [ ] Release branch created
+            - [ ] Scope locked
+            - [ ] Changelog/release notes prepared
+            - [ ] Version surfaces updated
+            - [ ] Preflight passed
+            - [ ] preflight_run_id recorded:
+            - [ ] Full validation passed
+            - [ ] validation_run_id recorded:
+            - [ ] Exact tag created
+            - [ ] Publish approval granted
+            - [ ] Artifacts published
+            - [ ] GitHub Release created or updated
+            - [ ] Release evidence uploaded
+            - [ ] Postpublish verification passed
+            - [ ] Floating tags/channels promoted if applicable
+            - [ ] Release issue closed
+  `;
+}
+
+function governedReleaseHookScripts(): RenderedFile[] {
+  return [
+    {
+      path: "scripts/release/prep.sh",
+      reason: "Governed release preparation hook",
+      executable: true,
+      contents: "#!/usr/bin/env bash\nset -euo pipefail\n\necho \"No repo-specific release prep step is configured.\"\n"
+    },
+    {
+      path: "scripts/release/preflight.sh",
+      reason: "Governed release preflight hook",
+      executable: true,
+      contents:
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nif [[ -x scripts/ci/run-fast-checks.sh ]]; then\n  bash scripts/ci/run-fast-checks.sh\nelse\n  echo \"No fast-check script found. Skipping release preflight checks.\"\nfi\n"
+    },
+    {
+      path: "scripts/release/validate.sh",
+      reason: "Governed full release validation hook",
+      executable: true,
+      contents:
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nif [[ -x scripts/ci/run-extended-validation.sh ]]; then\n  bash scripts/ci/run-extended-validation.sh\nelif [[ -x scripts/ci/run-fast-checks.sh ]]; then\n  bash scripts/ci/run-fast-checks.sh\nelse\n  echo \"No validation script found. Skipping release validation checks.\"\nfi\n"
+    },
+    {
+      path: "scripts/release/build.sh",
+      reason: "Governed release artifact build hook",
+      executable: true,
+      contents: dedent`
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        artifact_dir="dist/release"
+        mkdir -p "\${artifact_dir}"
+
+        if [[ ! -f "\${artifact_dir}/artifact-manifest.json" ]]; then
+          cat >"\${artifact_dir}/artifact-manifest.json" <<JSON
+        {
+          "schema_version": 1,
+          "note": "Default bootstrap-generated release artifact manifest. Replace this with repo-specific build output when publishable assets exist."
+        }
+        JSON
+        fi
+
+        if [[ ! -f "\${artifact_dir}/RELEASE_NOTES.md" ]]; then
+          {
+            echo "# Release Notes"
+            echo
+            echo "Generated placeholder release notes. Replace during release prep."
+          } >"\${artifact_dir}/RELEASE_NOTES.md"
+        fi
+
+        echo "Prepared release artifact directory \${artifact_dir}."
+      `
+    },
+    {
+      path: "scripts/release/publish.sh",
+      reason: "Governed release publish hook",
+      executable: true,
+      contents:
+        "#!/usr/bin/env bash\nset -euo pipefail\n\necho \"No external package publish step is configured.\"\necho \"The reusable publish workflow creates or updates the GitHub Release from the preflight artifact.\"\n"
+    },
+    {
+      path: "scripts/release/postpublish.sh",
+      reason: "Governed release postpublish verification hook",
+      executable: true,
+      contents: dedent`
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        tag="\${1:-\${GITHUB_REF_NAME:-}}"
+        if [[ -n "\${tag}" && -n "\${GITHUB_REPOSITORY:-}" && -n "\${GH_TOKEN:-}" ]]; then
+          gh release view "\${tag}" --repo "\${GITHUB_REPOSITORY}" >/dev/null
+          echo "GitHub Release \${tag} exists."
+        else
+          echo "No GitHub release lookup context available. Skipping postpublish remote check."
+        fi
+      `
+    }
+  ];
+}
+
+function releaseTrainDoc(): string {
+  return dedent`
+    # Governed Release Train
+
+    This repository uses release maturity level \`governed\`.
+
+    ## Manual Flow
+
+    1. Open a release train issue with \`.github/ISSUE_TEMPLATE/release_train.yml\`.
+    2. Create or update the \`release/{major}.{minor}\` release branch.
+    3. Run \`Release Preflight\` with the candidate version, channel, target ref, and release issue.
+    4. Copy the successful preflight run ID into the release issue.
+    5. Run \`Full Release Validation\` against the same target ref.
+    6. Copy the successful validation run ID into the release issue.
+    7. Create the exact release tag only after validation evidence exists.
+    8. Run \`Release Publish\` with the tag, preflight run ID, validation run ID, channel, and release issue.
+    9. Run or review \`Release Postpublish\`, then close or supersede the release issue.
+
+    Publish must consume the artifact bundle proven by preflight. If the preflight artifact cannot be downloaded or its recorded target SHA differs from the tag SHA, publish must fail instead of rebuilding.
+
+    ## Customization
+
+    Repo-specific behavior belongs in these hook scripts:
+
+    - \`scripts/release/prep.sh\`
+    - \`scripts/release/preflight.sh\`
+    - \`scripts/release/validate.sh\`
+    - \`scripts/release/build.sh\`
+    - \`scripts/release/publish.sh\`
+    - \`scripts/release/postpublish.sh\`
+
+    The generated defaults do not require secrets and do not publish external packages.
+  `;
+}
+
+function releaseTrainContractDoc(): string {
+  return dedent`
+    # Governed Release Train Contract
+
+    Bootstrap supports four release maturity levels:
+
+    | Level | Name | Behavior |
+    | ---: | --- | --- |
+    | 0 | \`none\` | No managed release files are generated. |
+    | 1 | \`simple\` | Existing tag-triggered SemVer release workflow remains available. |
+    | 2 | \`governed\` | Adds release preflight, full validation, publish orchestration, postpublish verification, and release evidence. |
+    | 3 | \`regulated\` | Uses governed release flow plus stricter gates where supported, including signed tag verification when required. |
+
+    Backwards compatibility is intentional: \`release.enabled: true\` without \`release.maturity\` is treated as \`simple\`, and \`release.enabled: false\` is treated as \`none\`.
+
+    ## Configure
+
+    \`\`\`yaml
+    release:
+      enabled: true
+      maturity: governed
+      reusableWorkflowRepo: OMT-Global/bootstrap
+      reusableWorkflowRef: refs/heads/main
+    \`\`\`
+
+    Governed repos receive thin caller workflows for preflight, validation, publish, and postpublish verification. Package-specific behavior belongs in hook scripts under \`scripts/release/\`.
+
+    ## Manual Release Flow
+
+    1. Open a release train issue.
+    2. Create or update the release branch.
+    3. Run \`Release Preflight\` and record \`preflight_run_id\`.
+    4. Run \`Full Release Validation\` and record \`validation_run_id\`.
+    5. Create the exact tag after validation evidence exists.
+    6. Run \`Release Publish\` with the tag, \`preflight_run_id\`, and \`validation_run_id\`.
+    7. Verify postpublish evidence and close or supersede the release issue.
+
+    Publish must consume the artifact bundle from the preflight run. If the preflight artifact cannot be downloaded, or if evidence does not match the tag SHA, publish fails rather than rebuilding.
+
+    ## Secrets
+
+    Generated hooks are safe no-ops by default. Production credentials belong in GitHub environments, secrets, packages, or OIDC configuration, not in manifests or generated scripts.
+  `;
+}
+
+function releaseEvidenceSchemaDoc(): string {
+  return dedent`
+    # Release Evidence Schema
+
+    Governed releases emit machine-readable evidence into \`dist/release/\`.
+
+    Minimum release evidence:
+
+    \`\`\`json
+    {
+      "schema_version": 1,
+      "repo": "OMT-Global/example",
+      "version": "v1.2.3",
+      "channel": "stable",
+      "target_ref": "release/1.2",
+      "target_sha": "full_sha",
+      "release_issue": "123",
+      "preflight_run_id": "123456789",
+      "validation_run_id": "123456790",
+      "publish_run_id": "123456791",
+      "artifacts": [{ "name": "example-v1.2.3.tar.gz", "sha256": "..." }],
+      "checks": {
+        "prep": "passed",
+        "preflight": "passed",
+        "build": "passed",
+        "full_validation": "passed",
+        "publish": "passed",
+        "postpublish": "passed"
+      }
+    }
+    \`\`\`
+
+    Expected files:
+
+    - \`dist/release/release-evidence.json\`
+    - \`dist/release/postpublish-evidence.json\`
+    - \`dist/release/SHA256SUMS\`
+    - \`dist/release/RELEASE_NOTES.md\`
+
+    Evidence links the release issue, target SHA, workflow run IDs, artifact checksums, release notes, and postpublish status so a release can be audited without relying on local operator state.
+  `;
+}
+
 function prWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
   const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
@@ -1850,6 +2588,7 @@ function releaseVersioningDoc(manifest: BootstrapManifest): string {
 }
 
 export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] {
+  const releaseIsGoverned = manifest.release.maturity === "governed" || manifest.release.maturity === "regulated";
   const files: RenderedFile[] = [
     {
       path: "project.bootstrap.yaml",
@@ -1911,6 +2650,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
+    ...(releaseIsGoverned
+      ? [
+          {
+            path: ".github/ISSUE_TEMPLATE/release_train.yml",
+            reason: "Governed release train issue template",
+            contents: `${releaseTrainIssueTemplate()}\n`
+          }
+        ]
+      : []),
     {
       path: ".github/workflows/pr-fast-ci.yml",
       reason: "Fast pull request workflow",
@@ -1930,12 +2678,56 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
-    ...(manifest.release.enabled
+    ...(manifest.release.enabled && !releaseIsGoverned
       ? [
           {
             path: ".github/workflows/release-tag.yml",
             reason: "Shared release workflow caller",
             contents: `${releaseCallerWorkflow(manifest)}\n`
+          }
+        ]
+      : []),
+    ...(releaseIsGoverned
+      ? [
+          {
+            path: ".github/workflows/release-preflight.yml",
+            reason: "Governed release preflight caller",
+            contents: `${releasePreflightCallerWorkflow(manifest)}\n`
+          },
+          {
+            path: ".github/workflows/full-release-validation.yml",
+            reason: "Governed full release validation caller",
+            contents: `${fullReleaseValidationCallerWorkflow(manifest)}\n`
+          },
+          {
+            path: ".github/workflows/release-publish.yml",
+            reason: "Governed release publish caller",
+            contents: `${releasePublishCallerWorkflow(manifest)}\n`
+          },
+          {
+            path: ".github/workflows/release-postpublish.yml",
+            reason: "Governed release postpublish caller",
+            contents: `${releasePostpublishCallerWorkflow(manifest)}\n`
+          },
+          {
+            path: ".github/workflows/release-preflight-reusable.yml",
+            reason: "Reusable governed release preflight workflow",
+            contents: `${releasePreflightReusableWorkflow()}\n`
+          },
+          {
+            path: ".github/workflows/full-release-validation-reusable.yml",
+            reason: "Reusable governed full release validation workflow",
+            contents: `${fullReleaseValidationReusableWorkflow()}\n`
+          },
+          {
+            path: ".github/workflows/release-publish-reusable.yml",
+            reason: "Reusable governed release publish workflow",
+            contents: `${releasePublishReusableWorkflow()}\n`
+          },
+          {
+            path: ".github/workflows/release-postpublish-reusable.yml",
+            reason: "Reusable governed release postpublish workflow",
+            contents: `${releasePostpublishReusableWorkflow()}\n`
           }
         ]
       : []),
@@ -2003,6 +2795,7 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
+    ...(releaseIsGoverned ? governedReleaseHookScripts() : []),
     {
       path: "scripts/codex-cloud/setup.sh",
       reason: "Codex cloud setup script",
@@ -2031,6 +2824,25 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
             path: "docs/bootstrap/versioning.md",
             reason: "Release and versioning guide",
             contents: `${releaseVersioningDoc(manifest)}\n`
+          }
+        ]
+      : []),
+    ...(releaseIsGoverned
+      ? [
+          {
+            path: "docs/bootstrap/release-train-contract.md",
+            reason: "Governed release train contract",
+            contents: `${releaseTrainContractDoc()}\n`
+          },
+          {
+            path: "docs/bootstrap/release-evidence-schema.md",
+            reason: "Governed release evidence schema",
+            contents: `${releaseEvidenceSchemaDoc()}\n`
+          },
+          {
+            path: "docs/release-train.md",
+            reason: "Repo-local governed release train guide",
+            contents: `${releaseTrainDoc()}\n`
           }
         ]
       : []),

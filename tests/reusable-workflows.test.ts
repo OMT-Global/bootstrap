@@ -83,7 +83,27 @@ describe("reusable workflows", () => {
     expect(workflow.name).toBe("Reusable AI Attestation");
     expect((workflow.on as any).workflow_call.inputs["artifact_name"].default).toBe("ai-attestation");
     expect((workflow.on as any).workflow_call.inputs["retention_days"].default).toBe(90);
-    expect((workflow.jobs as any).attest).toBeTruthy();
-    expect((workflow.jobs as any).verify).toBeTruthy();
+    expect((workflow.jobs as any).attest["runs-on"]).toBe("ubuntu-latest");
+    expect((workflow.jobs as any).verify["runs-on"]).toBe("ubuntu-latest");
+  });
+
+  it("defines governed release train reusable workflow contracts", () => {
+    const preflight = loadWorkflow(".github/workflows/release-preflight-reusable.yml");
+    const validation = loadWorkflow(".github/workflows/full-release-validation-reusable.yml");
+    const publish = loadWorkflow(".github/workflows/release-publish-reusable.yml");
+    const postpublish = loadWorkflow(".github/workflows/release-postpublish-reusable.yml");
+
+    expect(preflight.name).toBe("Reusable Release Preflight");
+    expect((preflight.on as any).workflow_call.inputs.version.required).toBe(true);
+    expect((preflight.jobs as any).preflight).toBeTruthy();
+    expect(validation.name).toBe("Reusable Full Release Validation");
+    expect((validation.jobs as any).validate).toBeTruthy();
+    expect(publish.name).toBe("Reusable Release Publish");
+    expect((publish.on as any).workflow_call.inputs.require_release_issue.default).toBe(true);
+    expect((publish.jobs as any).publish.environment).toBe(
+      "${{ inputs.publish_environment || 'release-publish' }}"
+    );
+    expect(postpublish.name).toBe("Reusable Release Postpublish");
+    expect((postpublish.jobs as any).postpublish).toBeTruthy();
   });
 });

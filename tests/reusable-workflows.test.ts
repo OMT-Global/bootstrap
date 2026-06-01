@@ -95,11 +95,13 @@ describe("reusable workflows", () => {
 
     expect(preflight.name).toBe("Reusable Release Preflight");
     expect((preflight.on as any).workflow_call.inputs.version.required).toBe(true);
+    expect((validation.on as any).workflow_call.inputs.release_package_artifact_name.default).toBe("release-package");
     expect((preflight.jobs as any).preflight).toBeTruthy();
     expect(validation.name).toBe("Reusable Full Release Validation");
     expect((validation.jobs as any).validate).toBeTruthy();
     expect(publish.name).toBe("Reusable Release Publish");
     expect((publish.on as any).workflow_call.inputs.require_release_issue.default).toBe(true);
+    expect((publish.on as any).workflow_call.inputs.default_branch.default).toBe("main");
     expect((publish.jobs as any).publish.environment).toBe(
       "${{ inputs.publish_environment || 'release-publish' }}"
     );

@@ -1691,6 +1691,7 @@ function fullReleaseValidationReusableWorkflow(): string {
           runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
           validate_script: { required: false, type: string, default: scripts/release/validate.sh }
           artifact_dir: { required: false, type: string, default: dist/release }
+          release_package_artifact_name: { required: false, type: string, default: release-package }
           evidence_artifact_name: { required: false, type: string, default: release-evidence }
           evidence_retention_days: { required: false, type: number, default: 365 }
 
@@ -1731,7 +1732,7 @@ function fullReleaseValidationReusableWorkflow(): string {
               JSON
           - uses: actions/upload-artifact@v4
             with:
-              name: \${{ inputs.evidence_artifact_name }}-validation
+              name: \${{ inputs.release_package_artifact_name }}-validation
               path: \${{ inputs.artifact_dir }}/validation-evidence.json
               retention-days: \${{ inputs.evidence_retention_days }}
   `;
@@ -1757,6 +1758,7 @@ function releasePublishReusableWorkflow(): string {
           update_major_tag: { required: false, type: boolean, default: true }
           update_minor_tag: { required: false, type: boolean, default: true }
           tag_prefix: { required: false, type: string, default: v }
+          default_branch: { required: false, type: string, default: main }
           release_issue: { required: false, type: string, default: "" }
           require_release_issue: { required: false, type: boolean, default: true }
           require_signed_tag: { required: false, type: boolean, default: false }
@@ -1808,6 +1810,10 @@ function releasePublishReusableWorkflow(): string {
               rm -rf "$ARTIFACT_DIR"; mkdir -p "$ARTIFACT_DIR"
               gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"
               [[ -f "$ARTIFACT_DIR/release-evidence.json" ]] || { echo "Missing preflight release-evidence.json." >&2; exit 1; }
+              evidence_target_sha="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.target_sha) process.exit(2); process.stdout.write(p.target_sha)' "$ARTIFACT_DIR/release-evidence.json")"
+              [[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }
+              evidence_preflight_run_id="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.preflight_run_id) process.exit(2); process.stdout.write(p.preflight_run_id)' "$ARTIFACT_DIR/release-evidence.json")"
+              [[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }
               gh run view "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion' | grep -qx success
               [[ -x "$PUBLISH_SCRIPT" ]] && "$PUBLISH_SCRIPT"
               if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then

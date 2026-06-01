@@ -16,6 +16,7 @@ on:
       update_major_tag: { required: false, type: boolean, default: true }
       update_minor_tag: { required: false, type: boolean, default: true }
       tag_prefix: { required: false, type: string, default: v }
+      default_branch: { required: false, type: string, default: main }
       release_issue: { required: false, type: string, default: "" }
       require_release_issue: { required: false, type: boolean, default: true }
       require_signed_tag: { required: false, type: boolean, default: false }

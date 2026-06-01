@@ -323,6 +323,9 @@ describe("renderManagedFiles", () => {
     expect(publish?.contents).toContain("require_signed_tag: false");
     expect(reusablePublish?.contents).toContain("gh run download");
     expect(reusablePublish?.contents).toContain("UPDATE_MAJOR_TAG");
+    expect(reusablePublish?.contents).toContain("Preflight evidence target SHA does not match tag SHA.");
+    expect(reusablePublish?.contents).toContain("Validation evidence target SHA does not match tag SHA.");
+    expect(reusablePublish?.contents).toContain("release-evidence-validation");
     expect(releaseTrain?.contents).toContain("Publish must consume the artifact bundle proven by preflight");
     expect(issueTemplate?.contents).toContain("preflight_run_id recorded");
   });

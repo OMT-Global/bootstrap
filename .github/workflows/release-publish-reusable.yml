@@ -68,6 +68,19 @@ jobs:
           rm -rf "$ARTIFACT_DIR"; mkdir -p "$ARTIFACT_DIR"
           gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"
           [[ -f "$ARTIFACT_DIR/release-evidence.json" ]] || { echo "Missing preflight release-evidence.json." >&2; exit 1; }
+          evidence_target_sha="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.target_sha) process.exit(2); process.stdout.write(p.target_sha)' "$ARTIFACT_DIR/release-evidence.json")"
+          [[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }
+          evidence_preflight_run_id="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.preflight_run_id) process.exit(2); process.stdout.write(p.preflight_run_id)' "$ARTIFACT_DIR/release-evidence.json")"
+          [[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }
+          rm -rf "$ARTIFACT_DIR/validation" && mkdir -p "$ARTIFACT_DIR/validation"
+          gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$ARTIFACT_DIR/validation"
+          [[ -f "$ARTIFACT_DIR/validation/validation-evidence.json" ]] || { echo "Missing validation validation-evidence.json." >&2; exit 1; }
+          validation_target_sha="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.target_sha) process.exit(2); process.stdout.write(p.target_sha)' "$ARTIFACT_DIR/validation/validation-evidence.json")"
+          [[ "$validation_target_sha" == "$tag_sha" ]] || { echo "Validation evidence target SHA does not match tag SHA." >&2; exit 1; }
+          validation_run_id="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.validation_run_id) process.exit(2); process.stdout.write(p.validation_run_id)' "$ARTIFACT_DIR/validation/validation-evidence.json")"
+          [[ "$validation_run_id" == "$VALIDATION_RUN_ID" ]] || { echo "Validation evidence run ID does not match the requested validation run." >&2; exit 1; }
+          validation_repo="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.repo) process.exit(2); process.stdout.write(p.repo)' "$ARTIFACT_DIR/validation/validation-evidence.json")"
+          [[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }
           gh run view "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion' | grep -qx success
           [[ -x "$PUBLISH_SCRIPT" ]] && "$PUBLISH_SCRIPT"
           if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then

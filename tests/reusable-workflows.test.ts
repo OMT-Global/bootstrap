@@ -105,6 +105,9 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.environment).toBe(
       "${{ inputs.publish_environment || 'release-publish' }}"
     );
+    expect((publish.jobs as any).publish.steps[1].run).toContain("Preflight evidence target SHA does not match tag SHA.");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence target SHA does not match tag SHA.");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence-validation");
     expect(postpublish.name).toBe("Reusable Release Postpublish");
     expect((postpublish.jobs as any).postpublish).toBeTruthy();
   });

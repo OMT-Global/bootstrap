@@ -100,6 +100,7 @@ describe("reusable workflows", () => {
     expect(validation.name).toBe("Reusable Full Release Validation");
     expect((validation.jobs as any).validate).toBeTruthy();
     expect(publish.name).toBe("Reusable Release Publish");
+    expect(JSON.stringify(publish)).not.toContain("|| true");
     expect((publish.on as any).workflow_call.inputs.require_release_issue.default).toBe(true);
     expect((publish.on as any).workflow_call.inputs.default_branch.default).toBe("main");
     expect((publish.jobs as any).publish.environment).toBe(
@@ -110,5 +111,7 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence-validation");
     expect(postpublish.name).toBe("Reusable Release Postpublish");
     expect((postpublish.jobs as any).postpublish).toBeTruthy();
+    expect(JSON.stringify(postpublish)).not.toContain("|| true");
+    expect(JSON.stringify(postpublish)).toContain("Postpublish verification hook is missing or not executable");
   });
 });

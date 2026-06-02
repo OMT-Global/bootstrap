@@ -1844,11 +1844,7 @@ function releasePublishReusableWorkflow(): string {
                 [[ "$UPDATE_MAJOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}"
               fi
               if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
-                if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
-                  "$POSTPUBLISH_SCRIPT" "$TAG"
-                else
-                  "$POSTPUBLISH_SCRIPT" "$TAG" || true
-                fi
+                "$POSTPUBLISH_SCRIPT" "$TAG"
               elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
                 echo "Postpublish verification script is required but missing or not executable." >&2
                 exit 1

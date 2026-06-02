@@ -95,7 +95,8 @@ describe("reusable workflows", () => {
 
     expect(preflight.name).toBe("Reusable Release Preflight");
     expect((preflight.on as any).workflow_call.inputs.version.required).toBe(true);
-    expect((validation.on as any).workflow_call.inputs.release_package_artifact_name.default).toBe("release-package");
+    expect((validation.on as any).workflow_call.inputs.evidence_artifact_name.default).toBe("release-evidence");
+    expect((validation.on as any).workflow_call.inputs.release_package_artifact_name).toBeUndefined();
     expect((validation.jobs as any).validate.steps.some((step: any) => step.uses === "actions/upload-artifact@v4" && step.with?.name === "${{ inputs.evidence_artifact_name }}-validation")).toBe(true);
     expect((preflight.jobs as any).preflight).toBeTruthy();
     expect(validation.name).toBe("Reusable Full Release Validation");

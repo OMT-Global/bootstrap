@@ -1494,7 +1494,6 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
           release_profile: \${{ inputs.release_profile }}
           validate_script: scripts/release/validate.sh
           artifact_dir: ${manifest.release.artifacts.directory}
-          release_package_artifact_name: release-package
           evidence_artifact_name: release-evidence
           evidence_retention_days: 365
   `;
@@ -1691,7 +1690,6 @@ function fullReleaseValidationReusableWorkflow(): string {
           runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
           validate_script: { required: false, type: string, default: scripts/release/validate.sh }
           artifact_dir: { required: false, type: string, default: dist/release }
-          release_package_artifact_name: { required: false, type: string, default: release-package }
           evidence_artifact_name: { required: false, type: string, default: release-evidence }
           evidence_retention_days: { required: false, type: number, default: 365 }
 

@@ -8,7 +8,6 @@ on:
       runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
       validate_script: { required: false, type: string, default: scripts/release/validate.sh }
       artifact_dir: { required: false, type: string, default: dist/release }
-      release_package_artifact_name: { required: false, type: string, default: release-package }
       evidence_artifact_name: { required: false, type: string, default: release-evidence }
       evidence_retention_days: { required: false, type: number, default: 365 }
 

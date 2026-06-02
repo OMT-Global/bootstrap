@@ -22,6 +22,5 @@ jobs:
       release_profile: ${{ inputs.release_profile }}
       validate_script: scripts/release/validate.sh
       artifact_dir: dist/release
-      release_package_artifact_name: release-package
       evidence_artifact_name: release-evidence
       evidence_retention_days: 365

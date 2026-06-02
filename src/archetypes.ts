@@ -1847,6 +1847,7 @@ function releasePublishReusableWorkflow(): string {
               if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
                 [[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }
                 RELEASE_ASSET_DIR="\$(mktemp -d "\${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"
+                [[ "$RELEASE_ASSET_DIR" != "$PREFLIGHT_ARTIFACT_DIR" && "$RELEASE_ASSET_DIR" != "$VALIDATION_ARTIFACT_DIR" ]] || { echo "Release asset staging directory must be isolated from evidence download directories." >&2; exit 1; }
                 release_assets=()
                 while read -r asset_sha asset_path; do
                   [[ -n "\${asset_sha:-}" && -n "\${asset_path:-}" ]] || continue

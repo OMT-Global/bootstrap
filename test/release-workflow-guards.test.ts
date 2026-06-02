@@ -47,6 +47,7 @@ describe('governed release hook guards', () => {
     expect(workflow).toContain("gh run view \"$VALIDATION_RUN_ID\" --repo \"$GITHUB_REPOSITORY\" --json conclusion --jq '.conclusion' | grep -qx success");
     expect(workflow).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
     expect(workflow).toContain('RELEASE_ASSET_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"');
+    expect(workflow).toContain('[[ "$RELEASE_ASSET_DIR" != "$PREFLIGHT_ARTIFACT_DIR" && "$RELEASE_ASSET_DIR" != "$VALIDATION_ARTIFACT_DIR" ]] || { echo "Release asset staging directory must be isolated from evidence download directories." >&2; exit 1; }');
     expect(workflow).toContain("while read -r asset_sha asset_path; do");
     expect(workflow).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
     expect(workflow).toContain('cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');

@@ -1732,7 +1732,7 @@ function fullReleaseValidationReusableWorkflow(): string {
               JSON
           - uses: actions/upload-artifact@v4
             with:
-              name: \${{ inputs.release_package_artifact_name }}-validation
+              name: \${{ inputs.evidence_artifact_name }}-validation
               path: \${{ inputs.artifact_dir }}/validation-evidence.json
               retention-days: \${{ inputs.evidence_retention_days }}
   `;

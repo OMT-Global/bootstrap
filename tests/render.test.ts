@@ -326,6 +326,9 @@ describe("renderManagedFiles", () => {
     expect(reusablePublish?.contents).toContain("Preflight evidence target SHA does not match tag SHA.");
     expect(reusablePublish?.contents).toContain("Validation evidence target SHA does not match tag SHA.");
     expect(reusablePublish?.contents).toContain("release-evidence-validation");
+    const reusableValidation = files.find((file) => file.path === ".github/workflows/full-release-validation-reusable.yml");
+    expect(reusableValidation?.contents).toContain("name: ${{ inputs.evidence_artifact_name }}-validation");
+    expect(reusableValidation?.contents).not.toContain("inputs.release_package_artifact_name");
     expect(reusablePublish?.contents).not.toContain("|| true");
     expect(reusablePublish?.contents).toContain("Postpublish verification script is required but missing or not executable.");
     expect(releaseTrain?.contents).toContain("Publish must consume the artifact bundle proven by preflight");

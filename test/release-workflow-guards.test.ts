@@ -45,9 +45,11 @@ describe('governed release hook guards', () => {
     expect(workflow).toContain('[[ "$validation_run_id" == "$VALIDATION_RUN_ID" ]] || { echo "Validation evidence run ID does not match the requested validation run." >&2; exit 1; }');
     expect(workflow).toContain('[[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }');
     expect(workflow).toContain("gh run view \"$VALIDATION_RUN_ID\" --repo \"$GITHUB_REPOSITORY\" --json conclusion --jq '.conclusion' | grep -qx success");
+    expect(workflow).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
     expect(workflow).toContain('RELEASE_ASSET_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"');
-    expect(workflow).toContain("while IFS= read -r -d '' asset_path; do");
-    expect(workflow).toContain('cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect(workflow).toContain("while read -r asset_sha asset_path; do");
+    expect(workflow).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
+    expect(workflow).toContain('cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
     expect(workflow).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
     expect(workflow).toContain('[[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }');
     expect(workflow).not.toContain('find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f \( ! -name release-evidence.json ! -name validation-evidence.json \) -exec cp -p {} "$RELEASE_ASSET_DIR" \;');

@@ -324,17 +324,17 @@ describe("renderManagedFiles", () => {
     expect(reusablePublish?.contents).toContain("gh run download");
     expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR: ${{ runner.temp }}/release-validation");
     expect(reusablePublish?.contents).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect(reusablePublish?.contents).toContain("SHA256SUMS");
     expect(reusablePublish?.contents).toContain("RELEASE_ASSET_DIR");
-    expect(reusablePublish?.contents).toContain("while IFS= read -r -d '' asset_path; do");
-    expect(reusablePublish?.contents).toContain('cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect(reusablePublish?.contents).toContain("while read -r asset_sha asset_path; do");
+    expect(reusablePublish?.contents).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
+    expect(reusablePublish?.contents).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
+    expect(reusablePublish?.contents).toContain('cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
     expect(reusablePublish?.contents).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
     expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
     expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "${release_assets[@]}" "$ARTIFACT_DIR"/*');
     expect(reusablePublish?.contents).not.toContain('find "$ARTIFACT_DIR" -maxdepth 1 -type f');
-    expect(reusablePublish?.contents).toContain('find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f');
-    expect(reusablePublish?.contents).toContain("release-evidence.json");
-    expect(reusablePublish?.contents).toContain("validation-evidence.json");
-    expect(reusablePublish?.contents).toContain("! -name release-evidence.json ! -name validation-evidence.json");
+    expect(reusablePublish?.contents).toContain('done < "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS"');
     expect(reusablePublish?.contents).toContain("UPDATE_MAJOR_TAG");
     expect(reusablePublish?.contents).toContain(
       "Preflight evidence run ID does not match the requested preflight run."

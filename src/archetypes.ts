@@ -1845,13 +1845,17 @@ function releasePublishReusableWorkflow(): string {
                 "$PUBLISH_SCRIPT"
               fi
               if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
-                RELEASE_ASSET_DIR="$(mktemp -d "\${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"
+                [[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }
+                RELEASE_ASSET_DIR="\$(mktemp -d "\${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"
                 release_assets=()
-                while IFS= read -r -d '' asset_path; do
-                  asset_name="$(basename "$asset_path")"
-                  cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"
+                while read -r asset_sha asset_path; do
+                  [[ -n "\${asset_sha:-}" && -n "\${asset_path:-}" ]] || continue
+                  [[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue
+                  [[ -f "$PREFLIGHT_ARTIFACT_DIR/$asset_path" ]] || { echo "Missing preflight release asset: $asset_path" >&2; exit 1; }
+                  asset_name="\$(basename "$asset_path")"
+                  cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"
                   release_assets+=("$RELEASE_ASSET_DIR/$asset_name")
-                done < <(find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f \( ! -name release-evidence.json ! -name validation-evidence.json \) -print0 | sort -z)
+                done < "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS"
                 [[ \${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }
                 release_args=()
                 [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)

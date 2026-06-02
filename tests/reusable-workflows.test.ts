@@ -112,9 +112,12 @@ describe("reusable workflows", () => {
       "${{ runner.temp }}/release-validation"
     );
     expect((publish.jobs as any).publish.steps[1].run).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
     expect((publish.jobs as any).publish.steps[1].run).toContain("RELEASE_ASSET_DIR");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("while IFS= read -r -d '' asset_path; do");
-    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect((publish.jobs as any).publish.steps[1].run).toContain("while read -r asset_sha asset_path; do");
+    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
     expect((publish.jobs as any).publish.steps[1].run).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
     expect((publish.jobs as any).publish.steps[1].run).toContain('[[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }');
     expect((publish.jobs as any).publish.steps[1].run).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
@@ -125,8 +128,8 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence target SHA does not match tag SHA.");
     expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence-validation");
     expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence.json");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("validation-evidence.json");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("! -name release-evidence.json ! -name validation-evidence.json");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("while read -r asset_sha asset_path; do");
     expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence run ID does not match the requested validation run.");
     expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence repo does not match the current repository.");
     expect(postpublish.name).toBe("Reusable Release Postpublish");

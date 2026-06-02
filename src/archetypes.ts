@@ -1650,9 +1650,18 @@ function releasePreflightReusableWorkflow(): string {
               [[ "$VERSION" =~ ^\${escaped_prefix}\${semver}\\.\${semver}\\.\${semver}(-(rc|beta)\\.[0-9]+)?$ ]] || { echo "Invalid release version: $VERSION" >&2; exit 1; }
               target_sha="$(git rev-parse HEAD)"
               prep_status=skipped; preflight_status=skipped; build_status=skipped
-              [[ -x "$PREP_SCRIPT" ]] && "$PREP_SCRIPT" && prep_status=passed
-              [[ -x "$PREFLIGHT_SCRIPT" ]] && "$PREFLIGHT_SCRIPT" && preflight_status=passed
-              [[ -x "$BUILD_SCRIPT" ]] && "$BUILD_SCRIPT" && build_status=passed
+              if [[ -x "$PREP_SCRIPT" ]]; then
+                "$PREP_SCRIPT"
+                prep_status=passed
+              fi
+              if [[ -x "$PREFLIGHT_SCRIPT" ]]; then
+                "$PREFLIGHT_SCRIPT"
+                preflight_status=passed
+              fi
+              if [[ -x "$BUILD_SCRIPT" ]]; then
+                "$BUILD_SCRIPT"
+                build_status=passed
+              fi
               mkdir -p "$ARTIFACT_DIR" "$(dirname "$RELEASE_NOTES_FILE")"
               [[ -f "$RELEASE_NOTES_FILE" ]] || printf '# Release Notes\\n\\nCandidate: %s\\n' "$VERSION" >"$RELEASE_NOTES_FILE"
               : >"$ARTIFACT_DIR/SHA256SUMS"
@@ -1719,7 +1728,10 @@ function fullReleaseValidationReusableWorkflow(): string {
               mkdir -p "$ARTIFACT_DIR"
               validate_status=skipped
               standard_status=skipped
-              [[ -x "$VALIDATE_SCRIPT" ]] && "$VALIDATE_SCRIPT" && validate_status=passed
+              if [[ -x "$VALIDATE_SCRIPT" ]]; then
+                "$VALIDATE_SCRIPT"
+                validate_status=passed
+              fi
               if [[ -f package.json ]] && node -e "const p=require('./package.json'); process.exit(p.scripts?.check ? 0 : 1)" >/dev/null 2>&1; then
                 npm run check
                 standard_status=passed

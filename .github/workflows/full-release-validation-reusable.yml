@@ -37,7 +37,10 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
           validate_status=skipped
           standard_status=skipped
-          [[ -x "$VALIDATE_SCRIPT" ]] && "$VALIDATE_SCRIPT" && validate_status=passed
+          if [[ -x "$VALIDATE_SCRIPT" ]]; then
+            "$VALIDATE_SCRIPT"
+            validate_status=passed
+          fi
           if [[ -f package.json ]] && node -e "const p=require('./package.json'); process.exit(p.scripts?.check ? 0 : 1)" >/dev/null 2>&1; then
             npm run check
             standard_status=passed

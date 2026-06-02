@@ -39,7 +39,12 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
           asset_count="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
           [[ "$asset_count" -ge 1 ]] || { echo "Release has no assets." >&2; exit 1; }
-          [[ -x "$POSTPUBLISH_SCRIPT" ]] && "$POSTPUBLISH_SCRIPT" "$TAG" || true
+          if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
+            "$POSTPUBLISH_SCRIPT" "$TAG"
+          else
+            echo "Postpublish verification hook is missing or not executable: $POSTPUBLISH_SCRIPT" >&2
+            exit 1
+          fi
           printf '{"schema_version":1,"repo":"%s","tag":"%s","channel":"%s","release_issue":"%s","postpublish_run_id":"%s","release_assets":%s}\n' "$GITHUB_REPOSITORY" "$TAG" "$CHANNEL" "$RELEASE_ISSUE" "$GITHUB_RUN_ID" "$asset_count" >"$ARTIFACT_DIR/postpublish-evidence.json"
       - uses: actions/upload-artifact@v4
         with:

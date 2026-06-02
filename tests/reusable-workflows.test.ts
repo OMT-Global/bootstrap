@@ -117,6 +117,9 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.steps[1].run).toContain("Preflight evidence target SHA does not match tag SHA.");
     expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence target SHA does not match tag SHA.");
     expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence-validation");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence.json");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("validation-evidence.json");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("! -name release-evidence.json ! -name validation-evidence.json");
     expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence run ID does not match the requested validation run.");
     expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence repo does not match the current repository.");
     expect(postpublish.name).toBe("Reusable Release Postpublish");

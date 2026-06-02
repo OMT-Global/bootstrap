@@ -1844,7 +1844,7 @@ function releasePublishReusableWorkflow(): string {
                 "$PUBLISH_SCRIPT"
               fi
               if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
-                mapfile -t release_assets < <(find "$ARTIFACT_DIR" -maxdepth 1 -type f | sort)
+                mapfile -t release_assets < <(find "$ARTIFACT_DIR" -maxdepth 1 -type f \( ! -name release-evidence.json ! -name validation-evidence.json \) | sort)
                 release_args=()
                 [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
                 gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \\

@@ -34,4 +34,25 @@ describe('governed release hook guards', () => {
     expect(archetypes).not.toContain('[[ -x "$BUILD_SCRIPT" ]] && "$BUILD_SCRIPT" && build_status=passed');
     expect(archetypes).not.toContain('[[ -x "$VALIDATE_SCRIPT" ]] && "$VALIDATE_SCRIPT" && validate_status=passed');
   });
+
+  it('binds publish provenance to the tag sha and requested run ids', () => {
+    const workflow = read('.github/workflows/release-publish-reusable.yml');
+    expect(workflow).toContain('gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"');
+    expect(workflow).toContain('[[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }');
+    expect(workflow).toContain('[[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }');
+    expect(workflow).toContain('gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$ARTIFACT_DIR/validation"');
+    expect(workflow).toContain('[[ "$validation_target_sha" == "$tag_sha" ]] || { echo "Validation evidence target SHA does not match tag SHA." >&2; exit 1; }');
+    expect(workflow).toContain('[[ "$validation_run_id" == "$VALIDATION_RUN_ID" ]] || { echo "Validation evidence run ID does not match the requested validation run." >&2; exit 1; }');
+    expect(workflow).toContain('[[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }');
+    expect(workflow).toContain("gh run view \"$VALIDATION_RUN_ID\" --repo \"$GITHUB_REPOSITORY\" --json conclusion --jq '.conclusion' | grep -qx success");
+
+    const archetypes = read('src/archetypes.ts');
+    expect(archetypes).toContain('gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"');
+    expect(archetypes).toContain('[[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }');
+    expect(archetypes).toContain('[[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }');
+    expect(archetypes).toContain('gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$ARTIFACT_DIR/validation"');
+    expect(archetypes).toContain('[[ "$validation_target_sha" == "$tag_sha" ]] || { echo "Validation evidence target SHA does not match tag SHA." >&2; exit 1; }');
+    expect(archetypes).toContain('[[ "$validation_run_id" == "$VALIDATION_RUN_ID" ]] || { echo "Validation evidence run ID does not match the requested validation run." >&2; exit 1; }');
+    expect(archetypes).toContain('[[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }');
+  });
 });

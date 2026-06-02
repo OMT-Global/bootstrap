@@ -1667,7 +1667,7 @@ function releasePreflightReusableWorkflow(): string {
               [[ -f "$RELEASE_NOTES_FILE" ]] || printf '# Release Notes\\n\\nCandidate: %s\\n' "$VERSION" >"$RELEASE_NOTES_FILE"
               : >"$ARTIFACT_DIR/SHA256SUMS"
               find "$ARTIFACT_DIR" -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-evidence.json ! -name validation-evidence.json -print0 | sort -z | xargs -0 shasum -a 256 >>"$ARTIFACT_DIR/SHA256SUMS"
-              cat >"$RELEASE_ASSET_DIR/release-evidence.json" <<JSON
+              cat >"$ARTIFACT_DIR/release-evidence.json" <<JSON
               {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","version":"\${VERSION}","channel":"\${CHANNEL}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","release_issue":"\${RELEASE_ISSUE}","preflight_run_id":"\${GITHUB_RUN_ID}","checks":{"prep":"\${prep_status}","preflight":"\${preflight_status}","build":"\${build_status}"}}
               JSON
 

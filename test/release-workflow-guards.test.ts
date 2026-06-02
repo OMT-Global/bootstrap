@@ -33,6 +33,8 @@ describe('governed release hook guards', () => {
     expect(archetypes).not.toContain('[[ -x "$PREFLIGHT_SCRIPT" ]] && "$PREFLIGHT_SCRIPT" && preflight_status=passed');
     expect(archetypes).not.toContain('[[ -x "$BUILD_SCRIPT" ]] && "$BUILD_SCRIPT" && build_status=passed');
     expect(archetypes).not.toContain('[[ -x "$VALIDATE_SCRIPT" ]] && "$VALIDATE_SCRIPT" && validate_status=passed');
+    expect(archetypes).toContain('cat >"$ARTIFACT_DIR/release-evidence.json" <<JSON');
+    expect(archetypes).not.toContain('cat >"$RELEASE_ASSET_DIR/release-evidence.json" <<JSON');
   });
 
   it('binds publish provenance to the tag sha and requested run ids', () => {

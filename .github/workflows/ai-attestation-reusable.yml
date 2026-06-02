@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 1
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.1
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Collect metadata and write attestation
         id: meta
@@ -93,7 +93,7 @@ jobs:
     needs: attest
     steps:
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.1
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Download attestation artifact
         uses: actions/download-artifact@v4

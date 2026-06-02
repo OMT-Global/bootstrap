@@ -37,7 +37,7 @@ describe('governed release hook guards', () => {
 
   it('binds publish provenance to the tag sha and requested run ids', () => {
     const workflow = read('.github/workflows/release-publish-reusable.yml');
-    expect(workflow).toContain('gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"');
+    expect(workflow).toContain('gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$PREFLIGHT_ARTIFACT_DIR"');
     expect(workflow).toContain('[[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }');
     expect(workflow).toContain('[[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }');
     expect(workflow).toContain('gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$VALIDATION_ARTIFACT_DIR"');
@@ -55,7 +55,7 @@ describe('governed release hook guards', () => {
     expect(workflow).not.toContain('find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f \( ! -name release-evidence.json ! -name validation-evidence.json \) -exec cp -p {} "$RELEASE_ASSET_DIR" \;');
 
     const archetypes = read('src/archetypes.ts');
-    expect(archetypes).toContain('gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$ARTIFACT_DIR"');
+    expect(archetypes).toContain('gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$PREFLIGHT_ARTIFACT_DIR"');
     expect(archetypes).toContain('[[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }');
     expect(archetypes).toContain('[[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }');
     expect(archetypes).toContain('gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$VALIDATION_ARTIFACT_DIR"');

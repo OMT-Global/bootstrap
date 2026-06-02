@@ -113,7 +113,10 @@ describe("reusable workflows", () => {
     );
     expect((publish.jobs as any).publish.steps[1].run).toContain("PREFLIGHT_ARTIFACT_DIR");
     expect((publish.jobs as any).publish.steps[1].run).toContain("RELEASE_ASSET_DIR");
-    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p {} "$RELEASE_ASSET_DIR"');
+    expect((publish.jobs as any).publish.steps[1].run).toContain("while IFS= read -r -d '' asset_path; do");
+    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }');
     expect((publish.jobs as any).publish.steps[1].run).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
     expect((publish.jobs as any).publish.steps[1].run).toContain(
       'Preflight evidence run ID does not match the requested preflight run.'

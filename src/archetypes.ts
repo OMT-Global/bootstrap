@@ -1846,8 +1846,13 @@ function releasePublishReusableWorkflow(): string {
               fi
               if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
                 RELEASE_ASSET_DIR="$(mktemp -d "\${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"
-                find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f \( ! -name release-evidence.json ! -name validation-evidence.json \) -exec cp -p {} "$RELEASE_ASSET_DIR" \;
-                mapfile -t release_assets < <(find "$RELEASE_ASSET_DIR" -maxdepth 1 -type f | sort)
+                release_assets=()
+                while IFS= read -r -d '' asset_path; do
+                  asset_name="$(basename "$asset_path")"
+                  cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"
+                  release_assets+=("$RELEASE_ASSET_DIR/$asset_name")
+                done < <(find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f \( ! -name release-evidence.json ! -name validation-evidence.json \) -print0 | sort -z)
+                [[ \${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }
                 release_args=()
                 [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
                 gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \

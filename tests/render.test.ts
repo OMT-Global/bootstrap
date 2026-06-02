@@ -325,7 +325,9 @@ describe("renderManagedFiles", () => {
     expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR: ${{ runner.temp }}/release-validation");
     expect(reusablePublish?.contents).toContain("PREFLIGHT_ARTIFACT_DIR");
     expect(reusablePublish?.contents).toContain("RELEASE_ASSET_DIR");
-    expect(reusablePublish?.contents).toContain('cp -p {} "$RELEASE_ASSET_DIR"');
+    expect(reusablePublish?.contents).toContain("while IFS= read -r -d '' asset_path; do");
+    expect(reusablePublish?.contents).toContain('cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect(reusablePublish?.contents).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
     expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
     expect(reusablePublish?.contents).toContain("release-evidence.json");
     expect(reusablePublish?.contents).toContain("validation-evidence.json");

@@ -1849,6 +1849,9 @@ function releasePublishReusableWorkflow(): string {
                 else
                   "$POSTPUBLISH_SCRIPT" "$TAG" || true
                 fi
+              elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
+                echo "Postpublish verification script is required but missing or not executable." >&2
+                exit 1
               fi
               printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
           - uses: actions/upload-artifact@v4

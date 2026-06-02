@@ -326,6 +326,7 @@ describe("renderManagedFiles", () => {
     expect(reusablePublish?.contents).toContain("Preflight evidence target SHA does not match tag SHA.");
     expect(reusablePublish?.contents).toContain("Validation evidence target SHA does not match tag SHA.");
     expect(reusablePublish?.contents).toContain("release-evidence-validation");
+    expect(reusablePublish?.contents).toContain("Postpublish verification script is required but missing or not executable.");
     expect(releaseTrain?.contents).toContain("Publish must consume the artifact bundle proven by preflight");
     expect(issueTemplate?.contents).toContain("preflight_run_id recorded");
   });

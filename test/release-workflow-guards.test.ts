@@ -41,6 +41,8 @@ describe('governed release hook guards', () => {
     expect(workflow).toContain('[[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }');
     expect(workflow).toContain('[[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }');
     expect(workflow).toContain('gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$VALIDATION_ARTIFACT_DIR"');
+    expect(workflow).not.toContain('"$ARTIFACT_DIR/validation"');
+    expect(workflow).not.toContain('"$ARTIFACT_DIR"/*');
     expect(workflow).toContain('[[ "$validation_target_sha" == "$tag_sha" ]] || { echo "Validation evidence target SHA does not match tag SHA." >&2; exit 1; }');
     expect(workflow).toContain('[[ "$validation_run_id" == "$VALIDATION_RUN_ID" ]] || { echo "Validation evidence run ID does not match the requested validation run." >&2; exit 1; }');
     expect(workflow).toContain('[[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }');
@@ -66,6 +68,8 @@ describe('governed release hook guards', () => {
     expect(archetypes).toContain('gh release upload "$TAG"');
     expect(archetypes).toContain('gh release create "$TAG"');
     expect(archetypes).toContain('gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$VALIDATION_ARTIFACT_DIR"');
+    expect(archetypes).not.toContain('"$ARTIFACT_DIR/validation"');
+    expect(archetypes).not.toContain('"$ARTIFACT_DIR"/*');
     expect(archetypes).toContain('[[ "$validation_target_sha" == "$tag_sha" ]] || { echo "Validation evidence target SHA does not match tag SHA." >&2; exit 1; }');
     expect(archetypes).toContain('[[ "$validation_run_id" == "$VALIDATION_RUN_ID" ]] || { echo "Validation evidence run ID does not match the requested validation run." >&2; exit 1; }');
     expect(archetypes).toContain('[[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }');

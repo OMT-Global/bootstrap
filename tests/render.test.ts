@@ -329,6 +329,9 @@ describe("renderManagedFiles", () => {
     expect(reusablePublish?.contents).toContain('cp -p -- "$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
     expect(reusablePublish?.contents).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
     expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
+    expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "${release_assets[@]}" "$ARTIFACT_DIR"/*');
+    expect(reusablePublish?.contents).not.toContain('find "$ARTIFACT_DIR" -maxdepth 1 -type f');
+    expect(reusablePublish?.contents).toContain('find "$PREFLIGHT_ARTIFACT_DIR" -maxdepth 1 -type f');
     expect(reusablePublish?.contents).toContain("release-evidence.json");
     expect(reusablePublish?.contents).toContain("validation-evidence.json");
     expect(reusablePublish?.contents).toContain("! -name release-evidence.json ! -name validation-evidence.json");

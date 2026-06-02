@@ -59,6 +59,7 @@ export interface CustomScriptsConfig {
 }
 
 export type ReleaseChangelogMode = "github-generated-notes";
+export type ReleaseMaturity = "none" | "simple" | "governed" | "regulated";
 export type ReleaseVersionType = "npm" | "python" | "container";
 export type ReleaseChecksumType = "sha256" | "none";
 export type ReleaseSbomMode = "required" | "optional" | "disabled";
@@ -184,6 +185,7 @@ export interface BootstrapManifest {
   };
   release: {
     enabled: boolean;
+    maturity: ReleaseMaturity;
     tagPrefix: string;
     createGitHubRelease: boolean;
     updateMajorTag: boolean;

@@ -277,6 +277,7 @@ const manifestSchema = z.object({
   release: z
     .object({
       enabled: z.boolean().optional(),
+      maturity: z.enum(["none", "simple", "governed", "regulated"]).optional(),
       tagPrefix: z.string().min(1).optional(),
       createGitHubRelease: z.boolean().optional(),
       updateMajorTag: z.boolean().optional(),
@@ -484,6 +485,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
   const repoFeatures = github.repoFeatures ?? {};
   const flowGovernance = github.flowGovernance ?? false;
   const environments = parsed.environments ?? {};
+  const releaseEnabled = parsed.release?.enabled ?? true;
 
   const defaultEnvironment = (overrides?: z.input<typeof environmentSchema>): EnvironmentConfig => ({
     reviewers: overrides?.reviewers ?? [],
@@ -564,7 +566,8 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       }
     },
     release: {
-      enabled: parsed.release?.enabled ?? true,
+      enabled: releaseEnabled,
+      maturity: releaseEnabled ? (parsed.release?.maturity ?? "simple") : "none",
       tagPrefix: parsed.release?.tagPrefix ?? "v",
       createGitHubRelease: parsed.release?.createGitHubRelease ?? true,
       updateMajorTag: parsed.release?.updateMajorTag ?? true,

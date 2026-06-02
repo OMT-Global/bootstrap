@@ -282,6 +282,77 @@ describe("renderManagedFiles", () => {
     expect(versioningDoc?.contents).toContain("Release Notes");
   });
 
+  it("renders governed release automation when requested", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "governed-release-repo",
+        owner: "OMT-Global"
+      },
+      archetype: {
+        kind: "generic-empty"
+      },
+      release: {
+        enabled: true,
+        maturity: "governed",
+        reusableWorkflowRef: "refs/tags/bootstrap-v1"
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const paths = files.map((file) => file.path);
+    const preflight = files.find((file) => file.path === ".github/workflows/release-preflight.yml");
+    const publish = files.find((file) => file.path === ".github/workflows/release-publish.yml");
+    const reusablePublish = files.find(
+      (file) => file.path === ".github/workflows/release-publish-reusable.yml"
+    );
+    const releaseTrain = files.find((file) => file.path === "docs/release-train.md");
+    const issueTemplate = files.find((file) => file.path === ".github/ISSUE_TEMPLATE/release_train.yml");
+
+    expect(paths).not.toContain(".github/workflows/release-tag.yml");
+    expect(paths).toContain(".github/workflows/release-preflight-reusable.yml");
+    expect(paths).toContain(".github/workflows/full-release-validation-reusable.yml");
+    expect(paths).toContain(".github/workflows/release-publish-reusable.yml");
+    expect(paths).toContain(".github/workflows/release-postpublish-reusable.yml");
+    expect(paths).toContain("scripts/release/preflight.sh");
+    expect(paths).toContain("scripts/release/postpublish.sh");
+    expect(paths).toContain("docs/bootstrap/release-evidence-schema.md");
+    expect(preflight?.contents).toContain(
+      "uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@refs/tags/bootstrap-v1"
+    );
+    expect(publish?.contents).toContain("require_release_issue: true");
+    expect(publish?.contents).toContain("require_signed_tag: false");
+    expect(reusablePublish?.contents).toContain("gh run download");
+    expect(reusablePublish?.contents).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR");
+    expect(reusablePublish?.contents).toContain("SHA256SUMS");
+    expect(reusablePublish?.contents).toContain("RELEASE_ASSET_DIR");
+    expect(reusablePublish?.contents).toContain("while read -r asset_sha asset_path; do");
+    expect(reusablePublish?.contents).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
+    expect(reusablePublish?.contents).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
+    expect(reusablePublish?.contents).not.toContain('find "$ARTIFACT_DIR" -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 >>"$ARTIFACT_DIR/SHA256SUMS"');
+    expect(reusablePublish?.contents).toContain('cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect(reusablePublish?.contents).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
+    expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
+    expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "${release_assets[@]}" "$ARTIFACT_DIR"/*');
+    expect(reusablePublish?.contents).not.toContain('find "$ARTIFACT_DIR" -maxdepth 1 -type f');
+    expect(reusablePublish?.contents).toContain('done < "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS"');
+    expect(reusablePublish?.contents).toContain("UPDATE_MAJOR_TAG");
+    expect(reusablePublish?.contents).toContain(
+      "Preflight evidence run ID does not match the requested preflight run."
+    );
+    expect(reusablePublish?.contents).toContain("Preflight evidence target SHA does not match tag SHA.");
+    expect(reusablePublish?.contents).toContain("Validation evidence target SHA does not match tag SHA.");
+    expect(reusablePublish?.contents).toContain("Validation evidence run ID does not match the requested validation run.");
+    expect(reusablePublish?.contents).toContain("release-evidence-validation");
+    const reusableValidation = files.find((file) => file.path === ".github/workflows/full-release-validation-reusable.yml");
+    expect(reusableValidation?.contents).toContain("name: ${{ inputs.evidence_artifact_name }}-validation");
+    expect(reusableValidation?.contents).not.toContain("inputs.release_package_artifact_name");
+    expect(reusablePublish?.contents).not.toContain("|| true");
+    expect(reusablePublish?.contents).toContain("Postpublish verification script is required but missing or not executable.");
+    expect(releaseTrain?.contents).toContain("Publish must consume the artifact bundle proven by preflight");
+    expect(issueTemplate?.contents).toContain("preflight_run_id recorded");
+  });
+
   it("renders npm and python version validation in the release version hook", () => {
     const manifest = normalizeManifest({
       project: {

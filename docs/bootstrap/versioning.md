@@ -37,7 +37,7 @@ Consumers should prefer `v1` for the default compatibility channel, `v1.2` when 
 - The default release artifact directory is `dist/release/`.
 - `scripts/ci/run-release-build.sh` is where repo-specific build steps populate that directory; with no artifacts it prints an explicit no-op message instead of failing silently.
 - Checksum generation is `sha256`; when set to `sha256` a `SHA256SUMS` file is written alongside the artifacts.
-- The reusable workflow uploads every file in the artifact directory to the GitHub Release.
+- The reusable workflow uploads the release bundle listed in `SHA256SUMS` plus the release notes, while excluding validation evidence artifacts.
 - SBOM/provenance is `optional` and is designed into the manifest for repos that opt in.
 
 ## Release Notes

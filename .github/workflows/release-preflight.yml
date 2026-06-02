@@ -1,0 +1,41 @@
+name: Release Preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, e.g. v1.2.3-rc.1
+        required: true
+        type: string
+      channel:
+        description: Release channel
+        required: true
+        default: rc
+        type: choice
+        options: [rc, beta, stable, maintenance]
+      target_ref:
+        description: Branch, tag, or full SHA to preflight
+        required: true
+        type: string
+      release_issue:
+        description: Release issue number
+        required: false
+        type: string
+
+jobs:
+  preflight:
+    uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@refs/heads/main
+    with:
+      version: ${{ inputs.version }}
+      channel: ${{ inputs.channel }}
+      target_ref: ${{ inputs.target_ref }}
+      release_issue: ${{ inputs.release_issue }}
+      prep_script: scripts/release/prep.sh
+      preflight_script: scripts/release/preflight.sh
+      build_script: scripts/release/build.sh
+      artifact_dir: dist/release
+      release_notes_file: dist/release/RELEASE_NOTES.md
+      tag_prefix: 'v'
+      default_branch: main
+      evidence_artifact_name: release-evidence
+      evidence_retention_days: 365

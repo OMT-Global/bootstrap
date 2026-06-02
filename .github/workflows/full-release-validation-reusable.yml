@@ -1,0 +1,56 @@
+name: Reusable Full Release Validation
+
+on:
+  workflow_call:
+    inputs:
+      target_ref: { required: true, type: string }
+      release_profile: { required: true, type: string }
+      runs_on: { required: false, type: string, default: '["ubuntu-latest"]' }
+      validate_script: { required: false, type: string, default: scripts/release/validate.sh }
+      artifact_dir: { required: false, type: string, default: dist/release }
+      evidence_artifact_name: { required: false, type: string, default: release-evidence }
+      evidence_retention_days: { required: false, type: number, default: 365 }
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate:
+    runs-on: ${{ fromJSON(inputs.runs_on || '["ubuntu-latest"]') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+      - name: Run release validation
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
+          VALIDATE_SCRIPT: ${{ inputs.validate_script }}
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          validate_status=skipped
+          standard_status=skipped
+          if [[ -x "$VALIDATE_SCRIPT" ]]; then
+            "$VALIDATE_SCRIPT"
+            validate_status=passed
+          fi
+          if [[ -f package.json ]] && node -e "const p=require('./package.json'); process.exit(p.scripts?.check ? 0 : 1)" >/dev/null 2>&1; then
+            npm run check
+            standard_status=passed
+          fi
+          target_sha="$(git rev-parse HEAD)"
+          cat >"$ARTIFACT_DIR/validation-evidence.json" <<JSON
+          {"schema_version":1,"repo":"${GITHUB_REPOSITORY}","target_ref":"${TARGET_REF}","target_sha":"${target_sha}","validation_run_id":"${GITHUB_RUN_ID}","release_profile":"${RELEASE_PROFILE}","checks":{"validate_script":"${validate_status}","standard_checks":"${standard_status}"}}
+          JSON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.evidence_artifact_name }}-validation
+          path: ${{ inputs.artifact_dir }}/validation-evidence.json
+          retention-days: ${{ inputs.evidence_retention_days }}

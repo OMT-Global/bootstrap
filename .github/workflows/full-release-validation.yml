@@ -1,0 +1,26 @@
+name: Full Release Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch, tag, or full SHA to validate
+        required: true
+        type: string
+      release_profile:
+        description: Validation depth
+        required: true
+        default: standard
+        type: choice
+        options: [smoke, standard, full]
+
+jobs:
+  validate:
+    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@refs/heads/main
+    with:
+      target_ref: ${{ inputs.target_ref }}
+      release_profile: ${{ inputs.release_profile }}
+      validate_script: scripts/release/validate.sh
+      artifact_dir: dist/release
+      evidence_artifact_name: release-evidence
+      evidence_retention_days: 365

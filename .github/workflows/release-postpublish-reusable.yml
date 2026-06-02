@@ -1,0 +1,52 @@
+name: Reusable Release Postpublish
+
+on:
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
+      channel: { required: true, type: string }
+      release_issue: { required: false, type: string, default: "" }
+      postpublish_script: { required: false, type: string, default: scripts/release/postpublish.sh }
+      artifact_dir: { required: false, type: string, default: dist/release }
+      evidence_artifact_name: { required: false, type: string, default: release-evidence }
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  postpublish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+          RELEASE_ISSUE: ${{ inputs.release_issue }}
+          POSTPUBLISH_SCRIPT: ${{ inputs.postpublish_script }}
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          asset_count="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
+          [[ "$asset_count" -ge 1 ]] || { echo "Release has no assets." >&2; exit 1; }
+          if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
+            "$POSTPUBLISH_SCRIPT" "$TAG"
+          else
+            echo "Postpublish verification hook is missing or not executable: $POSTPUBLISH_SCRIPT" >&2
+            exit 1
+          fi
+          printf '{"schema_version":1,"repo":"%s","tag":"%s","channel":"%s","release_issue":"%s","postpublish_run_id":"%s","release_assets":%s}\n' "$GITHUB_REPOSITORY" "$TAG" "$CHANNEL" "$RELEASE_ISSUE" "$GITHUB_RUN_ID" "$asset_count" >"$ARTIFACT_DIR/postpublish-evidence.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.evidence_artifact_name }}-postpublish
+          path: ${{ inputs.artifact_dir }}/postpublish-evidence.json

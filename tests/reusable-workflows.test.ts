@@ -83,7 +83,55 @@ describe("reusable workflows", () => {
     expect(workflow.name).toBe("Reusable AI Attestation");
     expect((workflow.on as any).workflow_call.inputs["artifact_name"].default).toBe("ai-attestation");
     expect((workflow.on as any).workflow_call.inputs["retention_days"].default).toBe(90);
-    expect((workflow.jobs as any).attest).toBeTruthy();
-    expect((workflow.jobs as any).verify).toBeTruthy();
+    expect((workflow.jobs as any).attest["runs-on"]).toBe("ubuntu-latest");
+    expect((workflow.jobs as any).verify["runs-on"]).toBe("ubuntu-latest");
+  });
+
+  it("defines governed release train reusable workflow contracts", () => {
+    const preflight = loadWorkflow(".github/workflows/release-preflight-reusable.yml");
+    const validation = loadWorkflow(".github/workflows/full-release-validation-reusable.yml");
+    const publish = loadWorkflow(".github/workflows/release-publish-reusable.yml");
+    const postpublish = loadWorkflow(".github/workflows/release-postpublish-reusable.yml");
+
+    expect(preflight.name).toBe("Reusable Release Preflight");
+    expect((preflight.on as any).workflow_call.inputs.version.required).toBe(true);
+    expect((validation.on as any).workflow_call.inputs.evidence_artifact_name.default).toBe("release-evidence");
+    expect((validation.on as any).workflow_call.inputs.release_package_artifact_name).toBeUndefined();
+    expect((validation.jobs as any).validate.steps.some((step: any) => step.uses === "actions/upload-artifact@v4" && step.with?.name === "${{ inputs.evidence_artifact_name }}-validation")).toBe(true);
+    expect((preflight.jobs as any).preflight).toBeTruthy();
+    expect(validation.name).toBe("Reusable Full Release Validation");
+    expect((validation.jobs as any).validate).toBeTruthy();
+    expect(publish.name).toBe("Reusable Release Publish");
+    expect(JSON.stringify(publish)).not.toContain("|| true");
+    expect((publish.on as any).workflow_call.inputs.require_release_issue.default).toBe(true);
+    expect((publish.on as any).workflow_call.inputs.default_branch.default).toBe("main");
+    expect((publish.jobs as any).publish.environment).toBe(
+      "${{ inputs.publish_environment || 'release-publish' }}"
+    );
+    expect((publish.jobs as any).publish.steps[1].run).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("RELEASE_ASSET_DIR");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("while read -r asset_sha asset_path; do");
+    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
+    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }');
+    expect((publish.jobs as any).publish.steps[1].run).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
+    expect((publish.jobs as any).publish.steps[1].run).toContain(
+      'Preflight evidence run ID does not match the requested preflight run.'
+    );
+    expect((publish.jobs as any).publish.steps[1].run).toContain("Preflight evidence target SHA does not match tag SHA.");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence target SHA does not match tag SHA.");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence-validation");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence.json");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("while read -r asset_sha asset_path; do");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence run ID does not match the requested validation run.");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence repo does not match the current repository.");
+    expect(postpublish.name).toBe("Reusable Release Postpublish");
+    expect((postpublish.jobs as any).postpublish).toBeTruthy();
+    expect(JSON.stringify(postpublish)).not.toContain("|| true");
+    expect(JSON.stringify(postpublish)).toContain("Postpublish verification hook is missing or not executable");
   });
 });

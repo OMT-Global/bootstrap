@@ -108,9 +108,6 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.environment).toBe(
       "${{ inputs.publish_environment || 'release-publish' }}"
     );
-    expect((publish.jobs as any).publish.steps[1].env.VALIDATION_ARTIFACT_DIR).toBe(
-      "${{ runner.temp }}/release-validation"
-    );
     expect((publish.jobs as any).publish.steps[1].run).toContain("PREFLIGHT_ARTIFACT_DIR");
     expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
     expect((publish.jobs as any).publish.steps[1].run).toContain("RELEASE_ASSET_DIR");

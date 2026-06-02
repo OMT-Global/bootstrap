@@ -59,7 +59,6 @@ jobs:
           UPDATE_MINOR_TAG: ${{ inputs.update_minor_tag }}
           TAG_PREFIX: ${{ inputs.tag_prefix }}
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
-          VALIDATION_ARTIFACT_DIR: ${{ runner.temp }}/release-validation
           RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
           PUBLISH_SCRIPT: ${{ inputs.publish_script }}
           POSTPUBLISH_SCRIPT: ${{ inputs.postpublish_script }}

@@ -322,8 +322,8 @@ describe("renderManagedFiles", () => {
     expect(publish?.contents).toContain("require_release_issue: true");
     expect(publish?.contents).toContain("require_signed_tag: false");
     expect(reusablePublish?.contents).toContain("gh run download");
-    expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR: ${{ runner.temp }}/release-validation");
     expect(reusablePublish?.contents).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR");
     expect(reusablePublish?.contents).toContain("SHA256SUMS");
     expect(reusablePublish?.contents).toContain("RELEASE_ASSET_DIR");
     expect(reusablePublish?.contents).toContain("while read -r asset_sha asset_path; do");

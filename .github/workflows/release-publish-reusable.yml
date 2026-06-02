@@ -77,7 +77,7 @@ jobs:
           [[ "$evidence_target_sha" == "$tag_sha" ]] || { echo "Preflight evidence target SHA does not match tag SHA." >&2; exit 1; }
           evidence_preflight_run_id="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.preflight_run_id) process.exit(2); process.stdout.write(p.preflight_run_id)' "$ARTIFACT_DIR/release-evidence.json")"
           [[ "$evidence_preflight_run_id" == "$PREFLIGHT_RUN_ID" ]] || { echo "Preflight evidence run ID does not match the requested preflight run." >&2; exit 1; }
-          rm -rf "$VALIDATION_ARTIFACT_DIR" && mkdir -p "$VALIDATION_ARTIFACT_DIR"
+          VALIDATION_ARTIFACT_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/release-validation.XXXXXX")"
           gh run download "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-evidence-validation --dir "$VALIDATION_ARTIFACT_DIR"
           [[ -f "$VALIDATION_ARTIFACT_DIR/validation-evidence.json" ]] || { echo "Missing validation validation-evidence.json." >&2; exit 1; }
           validation_target_sha="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.target_sha) process.exit(2); process.stdout.write(p.target_sha)' "$VALIDATION_ARTIFACT_DIR/validation-evidence.json")"

@@ -1637,6 +1637,7 @@ function releasePreflightReusableWorkflow(): string {
               TARGET_REF: \${{ inputs.target_ref }}
               RELEASE_ISSUE: \${{ inputs.release_issue }}
               ARTIFACT_DIR: \${{ inputs.artifact_dir }}
+              VALIDATION_ARTIFACT_DIR: \${{ runner.temp }}/release-validation
               RELEASE_NOTES_FILE: \${{ inputs.release_notes_file }}
               PREP_SCRIPT: \${{ inputs.prep_script }}
               PREFLIGHT_SCRIPT: \${{ inputs.preflight_script }}
@@ -1811,6 +1812,7 @@ function releasePublishReusableWorkflow(): string {
               UPDATE_MINOR_TAG: \${{ inputs.update_minor_tag }}
               TAG_PREFIX: \${{ inputs.tag_prefix }}
               ARTIFACT_DIR: \${{ inputs.artifact_dir }}
+              VALIDATION_ARTIFACT_DIR: \${{ runner.temp }}/release-validation
               RELEASE_NOTES_FILE: \${{ inputs.release_notes_file }}
               PUBLISH_SCRIPT: \${{ inputs.publish_script }}
               POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
@@ -1842,11 +1844,12 @@ function releasePublishReusableWorkflow(): string {
                 "$PUBLISH_SCRIPT"
               fi
               if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
+                mapfile -t release_assets < <(find "$ARTIFACT_DIR" -maxdepth 1 -type f | sort)
                 release_args=()
                 [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
                 gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \\
-                  && gh release upload "$TAG" "$ARTIFACT_DIR"/* --repo "$GITHUB_REPOSITORY" --clobber \\
-                  || gh release create "$TAG" "$ARTIFACT_DIR"/* --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "\${release_args[@]}"
+                  && gh release upload "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber \\
+                  || gh release create "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "\${release_args[@]}"
               fi
               if [[ "$TAG" != *"-rc."* && "$TAG" != *"-beta."* ]]; then
                 version="\${TAG#"$TAG_PREFIX"}"; IFS=. read -r major minor patch <<<"$version"

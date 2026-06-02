@@ -322,9 +322,15 @@ describe("renderManagedFiles", () => {
     expect(publish?.contents).toContain("require_release_issue: true");
     expect(publish?.contents).toContain("require_signed_tag: false");
     expect(reusablePublish?.contents).toContain("gh run download");
+    expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR: ${{ runner.temp }}/release-validation");
+    expect(reusablePublish?.contents).toContain("mapfile -t release_assets < <(find \"$ARTIFACT_DIR\" -maxdepth 1 -type f | sort)");
     expect(reusablePublish?.contents).toContain("UPDATE_MAJOR_TAG");
+    expect(reusablePublish?.contents).toContain(
+      "Preflight evidence run ID does not match the requested preflight run."
+    );
     expect(reusablePublish?.contents).toContain("Preflight evidence target SHA does not match tag SHA.");
     expect(reusablePublish?.contents).toContain("Validation evidence target SHA does not match tag SHA.");
+    expect(reusablePublish?.contents).toContain("Validation evidence run ID does not match the requested validation run.");
     expect(reusablePublish?.contents).toContain("release-evidence-validation");
     const reusableValidation = files.find((file) => file.path === ".github/workflows/full-release-validation-reusable.yml");
     expect(reusableValidation?.contents).toContain("name: ${{ inputs.evidence_artifact_name }}-validation");

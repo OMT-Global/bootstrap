@@ -323,6 +323,10 @@ describe("renderManagedFiles", () => {
     expect(publish?.contents).toContain("require_signed_tag: false");
     expect(reusablePublish?.contents).toContain("gh run download");
     expect(reusablePublish?.contents).toContain("VALIDATION_ARTIFACT_DIR: ${{ runner.temp }}/release-validation");
+    expect(reusablePublish?.contents).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect(reusablePublish?.contents).toContain("RELEASE_ASSET_DIR");
+    expect(reusablePublish?.contents).toContain('cp -p {} "$RELEASE_ASSET_DIR"');
+    expect(reusablePublish?.contents).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
     expect(reusablePublish?.contents).toContain("release-evidence.json");
     expect(reusablePublish?.contents).toContain("validation-evidence.json");
     expect(reusablePublish?.contents).toContain("! -name release-evidence.json ! -name validation-evidence.json");

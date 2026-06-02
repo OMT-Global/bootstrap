@@ -111,6 +111,10 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.steps[1].env.VALIDATION_ARTIFACT_DIR).toBe(
       "${{ runner.temp }}/release-validation"
     );
+    expect((publish.jobs as any).publish.steps[1].run).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect((publish.jobs as any).publish.steps[1].run).toContain("RELEASE_ASSET_DIR");
+    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p {} "$RELEASE_ASSET_DIR"');
+    expect((publish.jobs as any).publish.steps[1].run).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
     expect((publish.jobs as any).publish.steps[1].run).toContain(
       'Preflight evidence run ID does not match the requested preflight run.'
     );

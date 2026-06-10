@@ -43,8 +43,52 @@ function selectManagedFiles(manifest: BootstrapManifest, files: RenderedFile[]):
     return files;
   }
 
-  return files.filter((file) =>
+  const selectedFiles = files.filter((file) =>
     manifest.repo.managedPaths.some((pattern) => matchesManagedPath(file.path, pattern))
+  );
+  validateManagedPathDependencies(selectedFiles);
+  return selectedFiles;
+}
+
+function validateManagedPathDependencies(files: RenderedFile[]): void {
+  const selectedPaths = new Set(files.map((file) => file.path));
+  const dependencies = [
+    {
+      path: "AGENTS.md",
+      requires: [
+        ".githooks/pre-commit",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        "docs/bootstrap/onboarding.md"
+      ]
+    },
+    {
+      path: "CONTRIBUTING.md",
+      requires: [".githooks/pre-commit", ".github/PULL_REQUEST_TEMPLATE.md"]
+    },
+    {
+      path: ".github/PULL_REQUEST_TEMPLATE.md",
+      requires: ["docs/bootstrap/onboarding.md"]
+    }
+  ];
+
+  const violations = dependencies.flatMap(({ path: managedPath, requires }) => {
+    if (!selectedPaths.has(managedPath)) {
+      return [];
+    }
+
+    const missing = requires.filter((requiredPath) => !selectedPaths.has(requiredPath));
+    return missing.length > 0 ? [{ path: managedPath, missing }] : [];
+  });
+
+  if (violations.length === 0) {
+    return;
+  }
+
+  const details = violations
+    .map(({ path: managedPath, missing }) => `${managedPath} requires ${missing.join(", ")}`)
+    .join("; ");
+  throw new Error(
+    `Invalid repo.managedPaths: selected bootstrap guidance excludes required companion files. ${details}.`
   );
 }
 

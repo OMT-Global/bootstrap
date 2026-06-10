@@ -66,6 +66,8 @@ describe("repo smoke", () => {
         managedPaths: [
           "project.bootstrap.yaml",
           "AGENTS.md",
+          ".githooks/pre-commit",
+          ".github/PULL_REQUEST_TEMPLATE.md",
           "scripts/codex-cloud/**",
           "docs/bootstrap/**"
         ]
@@ -89,9 +91,58 @@ describe("repo smoke", () => {
 
     const agents = await readFile(path.join(targetDir, "AGENTS.md"), "utf8");
     expect(agents).toContain("CI baseline");
+    await expect(access(path.join(targetDir, ".githooks/pre-commit"))).resolves.toBeUndefined();
+    await expect(access(path.join(targetDir, ".github/PULL_REQUEST_TEMPLATE.md"))).resolves.toBeUndefined();
 
     const secondPlan = await planRepo(manifest, targetDir);
     expect(secondPlan.changes.every((change) => change.type === "unchanged")).toBe(true);
+  });
+
+  it("rejects selected guidance when repo.managedPaths excludes referenced companion files", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({
+      project: {
+        name: "cloudcurator",
+        displayName: "CloudCurator",
+        description:
+          "Native macOS menu bar organizer for keeping iCloud Drive files local, tagged, searchable, and reversible.",
+        visibility: "private",
+        owner: "OMT-Global"
+      },
+      repo: {
+        managedPaths: [
+          "AGENTS.md",
+          "CONTRIBUTING.md",
+          "CODEOWNERS",
+          ".github/PULL_REQUEST_TEMPLATE.md",
+          ".github/ISSUE_TEMPLATE/implementation.yml",
+          ".github/ISSUE_TEMPLATE/flow_blocker.yml"
+        ]
+      },
+      archetype: {
+        kind: "generic-empty",
+        packageManager: "npm",
+        moduleName: "CloudCurator"
+      },
+      github: {
+        reviewers: ["jmcte"],
+        flowGovernance: true,
+        requiredStatusChecks: ["CI Gate"]
+      },
+      release: {
+        enabled: false
+      },
+      agents: {
+        manageCodexHome: false,
+        sharedSkills: ["github", "build-macos-apps"]
+      }
+    });
+
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow(
+      "Invalid repo.managedPaths: selected bootstrap guidance excludes required companion files."
+    );
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow(".githooks/pre-commit");
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("docs/bootstrap/onboarding.md");
   });
 
   it("backs out previously managed Claude files from an already bootstrapped repo", async () => {

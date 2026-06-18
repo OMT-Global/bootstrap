@@ -92,15 +92,45 @@ jobs:
           fi
           if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
             [[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }
+            resolve_preflight_asset() {
+              local asset_path="$1"
+              local candidate="$PREFLIGHT_ARTIFACT_DIR/$asset_path"
+              if [[ -f "$candidate" ]]; then
+                printf '%s\n' "$candidate"
+                return 0
+              fi
+              if [[ "$asset_path" == "$ARTIFACT_DIR/"* ]]; then
+                candidate="$PREFLIGHT_ARTIFACT_DIR/${asset_path#"$ARTIFACT_DIR"/}"
+                if [[ -f "$candidate" ]]; then
+                  printf '%s\n' "$candidate"
+                  return 0
+                fi
+              fi
+              candidate="$PREFLIGHT_ARTIFACT_DIR/$(basename "$asset_path")"
+              if [[ -f "$candidate" ]]; then
+                printf '%s\n' "$candidate"
+                return 0
+              fi
+              return 1
+            }
+            if ! release_notes_source="$(resolve_preflight_asset "$RELEASE_NOTES_FILE")"; then
+              echo "Missing preflight release notes file: $RELEASE_NOTES_FILE" >&2
+              exit 1
+            fi
+            mkdir -p "$(dirname "$RELEASE_NOTES_FILE")"
+            cp -p -- "$release_notes_source" "$RELEASE_NOTES_FILE"
             RELEASE_ASSET_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"
             [[ "$RELEASE_ASSET_DIR" != "$PREFLIGHT_ARTIFACT_DIR" && "$RELEASE_ASSET_DIR" != "$VALIDATION_ARTIFACT_DIR" ]] || { echo "Release asset staging directory must be isolated from evidence download directories." >&2; exit 1; }
             release_assets=()
             while read -r asset_sha asset_path; do
               [[ -n "${asset_sha:-}" && -n "${asset_path:-}" ]] || continue
               [[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue
-              [[ -f "$PREFLIGHT_ARTIFACT_DIR/$asset_path" ]] || { echo "Missing preflight release asset: $asset_path" >&2; exit 1; }
+              if ! asset_source="$(resolve_preflight_asset "$asset_path")"; then
+                echo "Missing preflight release asset: $asset_path" >&2
+                exit 1
+              fi
               asset_name="$(basename "$asset_path")"
-              cp -p -- "$PREFLIGHT_ARTIFACT_DIR/$asset_path" "$RELEASE_ASSET_DIR/$asset_name"
+              cp -p -- "$asset_source" "$RELEASE_ASSET_DIR/$asset_name"
               release_assets+=("$RELEASE_ASSET_DIR/$asset_name")
             done < "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS"
             [[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }

@@ -1,4 +1,4 @@
-version: 1
+version: 2
 project:
   name: bootstrap
   displayName: Bootstrap
@@ -8,7 +8,21 @@ project:
   owner: OMT-Global
   defaultBranch: main
 repo:
+  class: tooling
   managedPaths: []
+  docs:
+    readme: true
+    contributing: false
+    security: false
+  templates:
+    pullRequest: standard
+    issueTemplates: []
+  env:
+    exampleFile: false
+    strategy: optional
+  hooks:
+    preCommit: standard
+    prePush: none
 archetype:
   kind: generic-empty
   packageManager: npm
@@ -112,6 +126,7 @@ github:
     - name: review:release
       color: f9d0c4
       description: Needs release review.
+  flowGovernance: false
   organization:
     defaultRepositoryPermission: read
     membersCanCreateRepositories: false
@@ -155,6 +170,16 @@ ci:
     - release-readiness
   nightlyCron: 0 7 * * *
   additionalWorkflows: []
+  appPaths: []
+  ciPaths: []
+  extendedPaths: []
+  macosCheck:
+    enabled: false
+    paths: []
+    runsOn:
+      - macos-14
+    command: xcodebuild -version
+  customScripts: {}
   dependabot:
     enabled: true
     securityUpdates: true
@@ -188,8 +213,40 @@ release:
   updateMinorTag: true
   reusableWorkflowRepo: OMT-Global/bootstrap
   reusableWorkflowRef: refs/heads/main
+  changelog:
+    enabled: true
+    mode: github-generated-notes
+    categories:
+      - title: Features
+        labels:
+          - type:feature
+      - title: Fixes
+        labels:
+          - type:bug
+      - title: Operations
+        labels:
+          - area:infra
+          - area:qa
+      - title: Documentation
+        labels:
+          - kind:docs
+          - documentation
+  versions: []
+  artifacts:
+    directory: dist/release
+    checksum: sha256
+    sbom: optional
+  publish:
+    githubReleaseAssets: true
+    packages: []
+    containers: []
 agents:
   manageCodexHome: true
+  manageClaudeHome: false
+  claudeProfile: default
+  enableClaudeWebEnvironment: false
+  enableClaudeDevcontainer: false
+  enableClaudeGitHubAction: false
   codexProfile: default
   sharedSkills: []
 environments:

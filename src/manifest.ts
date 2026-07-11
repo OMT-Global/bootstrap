@@ -126,6 +126,67 @@ const additionalWorkflowSchema = z.object({
   purpose: z.string().min(1)
 });
 
+const repoDocsSchema = z.object({
+  readme: z.boolean().optional(),
+  contributing: z.boolean().optional(),
+  security: z.boolean().optional()
+});
+
+const repoTemplatesSchema = z.object({
+  pullRequest: z.enum(["standard", "none"]).optional(),
+  issueTemplates: z.array(z.string().min(1)).optional()
+});
+
+const repoEnvSchema = z.object({
+  exampleFile: z.boolean().optional(),
+  strategy: z.enum(["required", "optional", "none"]).optional()
+});
+
+const repoHooksSchema = z.object({
+  preCommit: z.enum(["standard", "none"]).optional(),
+  prePush: z.enum(["standard", "none"]).optional()
+});
+
+const githubSecuritySchema = z.object({
+  dependabot: z.boolean().optional(),
+  secretScanningHints: z.boolean().optional()
+});
+
+const ciWorkflowsSchema = z.object({
+  prFastCi: z.boolean().optional(),
+  extendedValidation: z.boolean().optional(),
+  claude: z.boolean().optional(),
+  pagesDeploy: z.boolean().optional(),
+  ci: z.boolean().optional(),
+  extras: z.array(additionalWorkflowSchema).optional()
+});
+
+const capabilitiesSchema = z.object({
+  pages: z
+    .object({
+      enabled: z.boolean().optional(),
+      provider: z.string().min(1).optional(),
+      outputDir: z.string().min(1).optional()
+    })
+    .optional(),
+  release: z
+    .object({
+      enabled: z.boolean().optional(),
+      kind: z.string().min(1).optional()
+    })
+    .optional(),
+  docsPublish: z
+    .object({
+      enabled: z.boolean().optional()
+    })
+    .optional(),
+  containers: z
+    .object({
+      enabled: z.boolean().optional()
+    })
+    .optional()
+});
+
 const dependabotEcosystemSchema = z.object({
   packageEcosystem: z.enum(["npm", "github-actions", "docker"]),
   directory: z.string().min(1).optional(),
@@ -208,12 +269,17 @@ const manifestSchema = z.object({
   }),
   repo: z
     .object({
-      managedPaths: z.array(z.string().min(1)).optional()
+      class: z.enum(["application", "library", "service", "tooling", "documentation"]).optional(),
+      managedPaths: z.array(z.string().min(1)).optional(),
+      docs: repoDocsSchema.optional(),
+      templates: repoTemplatesSchema.optional(),
+      env: repoEnvSchema.optional(),
+      hooks: repoHooksSchema.optional()
     })
     .optional(),
   archetype: z.object({
     kind: z.enum(["nextjs-web", "node-ts-service", "python-service", "generic-empty"]),
-    packageManager: z.enum(["npm", "pnpm", "yarn"]).optional(),
+    packageManager: z.enum(["npm", "pnpm", "yarn", "python"]).optional(),
     moduleName: z.string().optional()
   }),
   github: z
@@ -242,17 +308,20 @@ const manifestSchema = z.object({
           hasWiki: z.boolean().optional(),
           hasDiscussions: z.boolean().optional()
         })
-        .optional()
+        .optional(),
+      security: githubSecuritySchema.optional()
     })
     .optional(),
   ci: z
     .object({
+      policy: z.enum(["standard", "standard-public", "experimental", "strict"]).optional(),
       runnerPolicy: z.enum(["hybrid-safe", "self-hosted-first", "github-hosted-first"]).optional(),
       nodeVersion: z.string().optional(),
       pythonVersion: z.string().optional(),
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
+      workflows: ciWorkflowsSchema.optional(),
       additionalWorkflows: z.array(additionalWorkflowSchema).optional(),
       appPaths: z.array(z.string().min(1)).optional(),
       ciPaths: z.array(z.string().min(1)).optional(),
@@ -293,10 +362,16 @@ const manifestSchema = z.object({
   agents: z
     .object({
       manageCodexHome: z.boolean().optional(),
+      manageClaudeHome: z.boolean().optional(),
       codexProfile: z.string().optional(),
+      claudeProfile: z.string().optional(),
+      enableClaudeWebEnvironment: z.boolean().optional(),
+      enableClaudeDevcontainer: z.boolean().optional(),
+      enableClaudeGitHubAction: z.boolean().optional(),
       sharedSkills: z.array(z.string()).optional()
     })
     .optional(),
+  capabilities: capabilitiesSchema.optional(),
   environments: z
     .object({
       dev: environmentSchema.optional(),
@@ -428,6 +503,117 @@ function normalizeAdditionalWorkflows(
   }));
 }
 
+function mergeAdditionalWorkflows(
+  additionalWorkflows: AdditionalWorkflowConfig[],
+  extras: AdditionalWorkflowConfig[]
+): AdditionalWorkflowConfig[] {
+  const seen = new Set<string>();
+  return [...additionalWorkflows, ...extras].filter((workflow) => {
+    if (seen.has(workflow.path)) return false;
+    seen.add(workflow.path);
+    return true;
+  });
+}
+
+function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapManifest["repo"] {
+  return {
+    ...(repo?.class ? { class: repo.class } : {}),
+    managedPaths: repo?.managedPaths ?? [],
+    ...(repo?.docs
+      ? {
+          docs: {
+            readme: repo.docs.readme ?? true,
+            contributing: repo.docs.contributing ?? true,
+            security: repo.docs.security ?? false
+          }
+        }
+      : {}),
+    ...(repo?.templates
+      ? {
+          templates: {
+            pullRequest: repo.templates.pullRequest ?? "standard",
+            issueTemplates: repo.templates.issueTemplates ?? []
+          }
+        }
+      : {}),
+    ...(repo?.env
+      ? {
+          env: {
+            exampleFile: repo.env.exampleFile ?? true,
+            strategy: repo.env.strategy ?? "optional"
+          }
+        }
+      : {}),
+    ...(repo?.hooks
+      ? {
+          hooks: {
+            preCommit: repo.hooks.preCommit ?? "standard",
+            prePush: repo.hooks.prePush ?? "none"
+          }
+        }
+      : {})
+  };
+}
+
+function normalizeCiWorkflows(
+  workflows: z.input<typeof ciWorkflowsSchema> | undefined
+): BootstrapManifest["ci"]["workflows"] | undefined {
+  if (!workflows) {
+    return undefined;
+  }
+
+  return {
+    prFastCi: workflows.prFastCi ?? true,
+    extendedValidation: workflows.extendedValidation ?? true,
+    claude: workflows.claude ?? false,
+    pagesDeploy: workflows.pagesDeploy ?? false,
+    ci: workflows.ci ?? false,
+    extras: normalizeAdditionalWorkflows(workflows.extras)
+  };
+}
+
+function normalizeCapabilities(
+  capabilities: z.input<typeof capabilitiesSchema> | undefined
+): BootstrapManifest["capabilities"] | undefined {
+  if (!capabilities) {
+    return undefined;
+  }
+
+  return {
+    ...(capabilities.pages
+      ? {
+          pages: {
+            enabled: capabilities.pages.enabled ?? false,
+            provider: capabilities.pages.provider ?? "cloudflare-pages",
+            outputDir: capabilities.pages.outputDir ?? "dist"
+          }
+        }
+      : {}),
+    ...(capabilities.release
+      ? {
+          release: {
+            enabled: capabilities.release.enabled ?? true,
+            kind: capabilities.release.kind ?? "github-release"
+          }
+        }
+      : {}),
+    ...(capabilities.docsPublish
+      ? {
+          docsPublish: {
+            enabled: capabilities.docsPublish.enabled ?? false
+          }
+        }
+      : {}),
+    ...(capabilities.containers
+      ? {
+          containers: {
+            enabled: capabilities.containers.enabled ?? false
+          }
+        }
+      : {})
+  };
+}
+
 function normalizeDependabot(
   dependabot: z.input<typeof dependabotSchema> | undefined
 ): DependabotConfig {
@@ -477,6 +663,7 @@ function normalizeCustomScripts(
 
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
+  const version = parsed.version ?? 1;
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
   const defaultBranch = parsed.project.defaultBranch ?? "main";
   const moduleName = parsed.archetype.moduleName ?? moduleNameForProject(parsed.project.name);
@@ -485,7 +672,13 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
   const repoFeatures = github.repoFeatures ?? {};
   const flowGovernance = github.flowGovernance ?? false;
   const environments = parsed.environments ?? {};
-  const releaseEnabled = parsed.release?.enabled ?? true;
+  const capabilities = normalizeCapabilities(parsed.capabilities);
+  const workflows = normalizeCiWorkflows(parsed.ci?.workflows);
+  const additionalWorkflows = mergeAdditionalWorkflows(
+    normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows),
+    workflows?.extras ?? []
+  );
+  const releaseEnabled = parsed.release?.enabled ?? capabilities?.release?.enabled ?? true;
 
   const defaultEnvironment = (overrides?: z.input<typeof environmentSchema>): EnvironmentConfig => ({
     reviewers: overrides?.reviewers ?? [],
@@ -495,7 +688,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
   });
 
   return {
-    version: 1,
+    version,
     project: {
       name: parsed.project.name,
       ...(parsed.project.displayName ? { displayName: parsed.project.displayName } : {}),
@@ -506,9 +699,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       owner: parsed.project.owner,
       defaultBranch
     },
-    repo: {
-      managedPaths: parsed.repo?.managedPaths ?? []
-    },
+    repo: normalizeRepo(parsed.repo),
     archetype: {
       kind: parsed.archetype.kind,
       packageManager: parsed.archetype.packageManager ?? "npm",
@@ -537,16 +728,26 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
         hasProjects: repoFeatures.hasProjects ?? false,
         hasWiki: repoFeatures.hasWiki ?? false,
         hasDiscussions: repoFeatures.hasDiscussions ?? false
-      }
+      },
+      ...(github.security
+        ? {
+            security: {
+              dependabot: github.security.dependabot ?? true,
+              secretScanningHints: github.security.secretScanningHints ?? true
+            }
+          }
+        : {})
     },
     ci: {
+      ...(parsed.ci?.policy ? { policy: parsed.ci.policy } : {}),
       runnerPolicy: parsed.ci?.runnerPolicy ?? "hybrid-safe",
       nodeVersion: parsed.ci?.nodeVersion ?? "20",
       pythonVersion: parsed.ci?.pythonVersion ?? "3.12",
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
-      additionalWorkflows: normalizeAdditionalWorkflows(parsed.ci?.additionalWorkflows),
+      additionalWorkflows,
+      ...(workflows ? { workflows } : {}),
       appPaths: normalizePaths(parsed.ci?.appPaths),
       ciPaths: normalizePaths(parsed.ci?.ciPaths),
       extendedPaths: normalizePaths(parsed.ci?.extendedPaths),
@@ -599,9 +800,19 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     },
     agents: {
       manageCodexHome: parsed.agents?.manageCodexHome ?? true,
+      ...(version === 2
+        ? {
+            manageClaudeHome: parsed.agents?.manageClaudeHome ?? false,
+            claudeProfile: parsed.agents?.claudeProfile ?? "default",
+            enableClaudeWebEnvironment: parsed.agents?.enableClaudeWebEnvironment ?? false,
+            enableClaudeDevcontainer: parsed.agents?.enableClaudeDevcontainer ?? false,
+            enableClaudeGitHubAction: parsed.agents?.enableClaudeGitHubAction ?? workflows?.claude ?? false
+          }
+        : {}),
       codexProfile: parsed.agents?.codexProfile ?? "default",
       sharedSkills: parsed.agents?.sharedSkills ?? []
     },
+    ...(capabilities ? { capabilities } : {}),
     environments: {
       dev: applyEnvironmentDefaults(defaultEnvironment(environments.dev), reviewers, defaultBranch, "dev"),
       stage: applyEnvironmentDefaults(
@@ -679,8 +890,17 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
   });
 }
 
+function serializableManifest(manifest: BootstrapManifest): BootstrapManifest | Record<string, unknown> {
+  if (manifest.version !== 2 || !manifest.capabilities?.release) {
+    return manifest;
+  }
+
+  const { release: _release, ...withoutRelease } = manifest;
+  return withoutRelease;
+}
+
 export function stringifyManifest(manifest: BootstrapManifest): string {
-  return YAML.stringify(manifest, {
+  return YAML.stringify(serializableManifest(manifest), {
     lineWidth: 100
   });
 }

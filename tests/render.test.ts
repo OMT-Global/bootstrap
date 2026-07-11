@@ -175,6 +175,96 @@ describe("renderManagedFiles", () => {
     expect(onboarding?.contents).toContain("Fallback merge readiness requires");
   });
 
+
+  it("renders version 2 docs, templates, environment, and workflow switches", () => {
+    const manifest = normalizeManifest({
+      version: 2,
+      project: {
+        name: "mailplus-intelligence",
+        displayName: "MailPlus Intelligence",
+        description: "Intelligence and automation workspace for MailPlus-related tooling.",
+        visibility: "public",
+        owner: "OMT-Global"
+      },
+      repo: {
+        class: "library",
+        docs: {
+          readme: true,
+          contributing: true,
+          security: true
+        },
+        templates: {
+          pullRequest: "standard",
+          issueTemplates: ["bug", "feature"]
+        },
+        env: {
+          exampleFile: false,
+          strategy: "optional"
+        },
+        hooks: {
+          preCommit: "standard",
+          prePush: "none"
+        }
+      },
+      archetype: {
+        kind: "generic-empty",
+        packageManager: "python",
+        moduleName: "mailplus_intelligence"
+      },
+      github: {
+        security: {
+          dependabot: false,
+          secretScanningHints: true
+        }
+      },
+      ci: {
+        policy: "experimental",
+        workflows: {
+          prFastCi: true,
+          extendedValidation: false,
+          claude: true,
+          pagesDeploy: false,
+          ci: false,
+          extras: []
+        }
+      },
+      agents: {
+        manageClaudeHome: true,
+        enableClaudeWebEnvironment: true,
+        enableClaudeDevcontainer: true,
+        enableClaudeGitHubAction: true
+      },
+      capabilities: {
+        release: {
+          enabled: true,
+          kind: "github-release"
+        }
+      }
+    });
+
+    const files = renderManagedFiles(manifest);
+    const paths = files.map((file) => file.path);
+    const renderedManifest = files.find((file) => file.path === "project.bootstrap.yaml");
+    const claudeWorkflow = files.find((file) => file.path === ".github/workflows/claude.yml");
+
+    expect(paths).toContain("SECURITY.md");
+    expect(paths).toContain("CLAUDE.md");
+    expect(paths).toContain(".github/ISSUE_TEMPLATE/bug.yml");
+    expect(paths).toContain(".github/ISSUE_TEMPLATE/feature.yml");
+    expect(paths).toContain(".github/workflows/pr-fast-ci.yml");
+    expect(paths).toContain(".github/workflows/claude.yml");
+    expect(paths).toContain(".devcontainer/devcontainer.json");
+    expect(paths).toContain("scripts/claude-cloud/setup.sh");
+    expect(paths).toContain("docs/bootstrap/claude-environment.md");
+    expect(paths).not.toContain(".env.example");
+    expect(paths).not.toContain(".github/workflows/extended-validation.yml");
+    expect(renderedManifest?.contents).toContain("version: 2");
+    expect(renderedManifest?.contents).toContain("capabilities:");
+    expect(renderedManifest?.contents).not.toContain("\nrelease:\n");
+    expect(claudeWorkflow?.contents).toContain("name: Claude Code");
+    expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@v1");
+  });
+
   it("documents required PR template enforcement in generated agent instructions", () => {
     const manifest = normalizeManifest({
       project: {

@@ -34,7 +34,7 @@ describe("normalizeManifest", () => {
       }
     } as never);
 
-    expect(manifest.version).toBe(1);
+    expect(manifest.version).toBe(2);
     expect(manifest.project.name).toBe("apw-cli");
     expect(manifest.repo.managedPaths).toContain(".github/workflows/pr-fast-ci.yml");
     expect(manifest.ci.runnerPolicy).toBe("hybrid-safe");
@@ -404,6 +404,136 @@ describe("normalizeManifest", () => {
       codexProfile: "default",
       sharedSkills: []
     });
+  });
+
+
+  it("normalizes representative version 2 manifests with rich repo, CI, agent, and capability fields", () => {
+    const manifest = normalizeManifest({
+      version: 2,
+      project: {
+        name: "mailplus-intelligence",
+        displayName: "MailPlus Intelligence",
+        description: "Intelligence and automation workspace for MailPlus-related tooling.",
+        visibility: "public",
+        owner: "OMT-Global",
+        defaultBranch: "main"
+      },
+      repo: {
+        class: "library",
+        managedPaths: ["project.bootstrap.yaml", ".github/workflows/claude.yml"],
+        docs: {
+          readme: true,
+          contributing: true,
+          security: true
+        },
+        templates: {
+          pullRequest: "standard",
+          issueTemplates: ["bug", "feature"]
+        },
+        env: {
+          exampleFile: false,
+          strategy: "optional"
+        },
+        hooks: {
+          preCommit: "standard",
+          prePush: "none"
+        }
+      },
+      archetype: {
+        kind: "generic-empty",
+        packageManager: "python",
+        moduleName: "mailplus_intelligence"
+      },
+      github: {
+        createRepo: false,
+        reviewers: ["jmcte"],
+        codeowners: [{ pattern: "*", owners: ["@jmcte"] }],
+        allowRebaseMerge: true,
+        security: {
+          dependabot: false,
+          secretScanningHints: true
+        }
+      },
+      ci: {
+        policy: "experimental",
+        fastChecks: ["secrets", "unit-tests"],
+        extendedChecks: ["template-review", "fixture-regression"],
+        workflows: {
+          prFastCi: true,
+          extendedValidation: true,
+          claude: true,
+          pagesDeploy: false,
+          ci: false,
+          extras: [
+            {
+              path: ".github\\workflows\\deploy.yml",
+              purpose: "Deploys documentation after CI passes."
+            }
+          ]
+        },
+        additionalWorkflows: []
+      },
+      agents: {
+        manageCodexHome: true,
+        manageClaudeHome: true,
+        codexProfile: "default",
+        claudeProfile: "default",
+        enableClaudeWebEnvironment: true,
+        enableClaudeDevcontainer: true,
+        enableClaudeGitHubAction: true,
+        sharedSkills: []
+      },
+      capabilities: {
+        pages: {
+          enabled: false,
+          provider: "cloudflare-pages",
+          outputDir: "dist"
+        },
+        release: {
+          enabled: true,
+          kind: "github-release"
+        },
+        docsPublish: {
+          enabled: false
+        },
+        containers: {
+          enabled: false
+        }
+      }
+    });
+
+    expect(manifest.version).toBe(2);
+    expect(manifest.repo).toMatchObject({
+      class: "library",
+      docs: { readme: true, contributing: true, security: true },
+      env: { exampleFile: false, strategy: "optional" },
+      hooks: { preCommit: "standard", prePush: "none" }
+    });
+    expect(manifest.archetype.packageManager).toBe("python");
+    expect(manifest.github.security).toEqual({ dependabot: false, secretScanningHints: true });
+    expect(manifest.ci.policy).toBe("experimental");
+    expect(manifest.ci.workflows).toMatchObject({
+      prFastCi: true,
+      extendedValidation: true,
+      claude: true,
+      pagesDeploy: false,
+      ci: false
+    });
+    expect(manifest.ci.additionalWorkflows).toEqual([
+      {
+        path: ".github/workflows/deploy.yml",
+        purpose: "Deploys documentation after CI passes."
+      }
+    ]);
+    expect(manifest.agents).toMatchObject({
+      manageClaudeHome: true,
+      claudeProfile: "default",
+      enableClaudeWebEnvironment: true,
+      enableClaudeDevcontainer: true,
+      enableClaudeGitHubAction: true
+    });
+    expect(manifest.capabilities?.release).toEqual({ enabled: true, kind: "github-release" });
+    expect(manifest.release.enabled).toBe(true);
   });
 
   it("normalizes optional organization governance settings", () => {

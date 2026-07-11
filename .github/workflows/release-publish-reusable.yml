@@ -136,9 +136,7 @@ jobs:
             [[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }
             release_args=()
             [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-              && gh release upload "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber \
-              || gh release create "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "${release_args[@]}"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1                   && gh release upload "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber                   || gh release create "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "${release_args[@]}"
           fi
           if [[ "$TAG" != *"-rc."* && "$TAG" != *"-beta."* ]]; then
             version="${TAG#"$TAG_PREFIX"}"; IFS=. read -r major minor patch <<<"$version"

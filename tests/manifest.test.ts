@@ -3,6 +3,44 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_ISSUE_LABELS, normalizeManifest } from "../src/manifest.js";
 
 describe("normalizeManifest", () => {
+  it("accepts version 2 manifests as compatibility input", () => {
+    const manifest = normalizeManifest({
+      version: 2,
+      project: {
+        name: "apw-cli",
+        owner: "OMT-Global",
+        visibility: "public",
+        defaultBranch: "main"
+      },
+      repo: {
+        managedPaths: ["project.bootstrap.yaml", ".github/workflows/pr-fast-ci.yml"],
+        class: "library"
+      },
+      archetype: {
+        kind: "generic-empty",
+        packageManager: "npm",
+        moduleName: "apw"
+      },
+      github: {
+        createRepo: false,
+        reviewers: ["jmcte"],
+        requiredStatusChecks: ["CI Gate"],
+        security: { dependabot: false }
+      },
+      ci: {
+        policy: "standard-public",
+        runnerPolicy: "hybrid-safe",
+        workflows: { prFastCi: true }
+      }
+    } as never);
+
+    expect(manifest.version).toBe(1);
+    expect(manifest.project.name).toBe("apw-cli");
+    expect(manifest.repo.managedPaths).toContain(".github/workflows/pr-fast-ci.yml");
+    expect(manifest.ci.runnerPolicy).toBe("hybrid-safe");
+    expect(manifest.github.requiredStatusChecks).toEqual(["CI Gate"]);
+  });
+
   it("applies defaults and reviewer-derived governance", () => {
     const manifest = normalizeManifest({
       project: {

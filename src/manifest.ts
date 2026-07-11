@@ -197,7 +197,7 @@ const releasePublishSchema = z.object({
 });
 
 const manifestSchema = z.object({
-  version: z.literal(1).optional(),
+  version: z.union([z.literal(1), z.literal(2)]).optional(),
   project: z.object({
     name: z.string().min(1),
     displayName: z.string().min(1).optional(),

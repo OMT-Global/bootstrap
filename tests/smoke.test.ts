@@ -98,6 +98,169 @@ describe("repo smoke", () => {
     expect(secondPlan.changes.every((change) => change.type === "unchanged")).toBe(true);
   });
 
+  it("plans version 2 guidance companions for canonical restricted managed paths", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({
+      version: 2,
+      project: {
+        name: "mailplus-intelligence",
+        displayName: "MailPlus Intelligence",
+        description: "Intelligence and automation workspace for MailPlus-related tooling.",
+        visibility: "public",
+        owner: "OMT-Global",
+        defaultBranch: "main"
+      },
+      repo: {
+        class: "library",
+        managedPaths: [
+          "project.bootstrap.yaml",
+          "AGENTS.md",
+          "CLAUDE.md",
+          "CODEOWNERS",
+          "CONTRIBUTING.md",
+          "LICENSE",
+          "SECURITY.md",
+          ".githooks/**",
+          ".devcontainer/**",
+          ".github/workflows/pr-fast-ci.yml",
+          ".github/workflows/extended-validation.yml",
+          ".github/workflows/claude.yml",
+          ".github/workflows/release.yml",
+          "scripts/check-detect-secrets.sh",
+          "scripts/ci/**",
+          "scripts/release/**",
+          "scripts/codex-cloud/**",
+          "scripts/claude-cloud/**",
+          "scripts/claude/**",
+          "docs/bootstrap/**"
+        ],
+        docs: {
+          readme: true,
+          contributing: true,
+          security: true
+        },
+        templates: {
+          pullRequest: "standard",
+          issueTemplates: ["bug", "feature"]
+        },
+        env: {
+          exampleFile: false,
+          strategy: "optional"
+        },
+        hooks: {
+          preCommit: "standard",
+          prePush: "none"
+        }
+      },
+      archetype: {
+        kind: "generic-empty",
+        packageManager: "python",
+        moduleName: "mailplus_intelligence"
+      },
+      github: {
+        createRepo: false,
+        reviewers: ["jmcte"],
+        codeowners: [
+          {
+            pattern: "*",
+            owners: ["@jmcte"]
+          }
+        ],
+        autoMerge: true,
+        deleteBranchOnMerge: true,
+        requiredApprovals: 1,
+        requiredStatusChecks: ["CI Gate"],
+        dismissStaleReviews: true,
+        requireCodeOwnerReviews: true,
+        requireLastPushApproval: true,
+        enforceLinearHistory: true,
+        allowMergeCommit: true,
+        allowSquashMerge: true,
+        allowRebaseMerge: true,
+        repoFeatures: {
+          hasIssues: true,
+          hasProjects: false,
+          hasWiki: false,
+          hasDiscussions: false
+        },
+        security: {
+          dependabot: true,
+          secretScanningHints: true
+        }
+      },
+      ci: {
+        policy: "experimental",
+        runnerPolicy: "hybrid-safe",
+        nodeVersion: "20",
+        pythonVersion: "3.12",
+        fastChecks: ["secrets", "unit-tests"],
+        extendedChecks: ["template-review", "fixture-regression"],
+        nightlyCron: "0 7 * * *",
+        workflows: {
+          prFastCi: true,
+          extendedValidation: true,
+          claude: true,
+          pagesDeploy: false,
+          ci: false,
+          extras: []
+        },
+        additionalWorkflows: []
+      },
+      agents: {
+        manageCodexHome: true,
+        manageClaudeHome: true,
+        codexProfile: "default",
+        claudeProfile: "default",
+        enableClaudeWebEnvironment: true,
+        enableClaudeDevcontainer: true,
+        enableClaudeGitHubAction: true,
+        sharedSkills: []
+      },
+      capabilities: {
+        pages: {
+          enabled: false,
+          provider: "cloudflare-pages",
+          outputDir: "dist"
+        },
+        release: {
+          enabled: true,
+          kind: "github-release"
+        },
+        docsPublish: {
+          enabled: false
+        },
+        containers: {
+          enabled: false
+        }
+      },
+      environments: {
+        dev: {
+          reviewers: [],
+          requireApproval: false,
+          preventSelfReview: false,
+          branches: []
+        },
+        stage: {
+          reviewers: ["jmcte"],
+          requireApproval: true,
+          preventSelfReview: true,
+          branches: []
+        },
+        prod: {
+          reviewers: ["jmcte"],
+          requireApproval: true,
+          preventSelfReview: true,
+          branches: ["main"]
+        }
+      }
+    });
+
+    const plan = await planRepo(manifest, targetDir);
+
+    expect(plan.changes.some((change) => change.path === ".github/PULL_REQUEST_TEMPLATE.md")).toBe(true);
+    expect(plan.files.some((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md")).toBe(true);
+  });
+
   it("rejects selected guidance when repo.managedPaths excludes referenced companion files", async () => {
     const targetDir = await makeTempDir();
     const manifest = normalizeManifest({

@@ -38,38 +38,67 @@ function matchesManagedPath(filePath: string, pattern: string): boolean {
   return globToRegExp(pattern).test(filePath.replace(/\\/g, "/"));
 }
 
+const managedPathDependencies = [
+  {
+    path: "AGENTS.md",
+    requires: [
+      ".githooks/pre-commit",
+      ".github/PULL_REQUEST_TEMPLATE.md",
+      "docs/bootstrap/onboarding.md"
+    ]
+  },
+  {
+    path: "CONTRIBUTING.md",
+    requires: [".githooks/pre-commit", ".github/PULL_REQUEST_TEMPLATE.md"]
+  },
+  {
+    path: ".github/PULL_REQUEST_TEMPLATE.md",
+    requires: ["docs/bootstrap/onboarding.md"]
+  }
+];
+
+function expandManagedPathDependencies(files: RenderedFile[], selectedFiles: RenderedFile[]): RenderedFile[] {
+  const availablePaths = new Set(files.map((file) => file.path));
+  const selectedPaths = new Set(selectedFiles.map((file) => file.path));
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    for (const { path: managedPath, requires } of managedPathDependencies) {
+      if (!selectedPaths.has(managedPath)) {
+        continue;
+      }
+
+      for (const requiredPath of requires) {
+        if (!selectedPaths.has(requiredPath) && availablePaths.has(requiredPath)) {
+          selectedPaths.add(requiredPath);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return files.filter((file) => selectedPaths.has(file.path));
+}
+
 function selectManagedFiles(manifest: BootstrapManifest, files: RenderedFile[]): RenderedFile[] {
   if (manifest.repo.managedPaths.length === 0) {
     return files;
   }
 
-  const selectedFiles = files.filter((file) =>
+  let selectedFiles = files.filter((file) =>
     manifest.repo.managedPaths.some((pattern) => matchesManagedPath(file.path, pattern))
   );
+  if (manifest.version === 2) {
+    selectedFiles = expandManagedPathDependencies(files, selectedFiles);
+  }
   validateManagedPathDependencies(selectedFiles);
   return selectedFiles;
 }
 
 function validateManagedPathDependencies(files: RenderedFile[]): void {
   const selectedPaths = new Set(files.map((file) => file.path));
-  const dependencies = [
-    {
-      path: "AGENTS.md",
-      requires: [
-        ".githooks/pre-commit",
-        ".github/PULL_REQUEST_TEMPLATE.md",
-        "docs/bootstrap/onboarding.md"
-      ]
-    },
-    {
-      path: "CONTRIBUTING.md",
-      requires: [".githooks/pre-commit", ".github/PULL_REQUEST_TEMPLATE.md"]
-    },
-    {
-      path: ".github/PULL_REQUEST_TEMPLATE.md",
-      requires: ["docs/bootstrap/onboarding.md"]
-    }
-  ];
+  const dependencies = managedPathDependencies;
 
   const violations = dependencies.flatMap(({ path: managedPath, requires }) => {
     if (!selectedPaths.has(managedPath)) {

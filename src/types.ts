@@ -1,7 +1,10 @@
 export type ProjectVisibility = "private" | "public" | "internal";
 export type ArchetypeKind = "nextjs-web" | "node-ts-service" | "python-service" | "generic-empty";
+export type PackageManager = "npm" | "pnpm" | "yarn" | "python";
 export type RunnerPolicy = "hybrid-safe" | "self-hosted-first" | "github-hosted-first";
 export type DefaultRepositoryPermission = "read" | "write" | "admin" | "none";
+export type RepoClass = "application" | "library" | "service" | "tooling" | "documentation";
+export type CiPolicy = "standard" | "standard-public" | "experimental" | "strict";
 
 export interface CodeownerRule {
   pattern: string;
@@ -22,7 +25,25 @@ export interface EnvironmentConfig {
 }
 
 export interface RepoConfig {
+  class?: RepoClass;
   managedPaths: string[];
+  docs?: {
+    readme: boolean;
+    contributing: boolean;
+    security: boolean;
+  };
+  templates?: {
+    pullRequest: "standard" | "none";
+    issueTemplates: string[];
+  };
+  env?: {
+    exampleFile: boolean;
+    strategy: "required" | "optional" | "none";
+  };
+  hooks?: {
+    preCommit: "standard" | "none";
+    prePush: "standard" | "none";
+  };
 }
 
 export interface AdditionalWorkflowConfig {
@@ -118,7 +139,7 @@ export interface OrganizationConfig {
 }
 
 export interface BootstrapManifest {
-  version: 1;
+  version: 1 | 2;
   project: {
     name: string;
     displayName?: string;
@@ -130,7 +151,7 @@ export interface BootstrapManifest {
   repo: RepoConfig;
   archetype: {
     kind: ArchetypeKind;
-    packageManager: "npm" | "pnpm" | "yarn";
+    packageManager: PackageManager;
     moduleName: string;
   };
   github: {
@@ -157,8 +178,13 @@ export interface BootstrapManifest {
       hasWiki: boolean;
       hasDiscussions: boolean;
     };
+    security?: {
+      dependabot: boolean;
+      secretScanningHints: boolean;
+    };
   };
   ci: {
+    policy?: CiPolicy;
     runnerPolicy: RunnerPolicy;
     nodeVersion: string;
     pythonVersion: string;
@@ -166,6 +192,14 @@ export interface BootstrapManifest {
     extendedChecks: string[];
     nightlyCron: string;
     additionalWorkflows: AdditionalWorkflowConfig[];
+    workflows?: {
+      prFastCi: boolean;
+      extendedValidation: boolean;
+      claude: boolean;
+      pagesDeploy: boolean;
+      ci: boolean;
+      extras: AdditionalWorkflowConfig[];
+    };
     appPaths: string[];
     ciPaths: string[];
     extendedPaths: string[];
@@ -199,8 +233,30 @@ export interface BootstrapManifest {
   };
   agents: {
     manageCodexHome: boolean;
+    manageClaudeHome?: boolean;
     codexProfile: string;
+    claudeProfile?: string;
+    enableClaudeWebEnvironment?: boolean;
+    enableClaudeDevcontainer?: boolean;
+    enableClaudeGitHubAction?: boolean;
     sharedSkills: string[];
+  };
+  capabilities?: {
+    pages?: {
+      enabled: boolean;
+      provider: string;
+      outputDir: string;
+    };
+    release?: {
+      enabled: boolean;
+      kind: string;
+    };
+    docsPublish?: {
+      enabled: boolean;
+    };
+    containers?: {
+      enabled: boolean;
+    };
   };
   environments: {
     dev: EnvironmentConfig;

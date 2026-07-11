@@ -2673,6 +2673,289 @@ function releaseVersioningDoc(manifest: BootstrapManifest): string {
   `;
 }
 
+
+function repoDocEnabled(
+  manifest: BootstrapManifest,
+  key: "readme" | "contributing" | "security",
+  fallback: boolean
+): boolean {
+  return manifest.repo.docs?.[key] ?? fallback;
+}
+
+function envExampleEnabled(manifest: BootstrapManifest): boolean {
+  return manifest.repo.env?.exampleFile ?? true;
+}
+
+function pullRequestTemplateEnabled(manifest: BootstrapManifest): boolean {
+  return manifest.repo.templates?.pullRequest !== "none";
+}
+
+function issueTemplateEnabled(manifest: BootstrapManifest, template: "bug" | "feature"): boolean {
+  return manifest.repo.templates?.issueTemplates.includes(template) ?? false;
+}
+
+function preCommitHookEnabled(manifest: BootstrapManifest): boolean {
+  return manifest.repo.hooks?.preCommit !== "none";
+}
+
+function prePushHookEnabled(manifest: BootstrapManifest): boolean {
+  return manifest.repo.hooks?.prePush === "standard";
+}
+
+function workflowEnabled(
+  manifest: BootstrapManifest,
+  workflow: "prFastCi" | "extendedValidation" | "claude" | "pagesDeploy" | "ci",
+  fallback: boolean
+): boolean {
+  return manifest.ci.workflows?.[workflow] ?? fallback;
+}
+
+function claudeEnabled(manifest: BootstrapManifest): boolean {
+  return Boolean(
+    manifest.agents.manageClaudeHome ||
+      manifest.agents.enableClaudeWebEnvironment ||
+      manifest.agents.enableClaudeDevcontainer ||
+      manifest.agents.enableClaudeGitHubAction ||
+      workflowEnabled(manifest, "claude", false)
+  );
+}
+
+function securityDoc(manifest: BootstrapManifest): string {
+  const dependabot = manifest.github.security?.dependabot ?? manifest.ci.dependabot.enabled;
+  const secretHints = manifest.github.security?.secretScanningHints ?? true;
+
+  return dedent`
+    # Security Policy
+
+    ## Supported Surface
+
+    This repository follows the bootstrap-managed security baseline for ${manifest.project.owner}/${manifest.project.name}.
+
+    ## Reporting
+
+    Open a private security advisory or contact the repository maintainers before disclosing a vulnerability publicly.
+
+    ## Baseline
+
+    - Dependabot policy: ${dependabot ? "enabled" : "disabled by manifest"}
+    - Secret scanning hints: ${secretHints ? "enabled" : "disabled by manifest"}
+    - Generated hooks and CI helpers must not require committed secrets or machine-local environment files.
+  `;
+}
+
+function bugIssueTemplate(): string {
+  return dedent`
+    name: Bug Report
+    description: Report a reproducible defect.
+    title: "[Bug]: "
+    labels: ["type:bug", "status:needs-spec"]
+    body:
+      - type: textarea
+        id: summary
+        attributes:
+          label: Summary
+        validations:
+          required: true
+      - type: textarea
+        id: reproduction
+        attributes:
+          label: Reproduction
+        validations:
+          required: true
+      - type: textarea
+        id: validation
+        attributes:
+          label: Expected Validation
+        validations:
+          required: true
+  `;
+}
+
+function featureIssueTemplate(): string {
+  return dedent`
+    name: Feature Request
+    description: Propose a scoped feature or improvement.
+    title: "[Feature]: "
+    labels: ["type:feature", "status:needs-spec"]
+    body:
+      - type: textarea
+        id: outcome
+        attributes:
+          label: Desired Outcome
+        validations:
+          required: true
+      - type: textarea
+        id: scope
+        attributes:
+          label: Scope
+        validations:
+          required: true
+      - type: textarea
+        id: validation
+        attributes:
+          label: Validation
+        validations:
+          required: true
+  `;
+}
+
+function prePushHook(): string {
+  return dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ -x scripts/ci/run-fast-checks.sh ]]; then
+      bash scripts/ci/run-fast-checks.sh
+    fi
+  `;
+}
+
+function repoClaude(manifest: BootstrapManifest): string {
+  return dedent`
+    # CLAUDE.md
+
+    ## Project Context
+
+    - Repository: ${manifest.project.owner}/${manifest.project.name}
+    - Default branch: ${manifest.project.defaultBranch}
+    - Required PR checks: ${requiredStatusChecksPlain(manifest)}
+
+    ## Guardrails
+
+    - Use AGENTS.md and docs/bootstrap/onboarding.md as the governing repo policy.
+    - Keep Claude automation separate from required PR status checks unless the manifest explicitly changes that contract.
+    - Do not commit secrets or machine-local environment files.
+  `;
+}
+
+function claudeCloudSetupScript(manifest: BootstrapManifest): string {
+  return `${dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    bash scripts/codex-cloud/setup.sh
+    echo "Claude cloud setup complete for ${manifest.project.owner}/${manifest.project.name}."
+  `}\n`;
+}
+
+function claudeDevcontainer(manifest: BootstrapManifest): string {
+  return `${JSON.stringify(
+    {
+      name: `${manifest.project.name} Claude Code`,
+      image: "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+      remoteUser: "vscode",
+      updateRemoteUserUID: true,
+      features: {
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/node:1": { version: manifest.ci.nodeVersion },
+        "ghcr.io/devcontainers/features/python:1": { version: manifest.ci.pythonVersion }
+      },
+      mounts: ["source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind"],
+      postCreateCommand: "bash scripts/claude/setup-devcontainer.sh"
+    },
+    null,
+    2
+  )}\n`;
+}
+
+function claudeDevcontainerSetupScript(): string {
+  return `${dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    bash scripts/codex-cloud/setup.sh
+  `}\n`;
+}
+
+function claudeWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Claude Code
+
+    on:
+      workflow_dispatch:
+        inputs:
+          prompt:
+            description: Optional manual task prompt
+            required: false
+            type: string
+      issue_comment:
+        types: [created]
+      pull_request_review_comment:
+        types: [created]
+      pull_request_review:
+        types: [submitted]
+
+    concurrency:
+      group: claude-\${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    jobs:
+      claude:
+        if: |
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+          (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+          (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+          - uses: actions/checkout@v4
+          - name: Run Claude Code
+            uses: anthropics/claude-code-action@v1
+            with:
+              anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+              prompt: |
+                REPO: \${{ github.repository }}
+                DEFAULT BRANCH: ${manifest.project.defaultBranch}
+                REQUIRED CHECKS: ${requiredStatusChecksPlain(manifest)}
+                Use CLAUDE.md, AGENTS.md, and docs/bootstrap/onboarding.md as policy context.
+                MANUAL TASK: \${{ github.event.inputs.prompt }}
+  `;
+}
+
+function claudeEnvironmentDoc(manifest: BootstrapManifest): string {
+  return dedent`
+    # Claude Environment
+
+    ## Project
+
+${indentBlock(projectIdentityLines(manifest), 4)}
+
+    ## Enabled Surfaces
+
+    ${manifest.agents.enableClaudeWebEnvironment ? "- Claude Code on the web with `bash scripts/claude-cloud/setup.sh`" : "- Claude Code on the web is not enabled by this manifest."}
+    ${manifest.agents.enableClaudeDevcontainer ? "- Interactive devcontainer through `.devcontainer/devcontainer.json`" : "- Claude devcontainer is not enabled by this manifest."}
+    ${manifest.agents.enableClaudeGitHubAction || workflowEnabled(manifest, "claude", false) ? "- GitHub-hosted Claude workflow at `.github/workflows/claude.yml`" : "- Claude GitHub Action is not enabled by this manifest."}
+
+    ## Guardrails
+
+    - Keep Claude automation out of the required PR check set unless the manifest explicitly changes branch protection.
+    - Prefer repo-scoped secrets and avoid mounting additional host credentials into the devcontainer.
+  `;
+}
+
+
+function filterRenderedFiles(manifest: BootstrapManifest, files: RenderedFile[]): RenderedFile[] {
+  return files.filter((file) => {
+    if (file.path === "README.md") return repoDocEnabled(manifest, "readme", true);
+    if (file.path === "CONTRIBUTING.md") return repoDocEnabled(manifest, "contributing", true);
+    if (file.path === ".env.example") return envExampleEnabled(manifest);
+    if (file.path === ".githooks/pre-commit") return preCommitHookEnabled(manifest);
+    if (file.path === ".github/PULL_REQUEST_TEMPLATE.md") return pullRequestTemplateEnabled(manifest);
+    if (file.path === ".github/workflows/pr-fast-ci.yml") return workflowEnabled(manifest, "prFastCi", true);
+    if (file.path === ".github/workflows/extended-validation.yml") {
+      return workflowEnabled(manifest, "extendedValidation", true);
+    }
+    return true;
+  });
+}
+
 export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] {
   const releaseIsGoverned = manifest.release.maturity === "governed" || manifest.release.maturity === "regulated";
   const files: RenderedFile[] = [
@@ -2696,6 +2979,24 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Contributor workflow guidance",
       contents: `${contributingDoc(manifest)}\n`
     },
+    ...(repoDocEnabled(manifest, "security", false)
+      ? [
+          {
+            path: "SECURITY.md",
+            reason: "Security reporting policy",
+            contents: `${securityDoc(manifest)}\n`
+          }
+        ]
+      : []),
+    ...(claudeEnabled(manifest)
+      ? [
+          {
+            path: "CLAUDE.md",
+            reason: "Repo-local Claude instructions",
+            contents: `${repoClaude(manifest)}\n`
+          }
+        ]
+      : []),
     {
       path: ".env.example",
       reason: "Safe environment template",
@@ -2712,6 +3013,16 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: `${preCommitHook()}\n`,
       executable: true
     },
+    ...(prePushHookEnabled(manifest)
+      ? [
+          {
+            path: ".githooks/pre-push",
+            reason: "Push validation hook",
+            contents: `${prePushHook()}\n`,
+            executable: true
+          }
+        ]
+      : []),
     {
       path: "CODEOWNERS",
       reason: "Code owner mapping",
@@ -2722,6 +3033,24 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Pull request guidance template",
       contents: `${pullRequestTemplate(manifest)}\n`
     },
+    ...(issueTemplateEnabled(manifest, "bug")
+      ? [
+          {
+            path: ".github/ISSUE_TEMPLATE/bug.yml",
+            reason: "Bug issue template",
+            contents: `${bugIssueTemplate()}\n`
+          }
+        ]
+      : []),
+    ...(issueTemplateEnabled(manifest, "feature")
+      ? [
+          {
+            path: ".github/ISSUE_TEMPLATE/feature.yml",
+            reason: "Feature issue template",
+            contents: `${featureIssueTemplate()}\n`
+          }
+        ]
+      : []),
     ...(manifest.github.flowGovernance
       ? [
           {
@@ -2826,6 +3155,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
+    ...(workflowEnabled(manifest, "claude", Boolean(manifest.agents.enableClaudeGitHubAction))
+      ? [
+          {
+            path: ".github/workflows/claude.yml",
+            reason: "Claude GitHub automation workflow",
+            contents: `${claudeWorkflow(manifest)}\n`
+          }
+        ]
+      : []),
     ...(manifest.ci.aiAttestation.enabled
       ? [
           {
@@ -2894,6 +3232,31 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: codexCloudMaintenanceScript(manifest),
       executable: true
     },
+    ...(manifest.agents.enableClaudeWebEnvironment
+      ? [
+          {
+            path: "scripts/claude-cloud/setup.sh",
+            reason: "Claude cloud setup script",
+            contents: claudeCloudSetupScript(manifest),
+            executable: true
+          }
+        ]
+      : []),
+    ...(manifest.agents.enableClaudeDevcontainer
+      ? [
+          {
+            path: ".devcontainer/devcontainer.json",
+            reason: "Claude interactive devcontainer",
+            contents: claudeDevcontainer(manifest)
+          },
+          {
+            path: "scripts/claude/setup-devcontainer.sh",
+            reason: "Claude devcontainer dependency bootstrap",
+            contents: claudeDevcontainerSetupScript(),
+            executable: true
+          }
+        ]
+      : []),
     {
       path: "docs/bootstrap/onboarding.md",
       reason: "Operator onboarding checklist",
@@ -2904,6 +3267,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Codex web environment setup guide",
       contents: `${codexCloudDoc(manifest)}\n`
     },
+    ...(claudeEnabled(manifest)
+      ? [
+          {
+            path: "docs/bootstrap/claude-environment.md",
+            reason: "Claude environment setup guide",
+            contents: `${claudeEnvironmentDoc(manifest)}\n`
+          }
+        ]
+      : []),
     ...(manifest.release.enabled
       ? [
           {
@@ -2936,12 +3308,12 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
 
   switch (manifest.archetype.kind) {
     case "nextjs-web":
-      return [...files, ...nextJsStarter()];
+      return filterRenderedFiles(manifest, [...files, ...nextJsStarter()]);
     case "node-ts-service":
-      return [...files, ...nodeStarter()];
+      return filterRenderedFiles(manifest, [...files, ...nodeStarter()]);
     case "python-service":
-      return [...files, ...pythonStarter(manifest.archetype.moduleName)];
+      return filterRenderedFiles(manifest, [...files, ...pythonStarter(manifest.archetype.moduleName)]);
     case "generic-empty":
-      return [...files, ...genericStarter(manifest)];
+      return filterRenderedFiles(manifest, [...files, ...genericStarter(manifest)]);
   }
 }

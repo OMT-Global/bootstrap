@@ -258,6 +258,13 @@ export interface BootstrapManifest {
       enabled: boolean;
     };
   };
+  policy?: {
+    flow: {
+      ref: string;
+      sha256: string;
+      bundlePath: string;
+    };
+  };
   environments: {
     dev: EnvironmentConfig;
     stage: EnvironmentConfig;

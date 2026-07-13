@@ -187,6 +187,14 @@ const capabilitiesSchema = z.object({
     .optional()
 });
 
+const policySchema = z.object({
+  flow: z.object({
+    ref: z.string().min(1),
+    sha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+    bundlePath: z.string().min(1)
+  })
+});
+
 const dependabotEcosystemSchema = z.object({
   packageEcosystem: z.enum(["npm", "github-actions", "docker"]),
   directory: z.string().min(1).optional(),
@@ -372,6 +380,7 @@ const manifestSchema = z.object({
     })
     .optional(),
   capabilities: capabilitiesSchema.optional(),
+  policy: policySchema.optional(),
   environments: z
     .object({
       dev: environmentSchema.optional(),
@@ -813,6 +822,9 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       sharedSkills: parsed.agents?.sharedSkills ?? []
     },
     ...(capabilities ? { capabilities } : {}),
+    ...(parsed.policy
+      ? { policy: { flow: { ...parsed.policy.flow, sha256: parsed.policy.flow.sha256.toLowerCase() } } }
+      : {}),
     environments: {
       dev: applyEnvironmentDefaults(defaultEnvironment(environments.dev), reviewers, defaultBranch, "dev"),
       stage: applyEnvironmentDefaults(

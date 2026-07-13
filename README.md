@@ -59,6 +59,7 @@ Confirm branch protection points at the `CI Gate` status and require approval fr
 - Archetype: `generic-empty`
 
 For the Flow v1 repository-class transition, see [the explicit class-migration guide](docs/bootstrap/repository-class-migration.md).
+Use [language-profile detection](docs/bootstrap/language-profiles.md) to review target toolchain evidence before applying a plan.
 
 
 ## Release Standard

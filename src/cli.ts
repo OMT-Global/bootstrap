@@ -30,6 +30,12 @@ function formatRepoChanges(changes: Awaited<ReturnType<typeof planRepo>>["change
   ].join("\n");
 }
 
+function formatLanguageProfiles(profiles: Awaited<ReturnType<typeof planRepo>>["languageProfiles"]): string {
+  const selected = profiles.selected.length === 0 ? "none" : profiles.selected.join(", ");
+  const conflicts = profiles.conflicts.map((conflict) => `- [warn] ${conflict.reason}`);
+  return ["**Language profiles**", `- Selected: ${selected}`, ...conflicts].join("\n");
+}
+
 function formatGitHubActions(actions: Awaited<ReturnType<typeof planGitHub>>): string {
   return [
     "**GitHub**",
@@ -128,6 +134,7 @@ async function main(): Promise<void> {
             {
               targetDir,
               repo: repoPlan.changes,
+              languageProfiles: repoPlan.languageProfiles,
               github: githubPlan,
               home: homePlan.actions
             },
@@ -139,7 +146,7 @@ async function main(): Promise<void> {
       }
 
       process.stdout.write(
-        `${formatRepoChanges(repoPlan.changes)}\n\n${formatGitHubActions(githubPlan)}\n\n${formatHomeActions(
+        `${formatRepoChanges(repoPlan.changes)}\n\n${formatLanguageProfiles(repoPlan.languageProfiles)}\n\n${formatGitHubActions(githubPlan)}\n\n${formatHomeActions(
           homePlan.actions
         )}\n`
       );

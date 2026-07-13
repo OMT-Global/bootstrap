@@ -36,8 +36,14 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function isImmutablePolicyRef(ref: string): boolean {
+export function isImmutablePolicyRef(ref: string): boolean {
   return /^refs\/tags\/v\d+\.\d+\.\d+$/.test(ref) || /^[0-9a-f]{40}$/i.test(ref);
+}
+
+export function requireImmutableProductionWorkflowRef(ref: string, surface = "Production workflow"): void {
+  if (!isImmutablePolicyRef(ref)) {
+    throw new Error(`${surface} ref must be an exact vX.Y.Z tag or immutable 40-character SHA; ${JSON.stringify(ref)} is mutable.`);
+  }
 }
 
 export function flowPolicyDigest(bundle: unknown): string {

@@ -2,12 +2,14 @@ import path from "node:path";
 
 import { renderManagedFiles } from "./archetypes.js";
 import { readTextIfExists, removeFileIfExists, writeTextFile } from "./lib/fs.js";
+import { resolveLanguageProfiles, type LanguageProfileResolution } from "./language-profiles.js";
 import { createRepoState, loadRepoState, writeRepoState } from "./state.js";
 import type { BootstrapManifest, PlannedFileChange, RenderedFile } from "./types.js";
 
 export interface RepoPlan {
   changes: PlannedFileChange[];
   files: RenderedFile[];
+  languageProfiles: LanguageProfileResolution;
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -123,6 +125,7 @@ function validateManagedPathDependencies(files: RenderedFile[]): void {
 
 export async function planRepo(manifest: BootstrapManifest, targetDir: string): Promise<RepoPlan> {
   const files = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const languageProfiles = await resolveLanguageProfiles(manifest, targetDir);
   const existingState = await loadRepoState(targetDir);
   const changes: PlannedFileChange[] = [];
 
@@ -157,7 +160,8 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
 
   return {
     changes: changes.sort((left, right) => left.path.localeCompare(right.path)),
-    files
+    files,
+    languageProfiles
   };
 }
 

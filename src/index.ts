@@ -3,6 +3,7 @@ export * from "./fleet.js";
 export * from "./github/client.js";
 export * from "./github/provision.js";
 export * from "./home/sync.js";
+export * from "./language-profiles.js";
 export * from "./manifest.js";
 export * from "./policy.js";
 export * from "./render.js";

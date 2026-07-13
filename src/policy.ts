@@ -84,5 +84,5 @@ export async function loadResolvedFlowPolicy(manifest: BootstrapManifest, manife
     throw new Error("Flow policy bundle path must stay within the manifest directory.");
   }
   const bundle = YAML.parse(await readFile(bundlePath, "utf8"));
-  return resolveFlowPolicy(manifest, bundle, source);
+  return resolveFlowPolicy(manifest, bundle, source, manifest.unknownSettings);
 }

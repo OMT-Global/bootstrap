@@ -388,7 +388,11 @@ const manifestSchema = z.object({
       prod: environmentSchema.optional()
     })
     .optional()
-});
+}).passthrough();
+
+const KNOWN_MANIFEST_SETTINGS = new Set([
+  "version", "project", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "environments"
+]);
 
 function slugify(value: string): string {
   return value
@@ -672,6 +676,7 @@ function normalizeCustomScripts(
 
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
+  const unknownSettings = Object.keys(parsed).filter((key) => !KNOWN_MANIFEST_SETTINGS.has(key)).sort();
   const version = parsed.version ?? 1;
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
   const defaultBranch = parsed.project.defaultBranch ?? "main";
@@ -698,6 +703,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
 
   return {
     version,
+    unknownSettings,
     project: {
       name: parsed.project.name,
       ...(parsed.project.displayName ? { displayName: parsed.project.displayName } : {}),
@@ -903,11 +909,12 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
 }
 
 function serializableManifest(manifest: BootstrapManifest): BootstrapManifest | Record<string, unknown> {
+  const { unknownSettings: _unknownSettings, ...serializable } = manifest;
   if (manifest.version !== 2 || !manifest.capabilities?.release) {
-    return manifest;
+    return serializable;
   }
 
-  const { release: _release, ...withoutRelease } = manifest;
+  const { release: _release, ...withoutRelease } = serializable;
   return withoutRelease;
 }
 

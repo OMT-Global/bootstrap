@@ -140,6 +140,7 @@ export interface OrganizationConfig {
 
 export interface BootstrapManifest {
   version: 1 | 2;
+  unknownSettings: string[];
   project: {
     name: string;
     displayName?: string;

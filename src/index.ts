@@ -13,3 +13,4 @@ export * from "./render.js";
 export * from "./runners.js";
 export * from "./state.js";
 export * from "./types.js";
+export * from "./upgrades.js";

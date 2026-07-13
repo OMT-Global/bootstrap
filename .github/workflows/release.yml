@@ -100,7 +100,7 @@ jobs:
       DOCKYARD_SPARKLE_SIGN_UPDATE: ${{ secrets.DOCKYARD_SPARKLE_SIGN_UPDATE }}
       SPARKLE_FRAMEWORK_PATH: ${{ secrets.SPARKLE_FRAMEWORK_PATH }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
       - name: Derive release metadata

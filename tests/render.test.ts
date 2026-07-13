@@ -42,9 +42,9 @@ describe("renderManagedFiles", () => {
       const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
       const extendedValidationWorkflow = files.find((file) => file.path === ".github/workflows/extended-validation.yml");
       expect(prWorkflow?.contents).toContain("name: CI Gate");
-      expect(prWorkflow?.contents).toContain("dorny/paths-filter@v4");
+      expect(prWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
       expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
-      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@v4");
+      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
       expect(extendedValidationWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
       expect(prWorkflow?.contents).toContain("types: [opened, edited, synchronize, reopened, ready_for_review]");
       expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
@@ -59,6 +59,8 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("pull-requests: read");
       expect(prWorkflow?.contents).toContain("PR_COMMITS_URL:");
       expect(files.find((file) => file.path === "scripts/ci/check-pr-governance.sh")?.contents).toContain("PRS-DCO-001");
+      expect(prWorkflow?.contents).toContain("validate-action-pins:");
+      expect(files.find((file) => file.path === "scripts/ci/check-action-pins.sh")?.contents).toContain("SA-ACTION-PIN-001");
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
       const dependabot = files.find((file) => file.path === ".github/dependabot.yml");
@@ -272,10 +274,10 @@ describe("renderManagedFiles", () => {
     expect(renderedManifest?.contents).toContain("version: 2");
     expect(renderedManifest?.contents).toContain("capabilities:");
     expect(renderedManifest?.contents).not.toContain("\nrelease:\n");
-    expect(prWorkflow?.contents).toContain("dorny/paths-filter@v4");
+    expect(prWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
     expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
     expect(claudeWorkflow?.contents).toContain("name: Claude Code");
-    expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@v1");
+    expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1");
   });
 
   it("documents required PR template enforcement in generated agent instructions", () => {

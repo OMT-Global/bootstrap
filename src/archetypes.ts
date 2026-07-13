@@ -1068,6 +1068,46 @@ function prGovernanceScript(): string {
   `;
 }
 
+function actionPinScript(): string {
+  return dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    python3 - "\${1:-.github/workflows}" <<'PY'
+    import re
+    import sys
+    from pathlib import Path
+
+    workflow_root = Path(sys.argv[1])
+    uses_pattern = re.compile(r"^\\s*(?:-\\s+)?uses:\\s*([^\\s#]+)@([^\\s#]+)(?:\\s+#\\s*(.+))?\\s*$")
+    sha_pattern = re.compile(r"^[0-9a-f]{40}$")
+    failures = []
+    checked = 0
+
+    for workflow in sorted([*workflow_root.rglob("*.yml"), *workflow_root.rglob("*.yaml")]):
+        for line_number, line in enumerate(workflow.read_text().splitlines(), start=1):
+            match = uses_pattern.match(line)
+            if not match:
+                continue
+            action, ref, metadata = match.groups()
+            if action.startswith("./") or action.startswith("OMT-Global/bootstrap/"):
+                continue
+            checked += 1
+            location = f"{workflow}:{line_number}"
+            if not sha_pattern.fullmatch(ref):
+                failures.append(f"SA-ACTION-PIN-001 {location}: {action}@{ref} is not an immutable 40-character commit SHA.")
+            elif not metadata:
+                failures.append(f"SA-ACTION-PIN-002 {location}: {action} is pinned but lacks readable tag or release metadata after '#'.")
+
+    if failures:
+        print("\\n".join(failures), file=sys.stderr)
+        raise SystemExit(1)
+
+    print(f"PASS SA-ACTION-PIN-000: validated {checked} third-party action pin(s) under {workflow_root}.")
+    PY
+  `;
+}
+
 function releaseVerificationScript(manifest: BootstrapManifest): string {
   if (manifest.ci.customScripts.releaseVerification) {
     return `${dedent`
@@ -1405,7 +1445,7 @@ function setupSteps(manifest: BootstrapManifest): string {
 
   if (manifest.archetype.kind === "nextjs-web" || manifest.archetype.kind === "node-ts-service") {
     lines.push(
-      `- uses: actions/setup-node@v4`,
+      `- uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4`,
       `  with:`,
       `    node-version: \${{ env.NODE_VERSION }}`,
       `    cache: ${manifest.archetype.packageManager}`,
@@ -1421,7 +1461,7 @@ function setupSteps(manifest: BootstrapManifest): string {
 
   if (manifest.archetype.kind === "python-service") {
     lines.push(
-      `- uses: actions/setup-python@v5`,
+      `- uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5`,
       `  with:`,
       `    python-version: \${{ env.PYTHON_VERSION }}`
     );
@@ -1743,7 +1783,7 @@ function releasePreflightReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ inputs.target_ref }}
               fetch-depth: 0
@@ -1789,13 +1829,13 @@ function releasePreflightReusableWorkflow(): string {
               {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","version":"\${VERSION}","channel":"\${CHANNEL}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","release_issue":"\${RELEASE_ISSUE}","preflight_run_id":"\${GITHUB_RUN_ID}","checks":{"prep":"\${prep_status}","preflight":"\${preflight_status}","build":"\${build_status}"}}
               JSON
 
-          - uses: actions/upload-artifact@v4
+          - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: release-package
               path: \${{ inputs.artifact_dir }}/
               retention-days: \${{ inputs.evidence_retention_days }}
 
-          - uses: actions/upload-artifact@v4
+          - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: \${{ inputs.evidence_artifact_name }}
               path: |
@@ -1832,7 +1872,7 @@ function fullReleaseValidationReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ inputs.target_ref }}
               fetch-depth: 0
@@ -1859,7 +1899,7 @@ function fullReleaseValidationReusableWorkflow(): string {
               cat >"$ARTIFACT_DIR/validation-evidence.json" <<JSON
               {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","validation_run_id":"\${GITHUB_RUN_ID}","release_profile":"\${RELEASE_PROFILE}","checks":{"validate_script":"\${validate_status}","standard_checks":"\${standard_status}"}}
               JSON
-          - uses: actions/upload-artifact@v4
+          - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: \${{ inputs.evidence_artifact_name }}-validation
               path: \${{ inputs.artifact_dir }}/validation-evidence.json
@@ -1910,7 +1950,7 @@ function releasePublishReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ inputs.tag }}
               fetch-depth: 0
@@ -2025,7 +2065,7 @@ function releasePublishReusableWorkflow(): string {
                 exit 1
               fi
               printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
-          - uses: actions/upload-artifact@v4
+          - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: \${{ inputs.evidence_artifact_name }}-publish
               path: \${{ inputs.artifact_dir }}/postpublish-evidence.json
@@ -2057,7 +2097,7 @@ function releasePostpublishReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ inputs.tag }}
               fetch-depth: 0
@@ -2082,7 +2122,7 @@ function releasePostpublishReusableWorkflow(): string {
                 exit 1
               fi
               printf '{"schema_version":1,"repo":"%s","tag":"%s","channel":"%s","release_issue":"%s","postpublish_run_id":"%s","release_assets":%s}\\n' "$GITHUB_REPOSITORY" "$TAG" "$CHANNEL" "$RELEASE_ISSUE" "$GITHUB_RUN_ID" "$asset_count" >"$ARTIFACT_DIR/postpublish-evidence.json"
-          - uses: actions/upload-artifact@v4
+          - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: \${{ inputs.evidence_artifact_name }}-postpublish
               path: \${{ inputs.artifact_dir }}/postpublish-evidence.json
@@ -2395,7 +2435,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
           app: \${{ steps.filter.outputs.app }}
           ci: \${{ steps.filter.outputs.ci }}
         steps:
-          - uses: dorny/paths-filter@v4
+          - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
             id: filter
             with:
               filters: |
@@ -2413,7 +2453,7 @@ ${yamlList(paths.ci, 18)}
           github.event.pull_request.draft == false &&
           (needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true')
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
 ${indentBlock(setupSteps(manifest), 6)}
@@ -2476,7 +2516,7 @@ ${indentBlock(setupSteps(manifest), 6)}
         timeout-minutes: 10
         if: github.event.pull_request.draft == false
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
           - name: Scan repository for secret patterns
@@ -2496,11 +2536,23 @@ ${indentBlock(setupSteps(manifest), 6)}
           PR_REVIEWS_URL: \${{ github.event.pull_request.url }}/reviews
           GITHUB_TOKEN: \${{ github.token }}
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
           - name: Validate title, DCO, size, ADR, and reviewer evidence
             run: bash scripts/ci/check-pr-governance.sh
+
+      validate-action-pins:
+        name: Validate Action Pins
+        runs-on: ${shellRunner}
+        timeout-minutes: 5
+        if: github.event.pull_request.draft == false
+        steps:
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+            with:
+              ref: \${{ github.event.pull_request.head.sha }}
+          - name: Require immutable third-party action pins
+            run: bash scripts/ci/check-action-pins.sh
 
       ci-gate:
         name: ${primaryRequiredStatusCheck(manifest)}
@@ -2512,6 +2564,7 @@ ${indentBlock(setupSteps(manifest), 6)}
           - validate-pr-description
           - validate-secrets
           - validate-pr-governance
+          - validate-action-pins
         steps:
           - name: Check required PR jobs
             env:
@@ -2521,6 +2574,7 @@ ${indentBlock(setupSteps(manifest), 6)}
                 validate-pr-description=\${{ needs.validate-pr-description.result }}
                 validate-secrets=\${{ needs.validate-secrets.result }}
                 validate-pr-governance=\${{ needs.validate-pr-governance.result }}
+                validate-action-pins=\${{ needs.validate-action-pins.result }}
             run: |
               failed=0
               for entry in $RESULTS; do
@@ -2575,7 +2629,7 @@ function extendedWorkflow(manifest: BootstrapManifest): string {
           ci: \${{ steps.preset.outputs.ci || steps.filter.outputs.ci || 'false' }}
           extended: \${{ steps.preset.outputs.extended || steps.filter.outputs.extended || 'false' }}
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             if: github.event_name == 'push'
             with:
               fetch-depth: 0
@@ -2590,7 +2644,7 @@ function extendedWorkflow(manifest: BootstrapManifest): string {
               extended=true
               EOF
 
-          - uses: dorny/paths-filter@v4
+          - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
             id: filter
             if: github.event_name == 'push'
             with:
@@ -2609,7 +2663,7 @@ ${yamlList(paths.extended, 18)}
         needs: changes
         if: needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true'
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 ${indentBlock(setupSteps(manifest), 6)}
           - name: Run fast checks
             run: bash scripts/ci/run-fast-checks.sh
@@ -2621,7 +2675,7 @@ ${indentBlock(setupSteps(manifest), 6)}
         needs: changes
         if: needs.changes.outputs.extended == 'true' || needs.changes.outputs.app == 'true'
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 ${indentBlock(setupSteps(manifest), 6)}
           - name: Run extended validation
             run: bash scripts/ci/run-extended-validation.sh
@@ -2631,7 +2685,7 @@ ${indentBlock(setupSteps(manifest), 6)}
         runs-on: ${shellRunner}
         timeout-minutes: 10
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
           - name: Scan repository for secret patterns
             run: bash scripts/check-detect-secrets.sh --all-files
 
@@ -3046,9 +3100,9 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
           - name: Run Claude Code
-            uses: anthropics/claude-code-action@v1
+            uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
             with:
               anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
               prompt: |
@@ -3336,6 +3390,12 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       path: "scripts/ci/check-pr-governance.sh",
       reason: "Fork-safe pull request governance validation",
       contents: `${prGovernanceScript()}\n`,
+      executable: true
+    },
+    {
+      path: "scripts/ci/check-action-pins.sh",
+      reason: "Immutable third-party action pin validation",
+      contents: `${actionPinScript()}\n`,
       executable: true
     },
     ...(manifest.release.enabled

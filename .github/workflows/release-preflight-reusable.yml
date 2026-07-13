@@ -30,7 +30,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 0
@@ -76,13 +76,13 @@ jobs:
           {"schema_version":1,"repo":"${GITHUB_REPOSITORY}","version":"${VERSION}","channel":"${CHANNEL}","target_ref":"${TARGET_REF}","target_sha":"${target_sha}","release_issue":"${RELEASE_ISSUE}","preflight_run_id":"${GITHUB_RUN_ID}","checks":{"prep":"${prep_status}","preflight":"${preflight_status}","build":"${build_status}"}}
           JSON
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-package
           path: ${{ inputs.artifact_dir }}/
           retention-days: ${{ inputs.evidence_retention_days }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ inputs.evidence_artifact_name }}
           path: |

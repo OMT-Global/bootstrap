@@ -28,7 +28,7 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         with:
           filters: |
@@ -64,7 +64,7 @@ jobs:
       github.event.pull_request.draft == false &&
       (needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -127,7 +127,7 @@ jobs:
     timeout-minutes: 10
     if: github.event.pull_request.draft == false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Scan repository for secret patterns
@@ -147,11 +147,23 @@ jobs:
       PR_REVIEWS_URL: ${{ github.event.pull_request.url }}/reviews
       GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Validate title, DCO, size, ADR, and reviewer evidence
         run: bash scripts/ci/check-pr-governance.sh
+
+  validate-action-pins:
+    name: Validate Action Pins
+    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Require immutable third-party action pins
+        run: bash scripts/ci/check-action-pins.sh
 
   ci-gate:
     name: CI Gate
@@ -163,6 +175,7 @@ jobs:
       - validate-pr-description
       - validate-secrets
       - validate-pr-governance
+      - validate-action-pins
     steps:
       - name: Check required PR jobs
         env:
@@ -172,6 +185,7 @@ jobs:
             validate-pr-description=${{ needs.validate-pr-description.result }}
             validate-secrets=${{ needs.validate-secrets.result }}
             validate-pr-governance=${{ needs.validate-pr-governance.result }}
+            validate-action-pins=${{ needs.validate-action-pins.result }}
         run: |
           failed=0
           for entry in $RESULTS; do

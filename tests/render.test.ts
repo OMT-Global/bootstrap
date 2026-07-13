@@ -55,6 +55,10 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/");
       expect(prWorkflow?.contents).toContain("auto_merge_evidence=");
       expect(prWorkflow?.contents).toContain('<<<"$auto_merge_evidence"');
+      expect(prWorkflow?.contents).toContain("validate-pr-governance:");
+      expect(prWorkflow?.contents).toContain("pull-requests: read");
+      expect(prWorkflow?.contents).toContain("PR_COMMITS_URL:");
+      expect(files.find((file) => file.path === "scripts/ci/check-pr-governance.sh")?.contents).toContain("PRS-DCO-001");
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
       const dependabot = files.find((file) => file.path === ".github/dependabot.yml");
@@ -64,6 +68,7 @@ describe("renderManagedFiles", () => {
       expect(prTemplate?.contents).toContain("## Bootstrap Governance");
       expect(prTemplate?.contents).toContain("fallback merge-readiness policy applies");
       expect(prTemplate?.contents).toContain("## Notes");
+      expect(prTemplate?.contents).toContain("Material change: no");
       expect(dependabot?.contents).toContain('package-ecosystem: "npm"');
       expect(dependabot?.contents).toContain('package-ecosystem: "github-actions"');
       expect(dependabot?.contents).toContain("npm-minor-patch");

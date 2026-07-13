@@ -422,6 +422,9 @@ function pullRequestTemplate(manifest: BootstrapManifest): string {
     - [ ] PR author enabled auto-merge where GitHub allows it, or GitHub plan-limit evidence/unavailable reason is recorded and the fallback merge-readiness policy applies
     - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
+    Material change: no
+    ADR: docs/decisions/ADR-<number>-<slug>.md  <!-- required when Material change is yes; ADR status must be Accepted -->
+
 ${indentBlock(flowPullRequestSection(manifest), 4)}
 
     ## Merge Automation
@@ -948,6 +951,121 @@ function extendedChecksScript(manifest: BootstrapManifest): string {
     set -euo pipefail
 
   `}\n${body}\n`;
+}
+
+function prGovernanceScript(): string {
+  return dedent`
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    required=(PR_TITLE PR_BODY PR_AUTHOR)
+    for name in "\${required[@]}"; do
+      if [[ -z "\${!name:-}" ]]; then
+        echo "Missing required PR governance input: $name" >&2
+        exit 2
+      fi
+    done
+
+    workdir="$(mktemp -d)"
+    trap 'rm -rf "$workdir"' EXIT
+
+    fetch() {
+      local url="$1"
+      local destination="$2"
+      curl --fail --silent --show-error --location --retry 2 \\
+        --header "Accept: application/vnd.github+json" \\
+        --header "Authorization: Bearer $GITHUB_TOKEN" \\
+        "$url" >"$destination"
+    }
+
+    load_response() {
+      local fixture="$1"
+      local url="$2"
+      local suffix="$3"
+      local destination="$4"
+      if [[ -n "$fixture" ]]; then
+        cp "$fixture" "$destination"
+      elif [[ -n "$url" && -n "\${GITHUB_TOKEN:-}" ]]; then
+        fetch "$url?$suffix" "$destination"
+      else
+        echo "Provide a fixture file or API URL plus GITHUB_TOKEN for $destination" >&2
+        exit 2
+      fi
+    }
+
+    load_response "\${PR_FILES_FILE:-}" "\${PR_FILES_URL:-}" "per_page=100" "$workdir/files.json"
+    load_response "\${PR_COMMITS_FILE:-}" "\${PR_COMMITS_URL:-}" "per_page=250" "$workdir/commits.json"
+    load_response "\${PR_REVIEWS_FILE:-}" "\${PR_REVIEWS_URL:-}" "per_page=100" "$workdir/reviews.json"
+
+    python3 - "$PR_TITLE" "$PR_BODY" "$PR_AUTHOR" "$workdir/files.json" "$workdir/commits.json" "$workdir/reviews.json" <<'PY'
+    import json
+    import re
+    import sys
+    from pathlib import Path
+
+    title, body, author, files_path, commits_path, reviews_path = sys.argv[1:]
+    files = json.loads(Path(files_path).read_text())
+    commits = json.loads(Path(commits_path).read_text())
+    reviews = json.loads(Path(reviews_path).read_text())
+    failures = []
+
+    if not re.match(r"^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]+\\))?!?: .+", title):
+        failures.append("PRS-PR-TITLE-001: use a Conventional Commit-style PR title, for example 'feat: add policy gate'.")
+
+    excluded = []
+    counted_lines = 0
+    for changed in files:
+        name = changed.get("filename", "unknown")
+        if name.startswith(("docs/", "test/", "tests/")) or name.endswith((".md", ".lock")) or name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}:
+            excluded.append(name)
+        else:
+            counted_lines += int(changed.get("additions", 0)) + int(changed.get("deletions", 0))
+    print(f"INFO PRS-PR-SIZE-001: {counted_lines} counted changed lines; excluded {len(excluded)} documentation, test, and lockfile paths.")
+    if excluded:
+        print("INFO PRS-PR-SIZE-001 excluded: " + ", ".join(sorted(excluded)))
+    if counted_lines > 800:
+        failures.append(f"PRS-PR-SIZE-001: {counted_lines} counted changed lines exceeds the 800-line review threshold; split the change before requesting review.")
+
+    missing_dco = []
+    for commit in commits:
+        login = (commit.get("author") or {}).get("login", "")
+        account_type = (commit.get("author") or {}).get("type", "")
+        if account_type == "Bot" or login.endswith("[bot]"):
+            continue
+        message = (commit.get("commit") or {}).get("message", "")
+        if not re.search(r"(?im)^signed-off-by:\\s+.+ <[^>]+>$", message):
+            missing_dco.append(commit.get("sha", "unknown")[:12])
+    if missing_dco:
+        failures.append("PRS-DCO-001: contributed commits without a Signed-off-by trailer: " + ", ".join(missing_dco))
+
+    declaration = re.search(r"(?im)^material change:\\s*(yes|no)\\s*$", body)
+    if not declaration:
+        failures.append("PRS-MATERIAL-001: declare 'Material change: yes' or 'Material change: no' in the PR body.")
+    elif declaration.group(1).lower() == "yes":
+        adr = re.search(r"(?im)^adr:\\s*(docs/decisions/[^\\s]+\\.md)\\s*$", body)
+        if not adr:
+            failures.append("PRS-ADR-001: material changes require an ADR line pointing at an accepted docs/decisions/*.md file.")
+        else:
+            adr_path = Path(adr.group(1))
+            if not adr_path.is_file() or not re.search(r"(?im)^status:\\s*accepted\\s*$", adr_path.read_text()):
+                failures.append(f"PRS-ADR-001: {adr_path} must exist in this PR and declare 'Status: Accepted'.")
+
+        independent_approvers = {
+            (review.get("user") or {}).get("login", "")
+            for review in reviews
+            if review.get("state", "").upper() == "APPROVED"
+            and (review.get("user") or {}).get("login", "") != author
+            and (review.get("user") or {}).get("type", "") != "Bot"
+        }
+        if not independent_approvers:
+            failures.append("PRS-INDEPENDENT-REVIEW-001: material changes require an approving reviewer other than the PR author.")
+
+    if failures:
+        print("\\n".join("FAIL " + failure for failure in failures), file=sys.stderr)
+        sys.exit(1)
+    print("PASS PRS-PR-GOVERNANCE-001: title, DCO, change accounting, and material evidence are valid.")
+    PY
+  `;
 }
 
 function releaseVerificationScript(manifest: BootstrapManifest): string {
@@ -2259,6 +2377,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
 
     permissions:
       contents: read
+      pull-requests: read
 
     env:
       NODE_VERSION: '${manifest.ci.nodeVersion}'
@@ -2363,6 +2482,26 @@ ${indentBlock(setupSteps(manifest), 6)}
           - name: Scan repository for secret patterns
             run: bash scripts/check-detect-secrets.sh --all-files
 
+      validate-pr-governance:
+        name: Validate PR Governance
+        runs-on: ${shellRunner}
+        timeout-minutes: 5
+        if: github.event.pull_request.draft == false
+        env:
+          PR_TITLE: \${{ github.event.pull_request.title }}
+          PR_BODY: \${{ github.event.pull_request.body }}
+          PR_AUTHOR: \${{ github.event.pull_request.user.login }}
+          PR_FILES_URL: \${{ github.event.pull_request.url }}/files
+          PR_COMMITS_URL: \${{ github.event.pull_request.commits_url }}
+          PR_REVIEWS_URL: \${{ github.event.pull_request.url }}/reviews
+          GITHUB_TOKEN: \${{ github.token }}
+        steps:
+          - uses: actions/checkout@v4
+            with:
+              ref: \${{ github.event.pull_request.head.sha }}
+          - name: Validate title, DCO, size, ADR, and reviewer evidence
+            run: bash scripts/ci/check-pr-governance.sh
+
       ci-gate:
         name: ${primaryRequiredStatusCheck(manifest)}
         runs-on: ${shellRunner}
@@ -2372,6 +2511,7 @@ ${indentBlock(setupSteps(manifest), 6)}
           - fast-checks
           - validate-pr-description
           - validate-secrets
+          - validate-pr-governance
         steps:
           - name: Check required PR jobs
             env:
@@ -2380,6 +2520,7 @@ ${indentBlock(setupSteps(manifest), 6)}
                 fast-checks=\${{ needs.fast-checks.result }}
                 validate-pr-description=\${{ needs.validate-pr-description.result }}
                 validate-secrets=\${{ needs.validate-secrets.result }}
+                validate-pr-governance=\${{ needs.validate-pr-governance.result }}
             run: |
               failed=0
               for entry in $RESULTS; do
@@ -3189,6 +3330,12 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       path: "scripts/ci/run-extended-validation.sh",
       reason: "Extended CI entrypoint",
       contents: extendedChecksScript(manifest),
+      executable: true
+    },
+    {
+      path: "scripts/ci/check-pr-governance.sh",
+      reason: "Fork-safe pull request governance validation",
+      contents: `${prGovernanceScript()}\n`,
       executable: true
     },
     ...(manifest.release.enabled

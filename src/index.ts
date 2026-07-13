@@ -1,4 +1,5 @@
 export * from "./doctor.js";
+export * from "./conformance.js";
 export * from "./exceptions.js";
 export * from "./fleet.js";
 export * from "./github/client.js";

@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 
 import { runDoctor } from "./doctor.js";
+import { formatConformanceReport, runConformance } from "./conformance.js";
 import { reconcileFleet } from "./fleet.js";
 import { planGitHub, applyGitHub } from "./github/provision.js";
 import { planHome, applyHome } from "./home/sync.js";
@@ -239,6 +240,20 @@ async function main(): Promise<void> {
       process.stdout.write(
         `${checks.map((check) => `- [${check.status}] ${check.name}: ${check.detail}`).join("\n")}\n`
       );
+    });
+
+  program
+    .command("conform")
+    .description("Validate the deterministic Public Repository Standard conformance core.")
+    .option("--manifest <path>", "Path to manifest")
+    .option("--target <path>", "Target repository directory")
+    .option("--json", "Emit versioned JSON")
+    .action(async (options) => {
+      const manifest = await loadManifest(resolveManifestPath(options.manifest));
+      const targetDir = options.target ? path.resolve(options.target) : defaultTargetDir(manifest);
+      const report = await runConformance(manifest, targetDir);
+      process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatConformanceReport(report)}\n`);
+      process.exitCode = report.exitCode;
     });
 
   await program.parseAsync(process.argv);

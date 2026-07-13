@@ -40,7 +40,12 @@ describe("renderManagedFiles", () => {
       ).toMatchSnapshot();
 
       const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
+      const extendedValidationWorkflow = files.find((file) => file.path === ".github/workflows/extended-validation.yml");
       expect(prWorkflow?.contents).toContain("name: CI Gate");
+      expect(prWorkflow?.contents).toContain("dorny/paths-filter@v4");
+      expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
+      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@v4");
+      expect(extendedValidationWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
       expect(prWorkflow?.contents).toContain("types: [opened, edited, synchronize, reopened, ready_for_review]");
       expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
@@ -245,6 +250,7 @@ describe("renderManagedFiles", () => {
     const files = renderManagedFiles(manifest);
     const paths = files.map((file) => file.path);
     const renderedManifest = files.find((file) => file.path === "project.bootstrap.yaml");
+    const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
     const claudeWorkflow = files.find((file) => file.path === ".github/workflows/claude.yml");
 
     expect(paths).toContain("SECURITY.md");
@@ -261,6 +267,8 @@ describe("renderManagedFiles", () => {
     expect(renderedManifest?.contents).toContain("version: 2");
     expect(renderedManifest?.contents).toContain("capabilities:");
     expect(renderedManifest?.contents).not.toContain("\nrelease:\n");
+    expect(prWorkflow?.contents).toContain("dorny/paths-filter@v4");
+    expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
     expect(claudeWorkflow?.contents).toContain("name: Claude Code");
     expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@v1");
   });

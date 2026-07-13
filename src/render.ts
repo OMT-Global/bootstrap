@@ -1,9 +1,10 @@
 import path from "node:path";
 
 import { renderManagedFiles } from "./archetypes.js";
+import { sha256 } from "./lib/hash.js";
 import { readTextIfExists, removeFileIfExists, writeTextFile } from "./lib/fs.js";
 import { resolveLanguageProfiles, type LanguageProfileResolution } from "./language-profiles.js";
-import { createRepoState, loadRepoState, writeRepoState } from "./state.js";
+import { createOwnershipSidecar, createRepoState, loadRepoState, writeRepoState } from "./state.js";
 import type { BootstrapManifest, PlannedFileChange, RenderedFile } from "./types.js";
 
 export interface RepoPlan {
@@ -38,6 +39,10 @@ function globToRegExp(pattern: string): RegExp {
 
 function matchesManagedPath(filePath: string, pattern: string): boolean {
   return globToRegExp(pattern).test(filePath.replace(/\\/g, "/"));
+}
+
+function isManagedContentHash(value: string | undefined): value is string {
+  return value !== undefined && /^[a-f0-9]{64}$/i.test(value);
 }
 
 const managedPathDependencies = [
@@ -124,13 +129,25 @@ function validateManagedPathDependencies(files: RenderedFile[]): void {
 }
 
 export async function planRepo(manifest: BootstrapManifest, targetDir: string): Promise<RepoPlan> {
-  const files = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const renderedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const files = [...renderedFiles, createOwnershipSidecar(renderedFiles)];
   const languageProfiles = await resolveLanguageProfiles(manifest, targetDir);
   const existingState = await loadRepoState(targetDir);
   const changes: PlannedFileChange[] = [];
 
   for (const file of files) {
     const existingContents = await readTextIfExists(path.join(targetDir, file.path));
+    const managedHash = existingState?.managedFiles[file.path];
+    if (
+      existingContents !== undefined &&
+      isManagedContentHash(managedHash) &&
+      sha256(existingContents) !== managedHash &&
+      existingContents !== file.contents
+    ) {
+      throw new Error(
+        `Managed file ${file.path} was directly modified. Restore it, remove it from managed paths, or use an explicit migration before applying Bootstrap changes.`
+      );
+    }
     const type =
       existingContents === undefined
         ? "create"
@@ -149,6 +166,16 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
     const plannedPaths = new Set(files.map((file) => file.path));
     for (const stalePath of Object.keys(existingState.managedFiles)) {
       if (!plannedPaths.has(stalePath)) {
+        const existingContents = await readTextIfExists(path.join(targetDir, stalePath));
+        if (
+          existingContents !== undefined &&
+          isManagedContentHash(existingState.managedFiles[stalePath]) &&
+          sha256(existingContents) !== existingState.managedFiles[stalePath]
+        ) {
+          throw new Error(
+            `Managed file ${stalePath} was directly modified. Restore it or use an explicit migration before Bootstrap removes it.`
+          );
+        }
         changes.push({
           path: stalePath,
           type: "delete",

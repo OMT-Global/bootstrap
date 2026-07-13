@@ -368,6 +368,7 @@ describe("renderManagedFiles", () => {
     expect(versionScript?.contents).toContain('version="${tag#"${prefix}"}"');
     expect(buildScript?.contents).toContain('artifact_dir="dist/release"');
     expect(buildScript?.contents).toContain("SHA256SUMS");
+    expect(buildScript?.contents).toContain("! -name release-evidence.json ! -name validation-evidence.json");
     expect(buildScript?.contents).toContain("No release artifacts were produced");
     expect(publishScript?.contents).toContain("Create exact release tags such as v1.2.3");
     expect(changelogConfig?.contents).toContain("changelog:");

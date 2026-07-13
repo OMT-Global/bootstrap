@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { normalizeManifest } from "../src/manifest.js";
-import { flowPolicyDigest, loadResolvedFlowPolicy, resolveFlowPolicy } from "../src/policy.js";
+import { flowPolicyDigest, loadResolvedFlowPolicy, requireImmutableProductionWorkflowRef, resolveFlowPolicy } from "../src/policy.js";
 
 const bundle = { standard: "public-repository-standard" as const, version: "1.0.0", publisher: { identitySource: "publisherKey" } };
 const manifest = normalizeManifest({ project: { name: "example", owner: "acme" }, archetype: { kind: "generic-empty" } });
@@ -36,5 +36,14 @@ describe("resolveFlowPolicy", () => {
     expect(() => resolveFlowPolicy(manifest, bundle, { ref: "refs/heads/main", sha256: flowPolicyDigest(bundle) })).toThrow("exact release tag");
     expect(() => resolveFlowPolicy(manifest, bundle, { ref: "refs/tags/v1.0.0", sha256: "0".repeat(64) })).toThrow("digest does not match");
     expect(() => resolveFlowPolicy(manifest, { standard: "other", version: "1.0.0" }, { ref: "0123456789012345678901234567890123456789", sha256: flowPolicyDigest({ standard: "other", version: "1.0.0" }) })).toThrow("compatible");
+  });
+});
+
+describe("requireImmutableProductionWorkflowRef", () => {
+  it("rejects branch and floating tag references while accepting exact tags and SHAs", () => {
+    expect(() => requireImmutableProductionWorkflowRef("refs/heads/main", "Release workflow")).toThrow("mutable");
+    expect(() => requireImmutableProductionWorkflowRef("refs/tags/v1", "Release workflow")).toThrow("mutable");
+    expect(() => requireImmutableProductionWorkflowRef("refs/tags/v1.2.3", "Release workflow")).not.toThrow();
+    expect(() => requireImmutableProductionWorkflowRef("a".repeat(40), "Release workflow")).not.toThrow();
   });
 });

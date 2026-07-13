@@ -10,6 +10,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   NODE_VERSION: '20'
@@ -132,6 +133,26 @@ jobs:
       - name: Scan repository for secret patterns
         run: bash scripts/check-detect-secrets.sh --all-files
 
+  validate-pr-governance:
+    name: Validate PR Governance
+    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PR_FILES_URL: ${{ github.event.pull_request.url }}/files
+      PR_COMMITS_URL: ${{ github.event.pull_request.commits_url }}
+      PR_REVIEWS_URL: ${{ github.event.pull_request.url }}/reviews
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Validate title, DCO, size, ADR, and reviewer evidence
+        run: bash scripts/ci/check-pr-governance.sh
+
   ci-gate:
     name: CI Gate
     runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
@@ -141,6 +162,7 @@ jobs:
       - fast-checks
       - validate-pr-description
       - validate-secrets
+      - validate-pr-governance
     steps:
       - name: Check required PR jobs
         env:
@@ -149,6 +171,7 @@ jobs:
             fast-checks=${{ needs.fast-checks.result }}
             validate-pr-description=${{ needs.validate-pr-description.result }}
             validate-secrets=${{ needs.validate-secrets.result }}
+            validate-pr-governance=${{ needs.validate-pr-governance.result }}
         run: |
           failed=0
           for entry in $RESULTS; do

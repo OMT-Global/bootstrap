@@ -196,6 +196,18 @@ const policySchema = z.object({
   })
 });
 
+const exceptionSchema = z.object({
+  id: z.string().min(1),
+  policy: z.string().min(1),
+  scope: z.string().min(1),
+  rationale: z.string().min(1),
+  approvedBy: z.string().min(1),
+  issue: z.string().min(1),
+  permanent: z.boolean().optional(),
+  expiresAt: z.string().min(1).optional(),
+  adr: z.string().min(1).optional()
+});
+
 const dependabotEcosystemSchema = z.object({
   packageEcosystem: z.enum(["npm", "github-actions", "docker"]),
   directory: z.string().min(1).optional(),
@@ -390,6 +402,7 @@ const manifestSchema = z.object({
     .optional(),
   capabilities: capabilitiesSchema.optional(),
   policy: policySchema.optional(),
+  exceptions: z.array(exceptionSchema).optional(),
   environments: z
     .object({
       dev: environmentSchema.optional(),
@@ -400,7 +413,7 @@ const manifestSchema = z.object({
 }).passthrough();
 
 const KNOWN_MANIFEST_SETTINGS = new Set([
-  "version", "project", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "environments"
+  "version", "project", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
 ]);
 
 function slugify(value: string): string {
@@ -856,6 +869,17 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     ...(parsed.policy
       ? { policy: { flow: { ...parsed.policy.flow, sha256: parsed.policy.flow.sha256.toLowerCase() } } }
       : {}),
+    exceptions: (parsed.exceptions ?? []).map((exception) => ({
+      id: exception.id,
+      policy: exception.policy,
+      scope: exception.scope,
+      rationale: exception.rationale,
+      approvedBy: exception.approvedBy,
+      issue: exception.issue,
+      permanent: exception.permanent ?? false,
+      ...(exception.expiresAt ? { expiresAt: exception.expiresAt } : {}),
+      ...(exception.adr ? { adr: exception.adr } : {})
+    })),
     environments: {
       dev: applyEnvironmentDefaults(defaultEnvironment(environments.dev), reviewers, defaultBranch, "dev"),
       stage: applyEnvironmentDefaults(

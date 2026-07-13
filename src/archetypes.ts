@@ -2276,7 +2276,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
           app: \${{ steps.filter.outputs.app }}
           ci: \${{ steps.filter.outputs.ci }}
         steps:
-          - uses: dorny/paths-filter@v3
+          - uses: dorny/paths-filter@v4
             id: filter
             with:
               filters: |
@@ -2449,7 +2449,7 @@ function extendedWorkflow(manifest: BootstrapManifest): string {
               extended=true
               EOF
 
-          - uses: dorny/paths-filter@v3
+          - uses: dorny/paths-filter@v4
             id: filter
             if: github.event_name == 'push'
             with:

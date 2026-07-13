@@ -51,6 +51,8 @@ Confirm branch protection points at the `CI Gate` status and require approval fr
 
 Bootstrap records generated-file ownership in [the managed-file sidecar](docs/bootstrap/managed-file-ownership.md) and blocks direct edits before overwriting them.
 
+Run `bootstrap conform --manifest ./project.bootstrap.yaml --target .` for stable, machine-readable contract findings; see the [conformance core guide](docs/bootstrap/conformance.md).
+
 ## Project Identity
 
 - Product name: `Bootstrap`

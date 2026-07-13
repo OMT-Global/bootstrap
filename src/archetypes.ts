@@ -1075,7 +1075,7 @@ function releaseBuildScript(manifest: BootstrapManifest): string {
     # Add repo-specific build steps above this line to populate \${artifact_dir}
     # with downloadable release assets before checksums are generated.
 
-    mapfile -t artifacts < <(find "\${artifact_dir}" -maxdepth 1 -type f ! -name SHA256SUMS | sort)
+    mapfile -t artifacts < <(find "\${artifact_dir}" -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-evidence.json ! -name validation-evidence.json | sort)
     if [[ \${#artifacts[@]} -eq 0 ]]; then
       echo "No release artifacts were produced in \${artifact_dir}."
       echo "This repo ships no downloadable assets; add build steps to scripts/ci/run-release-build.sh when it does."

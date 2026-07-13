@@ -11,7 +11,8 @@ import type {
   DefaultRepositoryPermission,
   EnvironmentConfig,
   IssueLabelConfig,
-  OrganizationConfig
+  OrganizationConfig,
+  RepoClass
 } from "./types.js";
 
 export const DEFAULT_ISSUE_LABELS: IssueLabelConfig[] = [
@@ -271,13 +272,21 @@ const manifestSchema = z.object({
     name: z.string().min(1),
     displayName: z.string().min(1).optional(),
     description: z.string().optional(),
+    maturity: z.enum(["experimental", "alpha", "beta", "stable", "maintenance", "archived"]).optional(),
     visibility: z.enum(["private", "public", "internal"]).optional(),
     owner: z.string().min(1),
     defaultBranch: z.string().min(1).optional()
   }),
   repo: z
     .object({
-      class: z.enum(["application", "library", "service", "tooling", "documentation"]).optional(),
+      class: z
+        .enum(["application", "tooling", "cli", "library", "service", "infrastructure", "github-action", "specification", "documentation"])
+        .optional(),
+      classMigration: z
+        .object({
+          target: z.enum(["cli", "library", "service", "infrastructure", "github-action", "specification", "documentation"])
+        })
+        .optional(),
       managedPaths: z.array(z.string().min(1)).optional(),
       docs: repoDocsSchema.optional(),
       templates: repoTemplatesSchema.optional(),
@@ -529,8 +538,23 @@ function mergeAdditionalWorkflows(
 }
 
 function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapManifest["repo"] {
+  const legacyClass = repo?.class === "application" || repo?.class === "tooling" ? repo.class : undefined;
+  const canonicalClass = repo?.class && !legacyClass ? (repo.class as RepoClass) : undefined;
+  if (legacyClass && !repo?.classMigration) {
+    throw new Error(
+      `Legacy repository class \"${legacyClass}\" requires repo.classMigration.target; choose its canonical Flow repository class explicitly.`
+    );
+  }
+
   return {
-    ...(repo?.class ? { class: repo.class } : {}),
+    ...(legacyClass
+      ? {
+          class: repo?.classMigration?.target as RepoClass,
+          classMigration: { from: legacyClass, target: repo?.classMigration?.target as RepoClass }
+        }
+      : canonicalClass
+        ? { class: canonicalClass }
+        : {}),
     managedPaths: repo?.managedPaths ?? [],
     ...(repo?.docs
       ? {
@@ -710,6 +734,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       description:
         parsed.project.description ??
         "Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.",
+      ...(parsed.project.maturity ? { maturity: parsed.project.maturity } : {}),
       visibility: parsed.project.visibility ?? "private",
       owner: parsed.project.owner,
       defaultBranch

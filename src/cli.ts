@@ -15,6 +15,7 @@ import {
 } from "./manifest.js";
 import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
+import { planFleetPolicyUpgrades, type FleetUpgradeCandidate } from "./upgrades.js";
 
 function defaultTargetDir(manifest: Awaited<ReturnType<typeof loadManifest>>, cwd = process.cwd()): string {
   const currentBasename = path.basename(cwd);
@@ -184,6 +185,21 @@ async function main(): Promise<void> {
       }
 
       process.stdout.write(`${formatFleetReport(report)}\n`);
+    });
+
+  program
+    .command("upgrade-plan")
+    .description("Dry-run version-aware fleet policy upgrade inventory; never opens pull requests or mutates repositories.")
+    .requiredOption("--input <path>", "JSON array of fleet upgrade candidates")
+    .option("--json", "Emit JSON")
+    .action(async (options) => {
+      const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
+      const plan = planFleetPolicyUpgrades(JSON.parse(raw) as FleetUpgradeCandidate[]);
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`${plan.map((entry) => `- [${entry.status}] ${entry.repo} (${entry.repoClass}, ${entry.risk}, ${entry.role}): ${entry.reason}`).join("\n")}\n`);
     });
 
   const apply = program.command("apply").description("Apply one bootstrap target.");

@@ -24,6 +24,14 @@ describe("resolveFlowPolicy", () => {
     await expect(loadResolvedFlowPolicy(configured, directory)).resolves.toMatchObject({ policy: { version: "1.0.0" } });
   });
 
+  it("rejects absolute and traversal bundle paths before reading", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-policy-"));
+    for (const bundlePath of [path.join(directory, "flow-policy.yaml"), "../flow-policy.yaml"]) {
+      const configured = normalizeManifest({ project: { name: "example", owner: "acme" }, archetype: { kind: "generic-empty" }, policy: { flow: { ref: "refs/tags/v1.0.0", sha256: flowPolicyDigest(bundle), bundlePath } } } as never);
+      await expect(loadResolvedFlowPolicy(configured, directory)).rejects.toThrow("manifest directory");
+    }
+  });
+
   it("fails closed for floating refs, mismatched digests, and incompatible bundles", () => {
     expect(() => resolveFlowPolicy(manifest, bundle, { ref: "refs/heads/main", sha256: flowPolicyDigest(bundle) })).toThrow("exact release tag");
     expect(() => resolveFlowPolicy(manifest, bundle, { ref: "refs/tags/v1.0.0", sha256: "0".repeat(64) })).toThrow("digest does not match");

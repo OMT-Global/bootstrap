@@ -75,7 +75,14 @@ export async function loadResolvedFlowPolicy(manifest: BootstrapManifest, manife
     throw new Error("Manifest does not declare a Flow policy bundle.");
   }
   const source = manifest.policy.flow;
+  if (path.isAbsolute(source.bundlePath)) {
+    throw new Error("Flow policy bundle path must be relative to the manifest directory.");
+  }
   const bundlePath = path.resolve(manifestDir, source.bundlePath);
+  const relativePath = path.relative(manifestDir, bundlePath);
+  if (relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    throw new Error("Flow policy bundle path must stay within the manifest directory.");
+  }
   const bundle = YAML.parse(await readFile(bundlePath, "utf8"));
   return resolveFlowPolicy(manifest, bundle, source);
 }

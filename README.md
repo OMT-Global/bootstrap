@@ -58,6 +58,8 @@ Confirm branch protection points at the `CI Gate` status and require approval fr
 - Default branch: `main`
 - Archetype: `generic-empty`
 
+For the Flow v1 repository-class transition, see [the explicit class-migration guide](docs/bootstrap/repository-class-migration.md).
+
 
 ## Release Standard
 

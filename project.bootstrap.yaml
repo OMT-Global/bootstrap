@@ -9,6 +9,8 @@ project:
   defaultBranch: main
 repo:
   class: tooling
+  classMigration:
+    target: cli
   managedPaths: []
   docs:
     readme: true

@@ -3,7 +3,16 @@ export type ArchetypeKind = "nextjs-web" | "node-ts-service" | "python-service" 
 export type PackageManager = "npm" | "pnpm" | "yarn" | "python";
 export type RunnerPolicy = "hybrid-safe" | "self-hosted-first" | "github-hosted-first";
 export type DefaultRepositoryPermission = "read" | "write" | "admin" | "none";
-export type RepoClass = "application" | "library" | "service" | "tooling" | "documentation";
+export type RepoClass =
+  | "cli"
+  | "library"
+  | "service"
+  | "infrastructure"
+  | "github-action"
+  | "specification"
+  | "documentation";
+export type LegacyRepoClass = "application" | "tooling";
+export type ProductMaturity = "experimental" | "alpha" | "beta" | "stable" | "maintenance" | "archived";
 export type CiPolicy = "standard" | "standard-public" | "experimental" | "strict";
 
 export interface CodeownerRule {
@@ -26,6 +35,10 @@ export interface EnvironmentConfig {
 
 export interface RepoConfig {
   class?: RepoClass;
+  classMigration?: {
+    from: LegacyRepoClass;
+    target: RepoClass;
+  };
   managedPaths: string[];
   docs?: {
     readme: boolean;
@@ -145,6 +158,7 @@ export interface BootstrapManifest {
     name: string;
     displayName?: string;
     description: string;
+    maturity?: ProductMaturity;
     visibility: ProjectVisibility;
     owner: string;
     defaultBranch: string;

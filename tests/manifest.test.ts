@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_ISSUE_LABELS, normalizeManifest } from "../src/manifest.js";
+import { DEFAULT_ISSUE_LABELS, normalizeManifest, stringifyManifest } from "../src/manifest.js";
 
 describe("normalizeManifest", () => {
   it("accepts version 2 manifests as compatibility input", () => {
@@ -49,6 +49,37 @@ describe("normalizeManifest", () => {
     } as never);
 
     expect(manifest.unknownSettings).toEqual(["futurePolicySetting"]);
+  });
+
+  it("requires an explicit canonical target before migrating legacy repository classes", () => {
+    expect(() =>
+      normalizeManifest({
+        project: { name: "legacy-tool", owner: "acme" },
+        repo: { class: "tooling" },
+        archetype: { kind: "generic-empty" }
+      } as never)
+    ).toThrow("repo.classMigration.target");
+
+    const manifest = normalizeManifest({
+      project: { name: "legacy-tool", owner: "acme" },
+      repo: { class: "tooling", classMigration: { target: "cli" } },
+      archetype: { kind: "generic-empty" }
+    } as never);
+
+    expect(manifest.repo).toMatchObject({ class: "cli", classMigration: { from: "tooling", target: "cli" } });
+    expect(stringifyManifest(manifest)).toContain("classMigration:");
+    expect(stringifyManifest(manifest)).toContain("from: tooling");
+  });
+
+  it("keeps product maturity distinct from release automation maturity", () => {
+    const manifest = normalizeManifest({
+      project: { name: "stable-library", owner: "acme", maturity: "stable" },
+      archetype: { kind: "generic-empty" },
+      release: { maturity: "regulated" }
+    } as never);
+
+    expect(manifest.project.maturity).toBe("stable");
+    expect(manifest.release.maturity).toBe("regulated");
   });
 
   it("applies defaults and reviewer-derived governance", () => {

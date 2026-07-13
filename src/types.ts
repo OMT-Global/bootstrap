@@ -15,6 +15,18 @@ export type LegacyRepoClass = "application" | "tooling";
 export type ProductMaturity = "experimental" | "alpha" | "beta" | "stable" | "maintenance" | "archived";
 export type CiPolicy = "standard" | "standard-public" | "experimental" | "strict";
 
+export interface PolicyException {
+  id: string;
+  policy: string;
+  scope: string;
+  rationale: string;
+  approvedBy: string;
+  issue: string;
+  permanent: boolean;
+  expiresAt?: string;
+  adr?: string;
+}
+
 export interface CodeownerRule {
   pattern: string;
   owners: string[];
@@ -280,6 +292,7 @@ export interface BootstrapManifest {
       bundlePath: string;
     };
   };
+  exceptions: PolicyException[];
   environments: {
     dev: EnvironmentConfig;
     stage: EnvironmentConfig;

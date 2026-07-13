@@ -1,5 +1,6 @@
 import os from "node:os";
 
+import { validatePolicyExceptions } from "./exceptions.js";
 import { execRunner, type CommandRunner } from "./lib/process.js";
 import { resolveRunsOn } from "./runners.js";
 import type { BootstrapManifest } from "./types.js";
@@ -43,6 +44,22 @@ export async function runDoctor(
     name: "gh CLI",
     status: ghAvailable ? "ok" : "fail",
     detail: ghAvailable ? "gh is available." : "gh is missing from PATH."
+  });
+
+  const exceptionReport = validatePolicyExceptions(manifest.exceptions);
+  const exceptionStatus = exceptionReport.blocking
+    ? "fail"
+    : exceptionReport.results.some((result) => result.status === "warn")
+      ? "warn"
+      : "ok";
+  const exceptionDetails = exceptionReport.results.filter((result) => result.status !== "pass");
+  checks.push({
+    name: "Policy exceptions",
+    status: exceptionStatus,
+    detail:
+      exceptionDetails.length === 0
+        ? "No blocking or expiring policy exceptions."
+        : exceptionDetails.map((result) => `${result.ruleId}: ${result.detail}`).join(" ")
   });
 
   if (ghAvailable) {

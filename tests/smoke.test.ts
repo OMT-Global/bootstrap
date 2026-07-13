@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeManifest } from "../src/manifest.js";
 import { applyRepo, planRepo } from "../src/render.js";
+import { OWNERSHIP_SIDECAR_PATH } from "../src/state.js";
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -51,6 +52,26 @@ describe("repo smoke", () => {
 
     const secondPlan = await planRepo(manifest, targetDir);
     expect(secondPlan.changes.every((change) => change.type === "unchanged")).toBe(true);
+    const ownership = JSON.parse(await readFile(path.join(targetDir, OWNERSHIP_SIDECAR_PATH), "utf8"));
+    expect(ownership).toMatchObject({
+      schemaVersion: 1,
+      owner: "bootstrap",
+      regenerationCommand: "bootstrap apply repo --manifest ./project.bootstrap.yaml"
+    });
+    expect(ownership.managedFiles["AGENTS.md"]).toMatchObject({ source: "bootstrap" });
+  });
+
+  it("blocks direct edits to previously managed files instead of overwriting them", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({
+      project: { name: "owned-edit", owner: "acme" },
+      archetype: { kind: "generic-empty" }
+    });
+
+    await applyRepo(manifest, targetDir);
+    await writeFile(path.join(targetDir, "AGENTS.md"), "product-owned direct edit\n", "utf8");
+
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
   });
 
   it("can adopt an existing repo by managing only selected bootstrap files", async () => {

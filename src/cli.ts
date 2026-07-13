@@ -14,6 +14,7 @@ import {
   resolveManifestPath
 } from "./manifest.js";
 import { planRepo, applyRepo } from "./render.js";
+import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
 
 function defaultTargetDir(manifest: Awaited<ReturnType<typeof loadManifest>>, cwd = process.cwd()): string {
   const currentBasename = path.basename(cwd);
@@ -254,6 +255,31 @@ async function main(): Promise<void> {
       const report = await runConformance(manifest, targetDir);
       process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatConformanceReport(report)}\n`);
       process.exitCode = report.exitCode;
+    });
+
+  const provenance = program.command("provenance").description("Validate public provenance manifests before publication.");
+  provenance
+    .command("validate")
+    .description("Fail when a public provenance manifest is malformed or contains credential-like literals.")
+    .requiredOption("--input <path>", "Path to a public provenance JSON manifest")
+    .action(async (options) => {
+      const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
+      const manifest = validatePublicProvenance(JSON.parse(raw));
+      process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+    });
+  provenance
+    .command("create")
+    .description("Redact metadata and write a public provenance manifest.")
+    .requiredOption("--input <path>", "Path to a provenance input JSON document")
+    .requiredOption("--output <path>", "Output path, normally provenance/runs/<run>.json")
+    .action(async (options) => {
+      const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
+      const manifest = createPublicProvenance(JSON.parse(raw));
+      const outputPath = path.resolve(options.output);
+      await import("node:fs/promises").then(({ mkdir, writeFile }) =>
+        mkdir(path.dirname(outputPath), { recursive: true }).then(() => writeFile(outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8"))
+      );
+      process.stdout.write(`Wrote ${outputPath}\n`);
     });
 
   await program.parseAsync(process.argv);

@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import YAML from "yaml";
 
 import type { BootstrapManifest } from "./types.js";
 
@@ -65,4 +68,14 @@ export function resolveFlowPolicy(
   }
 
   return { manifest, policy, source: { ...source, sha256: source.sha256.toLowerCase() }, unknownManifestSettings: [...unknownManifestSettings].sort() };
+}
+
+export async function loadResolvedFlowPolicy(manifest: BootstrapManifest, manifestDir: string): Promise<ResolvedPolicyContract> {
+  if (!manifest.policy?.flow) {
+    throw new Error("Manifest does not declare a Flow policy bundle.");
+  }
+  const source = manifest.policy.flow;
+  const bundlePath = path.resolve(manifestDir, source.bundlePath);
+  const bundle = YAML.parse(await readFile(bundlePath, "utf8"));
+  return resolveFlowPolicy(manifest, bundle, source);
 }

@@ -41,6 +41,16 @@ describe("normalizeManifest", () => {
     expect(manifest.github.requiredStatusChecks).toEqual(["CI Gate"]);
   });
 
+  it("preserves unknown top-level settings for resolver reporting", () => {
+    const manifest = normalizeManifest({
+      project: { name: "future-compatible", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      futurePolicySetting: { enabled: true }
+    } as never);
+
+    expect(manifest.unknownSettings).toEqual(["futurePolicySetting"]);
+  });
+
   it("applies defaults and reviewer-derived governance", () => {
     const manifest = normalizeManifest({
       project: {

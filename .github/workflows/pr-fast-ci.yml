@@ -3,6 +3,8 @@ name: PR Fast CI
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
 
 concurrency:
   group: pr-fast-${{ github.event.pull_request.number || github.ref }}
@@ -142,6 +144,8 @@ jobs:
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+      PR_GOVERNANCE_ENFORCE_AFTER: '2026-07-13T23:00:00Z'
       PR_FILES_URL: ${{ github.event.pull_request.url }}/files
       PR_COMMITS_URL: ${{ github.event.pull_request.commits_url }}
       PR_REVIEWS_URL: ${{ github.event.pull_request.url }}/reviews

@@ -47,6 +47,8 @@ describe("renderManagedFiles", () => {
       expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
       expect(extendedValidationWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
       expect(prWorkflow?.contents).toContain("types: [opened, edited, synchronize, reopened, ready_for_review]");
+      expect(prWorkflow?.contents).toContain("pull_request_review:");
+      expect(prWorkflow?.contents).toContain("PR_GOVERNANCE_ENFORCE_AFTER:");
       expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");

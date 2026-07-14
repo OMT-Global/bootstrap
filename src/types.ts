@@ -218,6 +218,9 @@ export interface BootstrapManifest {
     fastChecks: string[];
     extendedChecks: string[];
     nightlyCron: string;
+    prGovernance?: {
+      enforceAfter: string;
+    };
     additionalWorkflows: AdditionalWorkflowConfig[];
     workflows?: {
       prFastCi: boolean;

@@ -56,6 +56,37 @@ describe("check-pr-governance", () => {
     expect(result.output).toContain("docs/guide.md");
   });
 
+  it("exempts only pull requests opened before configured governance enforcement", async () => {
+    const fixture = {
+      files: [{ filename: "src/large.ts", additions: 801, deletions: 0 }],
+      commits: [{ sha: "1234567890abcdef", author: { login: "human", type: "User" }, commit: { message: "feat: no signoff" } }],
+      reviews: []
+    };
+    const legacy = await runGovernance(fixture, {
+      PR_TITLE: "missing conventional title",
+      PR_CREATED_AT: "2026-07-13T16:07:09Z",
+      PR_GOVERNANCE_ENFORCE_AFTER: "2026-07-13T23:00:00Z"
+    });
+    const current = await runGovernance(fixture, {
+      PR_TITLE: "missing conventional title",
+      PR_CREATED_AT: "2026-07-14T00:00:00Z",
+      PR_GOVERNANCE_ENFORCE_AFTER: "2026-07-13T23:00:00Z"
+    });
+    const malformed = await runGovernance(fixture, {
+      PR_TITLE: "missing conventional title",
+      PR_CREATED_AT: "not-a-timestamp",
+      PR_GOVERNANCE_ENFORCE_AFTER: "2026-07-13T23:00:00Z"
+    });
+
+    expect(legacy.code).toBe(0);
+    expect(legacy.output).toContain("PRS-PR-GOVERNANCE-LEGACY-001");
+    expect(current.code).toBe(1);
+    expect(current.output).toContain("PRS-PR-TITLE-001");
+    expect(current.output).toContain("PRS-DCO-001");
+    expect(malformed.code).toBe(1);
+    expect(malformed.output).toContain("PRS-ENFORCEMENT-INPUT-001");
+  });
+
   it("accepts a material change with an accepted ADR and independent reviewer", async () => {
     const result = await runGovernance({
       files: [{ filename: "src/policy.ts", additions: 10, deletions: 2 }],

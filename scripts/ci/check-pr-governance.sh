@@ -40,17 +40,31 @@ load_response "${PR_FILES_FILE:-}" "${PR_FILES_URL:-}" "per_page=100" "$workdir/
 load_response "${PR_COMMITS_FILE:-}" "${PR_COMMITS_URL:-}" "per_page=250" "$workdir/commits.json"
 load_response "${PR_REVIEWS_FILE:-}" "${PR_REVIEWS_URL:-}" "per_page=100" "$workdir/reviews.json"
 
-python3 - "$PR_TITLE" "$PR_BODY" "$PR_AUTHOR" "$workdir/files.json" "$workdir/commits.json" "$workdir/reviews.json" <<'PY'
+python3 - "$PR_TITLE" "$PR_BODY" "$PR_AUTHOR" "${PR_CREATED_AT:-}" "${PR_GOVERNANCE_ENFORCE_AFTER:-}" "$workdir/files.json" "$workdir/commits.json" "$workdir/reviews.json" <<'PY'
+from datetime import datetime
 import json
 import re
 import sys
 from pathlib import Path
 
-title, body, author, files_path, commits_path, reviews_path = sys.argv[1:]
+title, body, author, created_at, enforce_after, files_path, commits_path, reviews_path = sys.argv[1:]
 files = json.loads(Path(files_path).read_text())
 commits = json.loads(Path(commits_path).read_text())
 reviews = json.loads(Path(reviews_path).read_text())
 failures = []
+
+if enforce_after:
+    try:
+        created_at_value = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        enforce_after_value = datetime.fromisoformat(enforce_after.replace("Z", "+00:00"))
+        if created_at_value.tzinfo is None or enforce_after_value.tzinfo is None:
+            raise ValueError
+    except ValueError:
+        failures.append("PRS-ENFORCEMENT-INPUT-001: PR_CREATED_AT and PR_GOVERNANCE_ENFORCE_AFTER must be ISO-8601 timestamps.")
+    else:
+        if created_at_value < enforce_after_value:
+            print(f"PASS PRS-PR-GOVERNANCE-LEGACY-001: PR opened at {created_at} before enforcement began at {enforce_after}.")
+            sys.exit(0)
 
 if not re.match(r"^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: .+", title):
     failures.append("PRS-PR-TITLE-001: use a Conventional Commit-style PR title, for example 'feat: add policy gate'.")

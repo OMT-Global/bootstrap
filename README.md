@@ -49,6 +49,10 @@ Confirm branch protection points at the `CI Gate` status and require approval fr
 - `.github/PULL_REQUEST_TEMPLATE.md` is the canonical pull request format for summaries, governing issue links, validation notes, and merge-readiness checks.
 - Existing bootstrapped repos can retrofit these surfaces with `bootstrap apply repo --manifest ./project.bootstrap.yaml`; repos with restricted `repo.managedPaths` should include both paths before applying.
 
+Bootstrap records generated-file ownership in [the managed-file sidecar](docs/bootstrap/managed-file-ownership.md) and blocks direct edits before overwriting them.
+
+Run `bootstrap conform --manifest ./project.bootstrap.yaml --target .` for stable, machine-readable contract findings; see the [conformance core guide](docs/bootstrap/conformance.md).
+
 ## Project Identity
 
 - Product name: `Bootstrap`
@@ -57,6 +61,10 @@ Confirm branch protection points at the `CI Gate` status and require approval fr
 - Visibility: `public`
 - Default branch: `main`
 - Archetype: `generic-empty`
+
+For the Flow v1 repository-class transition, see [the explicit class-migration guide](docs/bootstrap/repository-class-migration.md).
+Use [language-profile detection](docs/bootstrap/language-profiles.md) to review target toolchain evidence before applying a plan.
+Use [typed policy exceptions](docs/bootstrap/policy-exceptions.md) to make temporary deviations visible and enforce their expiry.
 
 
 ## Release Standard

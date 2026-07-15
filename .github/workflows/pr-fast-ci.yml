@@ -3,6 +3,8 @@ name: PR Fast CI
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
 
 concurrency:
   group: pr-fast-${{ github.event.pull_request.number || github.ref }}
@@ -10,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   NODE_VERSION: '20'
@@ -27,7 +30,7 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         with:
           filters: |
@@ -63,7 +66,7 @@ jobs:
       github.event.pull_request.draft == false &&
       (needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -126,11 +129,45 @@ jobs:
     timeout-minutes: 10
     if: github.event.pull_request.draft == false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Scan repository for secret patterns
         run: bash scripts/check-detect-secrets.sh --all-files
+
+  validate-pr-governance:
+    name: Validate PR Governance
+    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+      PR_GOVERNANCE_ENFORCE_AFTER: '2026-07-13T23:00:00Z'
+      PR_FILES_URL: ${{ github.event.pull_request.url }}/files
+      PR_COMMITS_URL: ${{ github.event.pull_request.commits_url }}
+      PR_REVIEWS_URL: ${{ github.event.pull_request.url }}/reviews
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Validate title, DCO, size, ADR, and reviewer evidence
+        run: bash scripts/ci/check-pr-governance.sh
+
+  validate-action-pins:
+    name: Validate Action Pins
+    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Require immutable third-party action pins
+        run: bash scripts/ci/check-action-pins.sh
 
   ci-gate:
     name: CI Gate
@@ -141,6 +178,8 @@ jobs:
       - fast-checks
       - validate-pr-description
       - validate-secrets
+      - validate-pr-governance
+      - validate-action-pins
     steps:
       - name: Check required PR jobs
         env:
@@ -149,6 +188,8 @@ jobs:
             fast-checks=${{ needs.fast-checks.result }}
             validate-pr-description=${{ needs.validate-pr-description.result }}
             validate-secrets=${{ needs.validate-secrets.result }}
+            validate-pr-governance=${{ needs.validate-pr-governance.result }}
+            validate-action-pins=${{ needs.validate-action-pins.result }}
         run: |
           failed=0
           for entry in $RESULTS; do

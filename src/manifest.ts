@@ -11,7 +11,8 @@ import type {
   DefaultRepositoryPermission,
   EnvironmentConfig,
   IssueLabelConfig,
-  OrganizationConfig
+  OrganizationConfig,
+  RepoClass
 } from "./types.js";
 
 export const DEFAULT_ISSUE_LABELS: IssueLabelConfig[] = [
@@ -187,6 +188,26 @@ const capabilitiesSchema = z.object({
     .optional()
 });
 
+const policySchema = z.object({
+  flow: z.object({
+    ref: z.string().min(1),
+    sha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+    bundlePath: z.string().min(1)
+  })
+});
+
+const exceptionSchema = z.object({
+  id: z.string().min(1),
+  policy: z.string().min(1),
+  scope: z.string().min(1),
+  rationale: z.string().min(1),
+  approvedBy: z.string().min(1),
+  issue: z.string().min(1),
+  permanent: z.boolean().optional(),
+  expiresAt: z.string().min(1).optional(),
+  adr: z.string().min(1).optional()
+});
+
 const dependabotEcosystemSchema = z.object({
   packageEcosystem: z.enum(["npm", "github-actions", "docker"]),
   directory: z.string().min(1).optional(),
@@ -263,13 +284,21 @@ const manifestSchema = z.object({
     name: z.string().min(1),
     displayName: z.string().min(1).optional(),
     description: z.string().optional(),
+    maturity: z.enum(["experimental", "alpha", "beta", "stable", "maintenance", "archived"]).optional(),
     visibility: z.enum(["private", "public", "internal"]).optional(),
     owner: z.string().min(1),
     defaultBranch: z.string().min(1).optional()
   }),
   repo: z
     .object({
-      class: z.enum(["application", "library", "service", "tooling", "documentation"]).optional(),
+      class: z
+        .enum(["application", "tooling", "cli", "library", "service", "infrastructure", "github-action", "specification", "documentation"])
+        .optional(),
+      classMigration: z
+        .object({
+          target: z.enum(["cli", "library", "service", "infrastructure", "github-action", "specification", "documentation"])
+        })
+        .optional(),
       managedPaths: z.array(z.string().min(1)).optional(),
       docs: repoDocsSchema.optional(),
       templates: repoTemplatesSchema.optional(),
@@ -321,6 +350,11 @@ const manifestSchema = z.object({
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
+      prGovernance: z
+        .object({
+          enforceAfter: z.string().datetime({ offset: true })
+        })
+        .optional(),
       workflows: ciWorkflowsSchema.optional(),
       additionalWorkflows: z.array(additionalWorkflowSchema).optional(),
       appPaths: z.array(z.string().min(1)).optional(),
@@ -372,6 +406,8 @@ const manifestSchema = z.object({
     })
     .optional(),
   capabilities: capabilitiesSchema.optional(),
+  policy: policySchema.optional(),
+  exceptions: z.array(exceptionSchema).optional(),
   environments: z
     .object({
       dev: environmentSchema.optional(),
@@ -379,7 +415,11 @@ const manifestSchema = z.object({
       prod: environmentSchema.optional()
     })
     .optional()
-});
+}).passthrough();
+
+const KNOWN_MANIFEST_SETTINGS = new Set([
+  "version", "project", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
+]);
 
 function slugify(value: string): string {
   return value
@@ -516,8 +556,23 @@ function mergeAdditionalWorkflows(
 }
 
 function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapManifest["repo"] {
+  const legacyClass = repo?.class === "application" || repo?.class === "tooling" ? repo.class : undefined;
+  const canonicalClass = repo?.class && !legacyClass ? (repo.class as RepoClass) : undefined;
+  if (legacyClass && !repo?.classMigration) {
+    throw new Error(
+      `Legacy repository class \"${legacyClass}\" requires repo.classMigration.target; choose its canonical Flow repository class explicitly.`
+    );
+  }
+
   return {
-    ...(repo?.class ? { class: repo.class } : {}),
+    ...(legacyClass
+      ? {
+          class: repo?.classMigration?.target as RepoClass,
+          classMigration: { from: legacyClass, target: repo?.classMigration?.target as RepoClass }
+        }
+      : canonicalClass
+        ? { class: canonicalClass }
+        : {}),
     managedPaths: repo?.managedPaths ?? [],
     ...(repo?.docs
       ? {
@@ -663,6 +718,7 @@ function normalizeCustomScripts(
 
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
+  const unknownSettings = Object.keys(parsed).filter((key) => !KNOWN_MANIFEST_SETTINGS.has(key)).sort();
   const version = parsed.version ?? 1;
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
   const defaultBranch = parsed.project.defaultBranch ?? "main";
@@ -689,12 +745,14 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
 
   return {
     version,
+    unknownSettings,
     project: {
       name: parsed.project.name,
       ...(parsed.project.displayName ? { displayName: parsed.project.displayName } : {}),
       description:
         parsed.project.description ??
         "Manifest-first control plane for repo scaffolding, GitHub governance, and portable agent profiles.",
+      ...(parsed.project.maturity ? { maturity: parsed.project.maturity } : {}),
       visibility: parsed.project.visibility ?? "private",
       owner: parsed.project.owner,
       defaultBranch
@@ -746,6 +804,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
+      ...(parsed.ci?.prGovernance ? { prGovernance: { enforceAfter: parsed.ci.prGovernance.enforceAfter } } : {}),
       additionalWorkflows,
       ...(workflows ? { workflows } : {}),
       appPaths: normalizePaths(parsed.ci?.appPaths),
@@ -813,6 +872,20 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       sharedSkills: parsed.agents?.sharedSkills ?? []
     },
     ...(capabilities ? { capabilities } : {}),
+    ...(parsed.policy
+      ? { policy: { flow: { ...parsed.policy.flow, sha256: parsed.policy.flow.sha256.toLowerCase() } } }
+      : {}),
+    exceptions: (parsed.exceptions ?? []).map((exception) => ({
+      id: exception.id,
+      policy: exception.policy,
+      scope: exception.scope,
+      rationale: exception.rationale,
+      approvedBy: exception.approvedBy,
+      issue: exception.issue,
+      permanent: exception.permanent ?? false,
+      ...(exception.expiresAt ? { expiresAt: exception.expiresAt } : {}),
+      ...(exception.adr ? { adr: exception.adr } : {})
+    })),
     environments: {
       dev: applyEnvironmentDefaults(defaultEnvironment(environments.dev), reviewers, defaultBranch, "dev"),
       stage: applyEnvironmentDefaults(
@@ -891,11 +964,12 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
 }
 
 function serializableManifest(manifest: BootstrapManifest): BootstrapManifest | Record<string, unknown> {
+  const { unknownSettings: _unknownSettings, ...serializable } = manifest;
   if (manifest.version !== 2 || !manifest.capabilities?.release) {
-    return manifest;
+    return serializable;
   }
 
-  const { release: _release, ...withoutRelease } = manifest;
+  const { release: _release, ...withoutRelease } = serializable;
   return withoutRelease;
 }
 

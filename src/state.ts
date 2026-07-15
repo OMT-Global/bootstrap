@@ -11,6 +11,7 @@ export const HOME_STATE_PATH = ".bootstrap/home-state.json";
 export const LEGACY_HOME_STATE_PATH = ".new-project-bootstrap/home-state.json";
 export const REPO_STATE_FILENAME = "bootstrap-state.json";
 export const LEGACY_REPO_STATE_FILENAME = "new-project-bootstrap-state.json";
+export const OWNERSHIP_SIDECAR_PATH = ".bootstrap/managed-files.json";
 
 async function resolveGitDir(targetDir: string): Promise<string | undefined> {
   const gitPath = path.join(targetDir, ".git");
@@ -73,5 +74,30 @@ export function createRepoState(manifest: BootstrapManifest, files: RenderedFile
     manifestHash: sha256(JSON.stringify(manifest)),
     templateVersion: TEMPLATE_VERSION,
     managedFiles: Object.fromEntries(files.map((file) => [file.path, sha256(file.contents)]))
+  };
+}
+
+export function createOwnershipSidecar(files: RenderedFile[]): RenderedFile {
+  const managedFiles = Object.fromEntries(
+    files
+      .filter((file) => file.path !== OWNERSHIP_SIDECAR_PATH)
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((file) => [file.path, { sha256: sha256(file.contents), source: "bootstrap" }])
+  );
+
+  return {
+    path: OWNERSHIP_SIDECAR_PATH,
+    contents: `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        owner: "bootstrap",
+        templateVersion: TEMPLATE_VERSION,
+        regenerationCommand: "bootstrap apply repo --manifest ./project.bootstrap.yaml",
+        managedFiles
+      },
+      null,
+      2
+    )}\n`,
+    reason: "Managed-file ownership sidecar"
   };
 }

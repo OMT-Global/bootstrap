@@ -19,6 +19,9 @@ Refs #<issue-number>  <!-- use Closes/Fixes/Resolves only when this PR fully com
 - [ ] PR author enabled auto-merge where GitHub allows it, or GitHub plan-limit evidence/unavailable reason is recorded and the fallback merge-readiness policy applies
 - [ ] No real secrets, runtime auth, or machine-local env files are committed
 
+Material change: no
+ADR: docs/decisions/ADR-<number>-<slug>.md  <!-- required when Material change is yes; ADR status must be Accepted -->
+
 
 
 ## Merge Automation

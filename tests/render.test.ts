@@ -42,11 +42,13 @@ describe("renderManagedFiles", () => {
       const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
       const extendedValidationWorkflow = files.find((file) => file.path === ".github/workflows/extended-validation.yml");
       expect(prWorkflow?.contents).toContain("name: CI Gate");
-      expect(prWorkflow?.contents).toContain("dorny/paths-filter@v4");
+      expect(prWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
       expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
-      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@v4");
+      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
       expect(extendedValidationWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
       expect(prWorkflow?.contents).toContain("types: [opened, edited, synchronize, reopened, ready_for_review]");
+      expect(prWorkflow?.contents).toContain("pull_request_review:");
+      expect(prWorkflow?.contents).toContain("PR_GOVERNANCE_ENFORCE_AFTER:");
       expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");
@@ -55,6 +57,12 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/");
       expect(prWorkflow?.contents).toContain("auto_merge_evidence=");
       expect(prWorkflow?.contents).toContain('<<<"$auto_merge_evidence"');
+      expect(prWorkflow?.contents).toContain("validate-pr-governance:");
+      expect(prWorkflow?.contents).toContain("pull-requests: read");
+      expect(prWorkflow?.contents).toContain("PR_COMMITS_URL:");
+      expect(files.find((file) => file.path === "scripts/ci/check-pr-governance.sh")?.contents).toContain("PRS-DCO-001");
+      expect(prWorkflow?.contents).toContain("validate-action-pins:");
+      expect(files.find((file) => file.path === "scripts/ci/check-action-pins.sh")?.contents).toContain("SA-ACTION-PIN-001");
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
       const dependabot = files.find((file) => file.path === ".github/dependabot.yml");
@@ -64,6 +72,7 @@ describe("renderManagedFiles", () => {
       expect(prTemplate?.contents).toContain("## Bootstrap Governance");
       expect(prTemplate?.contents).toContain("fallback merge-readiness policy applies");
       expect(prTemplate?.contents).toContain("## Notes");
+      expect(prTemplate?.contents).toContain("Material change: no");
       expect(dependabot?.contents).toContain('package-ecosystem: "npm"');
       expect(dependabot?.contents).toContain('package-ecosystem: "github-actions"');
       expect(dependabot?.contents).toContain("npm-minor-patch");
@@ -267,10 +276,10 @@ describe("renderManagedFiles", () => {
     expect(renderedManifest?.contents).toContain("version: 2");
     expect(renderedManifest?.contents).toContain("capabilities:");
     expect(renderedManifest?.contents).not.toContain("\nrelease:\n");
-    expect(prWorkflow?.contents).toContain("dorny/paths-filter@v4");
+    expect(prWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
     expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
     expect(claudeWorkflow?.contents).toContain("name: Claude Code");
-    expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@v1");
+    expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1");
   });
 
   it("documents required PR template enforcement in generated agent instructions", () => {
@@ -368,6 +377,7 @@ describe("renderManagedFiles", () => {
     expect(versionScript?.contents).toContain('version="${tag#"${prefix}"}"');
     expect(buildScript?.contents).toContain('artifact_dir="dist/release"');
     expect(buildScript?.contents).toContain("SHA256SUMS");
+    expect(buildScript?.contents).toContain("! -name release-evidence.json ! -name validation-evidence.json");
     expect(buildScript?.contents).toContain("No release artifacts were produced");
     expect(publishScript?.contents).toContain("Create exact release tags such as v1.2.3");
     expect(changelogConfig?.contents).toContain("changelog:");

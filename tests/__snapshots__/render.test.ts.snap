@@ -72,6 +72,14 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": true,
+    "path": "scripts/ci/check-pr-governance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/check-action-pins.sh",
+  },
+  {
+    "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
   },
   {
@@ -182,6 +190,14 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": true,
     "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/check-pr-governance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/check-action-pins.sh",
   },
   {
     "executable": true,
@@ -306,6 +322,14 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": true,
+    "path": "scripts/ci/check-pr-governance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/check-action-pins.sh",
+  },
+  {
+    "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
   },
   {
@@ -416,6 +440,14 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": true,
     "path": "scripts/ci/run-extended-validation.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/check-pr-governance.sh",
+  },
+  {
+    "executable": true,
+    "path": "scripts/ci/check-action-pins.sh",
   },
   {
     "executable": true,

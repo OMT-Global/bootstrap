@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 
 import { runDoctor } from "./doctor.js";
+import { formatConformanceReport, runConformance } from "./conformance.js";
 import { reconcileFleet } from "./fleet.js";
 import { planGitHub, applyGitHub } from "./github/provision.js";
 import { planHome, applyHome } from "./home/sync.js";
@@ -13,6 +14,8 @@ import {
   resolveManifestPath
 } from "./manifest.js";
 import { planRepo, applyRepo } from "./render.js";
+import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
+import { planFleetPolicyUpgrades, type FleetUpgradeCandidate } from "./upgrades.js";
 
 function defaultTargetDir(manifest: Awaited<ReturnType<typeof loadManifest>>, cwd = process.cwd()): string {
   const currentBasename = path.basename(cwd);
@@ -28,6 +31,12 @@ function formatRepoChanges(changes: Awaited<ReturnType<typeof planRepo>>["change
     "**Repo**",
     ...changes.map((change) => `- [${change.type}] ${change.path}: ${change.reason}`)
   ].join("\n");
+}
+
+function formatLanguageProfiles(profiles: Awaited<ReturnType<typeof planRepo>>["languageProfiles"]): string {
+  const selected = profiles.selected.length === 0 ? "none" : profiles.selected.join(", ");
+  const conflicts = profiles.conflicts.map((conflict) => `- [warn] ${conflict.reason}`);
+  return ["**Language profiles**", `- Selected: ${selected}`, ...conflicts].join("\n");
 }
 
 function formatGitHubActions(actions: Awaited<ReturnType<typeof planGitHub>>): string {
@@ -128,6 +137,7 @@ async function main(): Promise<void> {
             {
               targetDir,
               repo: repoPlan.changes,
+              languageProfiles: repoPlan.languageProfiles,
               github: githubPlan,
               home: homePlan.actions
             },
@@ -139,7 +149,7 @@ async function main(): Promise<void> {
       }
 
       process.stdout.write(
-        `${formatRepoChanges(repoPlan.changes)}\n\n${formatGitHubActions(githubPlan)}\n\n${formatHomeActions(
+        `${formatRepoChanges(repoPlan.changes)}\n\n${formatLanguageProfiles(repoPlan.languageProfiles)}\n\n${formatGitHubActions(githubPlan)}\n\n${formatHomeActions(
           homePlan.actions
         )}\n`
       );
@@ -175,6 +185,21 @@ async function main(): Promise<void> {
       }
 
       process.stdout.write(`${formatFleetReport(report)}\n`);
+    });
+
+  program
+    .command("upgrade-plan")
+    .description("Dry-run version-aware fleet policy upgrade inventory; never opens pull requests or mutates repositories.")
+    .requiredOption("--input <path>", "JSON array of fleet upgrade candidates")
+    .option("--json", "Emit JSON")
+    .action(async (options) => {
+      const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
+      const plan = planFleetPolicyUpgrades(JSON.parse(raw) as FleetUpgradeCandidate[]);
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`${plan.map((entry) => `- [${entry.status}] ${entry.repo} (${entry.repoClass}, ${entry.risk}, ${entry.role}): ${entry.reason}`).join("\n")}\n`);
     });
 
   const apply = program.command("apply").description("Apply one bootstrap target.");
@@ -232,6 +257,45 @@ async function main(): Promise<void> {
       process.stdout.write(
         `${checks.map((check) => `- [${check.status}] ${check.name}: ${check.detail}`).join("\n")}\n`
       );
+    });
+
+  program
+    .command("conform")
+    .description("Validate the deterministic Public Repository Standard conformance core.")
+    .option("--manifest <path>", "Path to manifest")
+    .option("--target <path>", "Target repository directory")
+    .option("--json", "Emit versioned JSON")
+    .action(async (options) => {
+      const manifest = await loadManifest(resolveManifestPath(options.manifest));
+      const targetDir = options.target ? path.resolve(options.target) : defaultTargetDir(manifest);
+      const report = await runConformance(manifest, targetDir);
+      process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatConformanceReport(report)}\n`);
+      process.exitCode = report.exitCode;
+    });
+
+  const provenance = program.command("provenance").description("Validate public provenance manifests before publication.");
+  provenance
+    .command("validate")
+    .description("Fail when a public provenance manifest is malformed or contains credential-like literals.")
+    .requiredOption("--input <path>", "Path to a public provenance JSON manifest")
+    .action(async (options) => {
+      const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
+      const manifest = validatePublicProvenance(JSON.parse(raw));
+      process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+    });
+  provenance
+    .command("create")
+    .description("Redact metadata and write a public provenance manifest.")
+    .requiredOption("--input <path>", "Path to a provenance input JSON document")
+    .requiredOption("--output <path>", "Output path, normally provenance/runs/<run>.json")
+    .action(async (options) => {
+      const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
+      const manifest = createPublicProvenance(JSON.parse(raw));
+      const outputPath = path.resolve(options.output);
+      await import("node:fs/promises").then(({ mkdir, writeFile }) =>
+        mkdir(path.dirname(outputPath), { recursive: true }).then(() => writeFile(outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8"))
+      );
+      process.stdout.write(`Wrote ${outputPath}\n`);
     });
 
   await program.parseAsync(process.argv);

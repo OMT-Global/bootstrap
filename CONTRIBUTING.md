@@ -18,6 +18,8 @@ Contributions should start from a GitHub issue that is assigned or explicitly en
 ## Validation
 
 - Run the relevant local checks before opening a PR.
+- For agent-authored changes, use the `autoreview` skill against the intended PR diff and actual base. Verify every finding, address accepted in-scope findings, and rerun affected checks and autoreview after edits until no accepted/actionable findings remain.
+- Record the final autoreview command and result in the PR. If the skill is unavailable or cannot complete, stop and report that blocker instead of opening or updating the PR.
 - For this bootstrap contract, the required PR check surface is `CI Gate`.
 - Document any skipped checks in the PR with a concrete reason.
 

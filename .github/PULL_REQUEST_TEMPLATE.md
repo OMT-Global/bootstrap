@@ -9,6 +9,8 @@ Refs #<issue-number>  <!-- use Closes/Fixes/Resolves only when this PR fully com
 ## Validation
 
 - [ ] Relevant local checks passed
+- [ ] Agent-authored changes passed `autoreview` against the intended PR diff with no accepted/actionable findings
+- Autoreview command and result:
 - [ ] Required PR checks are expected to satisfy `CI Gate`
 - [ ] Skipped checks are explained below
 

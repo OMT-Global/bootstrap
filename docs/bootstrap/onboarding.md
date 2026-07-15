@@ -13,6 +13,7 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Confirm branch protection or rulesets on `main` require one approval, code owner review, and approval from someone other than the most recent pusher.
 - Confirm branch protection points at the `CI Gate` status.
 - Confirm `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` are present as the required contributor and PR guidance surfaces.
+- Confirm `AGENTS.md` requires the `autoreview` skill against the intended PR diff before an agent opens or updates a PR, and that the PR template records the final command and result.
 - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before CI Gate can pass.
 - Confirm PR Fast CI uses the fork-safe `pull_request` event with only read permissions. It must validate Conventional titles, contributed-commit DCO trailers, changed-line accounting, and material-change ADR/reviewer evidence without accessing repository secrets.
 - Confirm every third-party `uses:` entry is a 40-character commit SHA followed by readable tag metadata. The `Validate Action Pins` check fails closed on mutable references and silently ignores local or Bootstrap-owned reusable workflows.

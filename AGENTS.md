@@ -5,6 +5,7 @@
 - CI baseline: fast PR checks stay cheap and shell-safe; extended validation runs on `main`, nightly, or manual dispatch.
 - Self-hosted runner policy: shell-safe jobs must use `[self-hosted, linux, shell-only, public]`; native repos must use self-hosted runners for required automation, with Docker, service-container, browser, or `container:` workloads routed to dedicated self-hosted capability pools.
 - Add or update tests for every interactive, branching, or operator-facing behavior change.
+- Before opening or updating a PR, use the `autoreview` skill to review the intended PR diff against its actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.
 - PRs must use the generated pull request template. The required PR gate validates summary, issue linkage, validation evidence, and risk notes.
 - Never commit real secrets, runtime auth, or machine-local env files. Use templates and GitHub environments instead.
 

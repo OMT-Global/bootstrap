@@ -282,7 +282,7 @@ describe("renderManagedFiles", () => {
     expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1");
   });
 
-  it("documents required PR template enforcement in generated agent instructions", () => {
+  it("documents required PR template and autoreview enforcement in generated guidance", () => {
     const manifest = normalizeManifest({
       project: {
         name: "template-required",
@@ -295,8 +295,17 @@ describe("renderManagedFiles", () => {
 
     const files = renderManagedFiles(manifest);
     const agents = files.find((file) => file.path === "AGENTS.md");
+    const contributing = files.find((file) => file.path === "CONTRIBUTING.md");
+    const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
+    const onboarding = files.find((file) => file.path === "docs/bootstrap/onboarding.md");
     const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
 
+    expect(agents?.contents).toContain("Before opening or updating a PR, use the `autoreview` skill");
+    expect(agents?.contents).toContain("stop and report the blocker instead of bypassing the gate");
+    expect(contributing?.contents).toContain("For agent-authored changes, use the `autoreview` skill");
+    expect(prTemplate?.contents).toContain("Agent-authored changes passed `autoreview`");
+    expect(prTemplate?.contents).toContain("Autoreview command and result:");
+    expect(onboarding?.contents).toContain("`AGENTS.md` requires the `autoreview` skill");
     expect(agents?.contents).toContain("PRs must use the generated pull request template");
     expect(prWorkflow?.contents).toContain("- validate-pr-description");
     expect(prWorkflow?.contents).toContain("validate-pr-description=${{ needs.validate-pr-description.result }}");

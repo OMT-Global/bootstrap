@@ -45,6 +45,29 @@ function isManagedContentHash(value: string | undefined): value is string {
   return value !== undefined && /^[a-f0-9]{64}$/i.test(value);
 }
 
+interface OwnershipSidecar {
+  schemaVersion?: unknown;
+  owner?: unknown;
+  managedFiles?: Record<string, { sha256?: unknown }>;
+}
+
+async function loadOwnershipHashes(targetDir: string): Promise<Record<string, string>> {
+  const raw = await readTextIfExists(path.join(targetDir, ".bootstrap/managed-files.json"));
+  if (!raw) return {};
+
+  try {
+    const sidecar = JSON.parse(raw) as OwnershipSidecar;
+    if (sidecar.schemaVersion !== 1 || sidecar.owner !== "bootstrap" || !sidecar.managedFiles) return {};
+    return Object.fromEntries(
+      Object.entries(sidecar.managedFiles)
+        .filter(([, entry]) => isManagedContentHash(typeof entry?.sha256 === "string" ? entry.sha256 : undefined))
+        .map(([filePath, entry]) => [filePath, entry.sha256 as string])
+    );
+  } catch {
+    return {};
+  }
+}
+
 const managedPathDependencies = [
   {
     path: "AGENTS.md",
@@ -133,11 +156,12 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
   const files = [...renderedFiles, createOwnershipSidecar(renderedFiles)];
   const languageProfiles = await resolveLanguageProfiles(manifest, targetDir);
   const existingState = await loadRepoState(targetDir);
+  const ownershipHashes = await loadOwnershipHashes(targetDir);
   const changes: PlannedFileChange[] = [];
 
   for (const file of files) {
     const existingContents = await readTextIfExists(path.join(targetDir, file.path));
-    const managedHash = existingState?.managedFiles[file.path];
+    const managedHash = existingState?.managedFiles[file.path] ?? ownershipHashes[file.path];
     if (
       existingContents !== undefined &&
       isManagedContentHash(managedHash) &&

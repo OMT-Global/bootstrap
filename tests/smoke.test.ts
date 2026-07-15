@@ -74,6 +74,20 @@ describe("repo smoke", () => {
     await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
   });
 
+  it("blocks direct edits using the ownership sidecar when local state is unavailable", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({
+      project: { name: "sidecar-owned-edit", owner: "acme" },
+      archetype: { kind: "generic-empty" }
+    });
+
+    await applyRepo(manifest, targetDir);
+    await rm(path.join(targetDir, ".bootstrap/bootstrap-state.json"));
+    await writeFile(path.join(targetDir, "AGENTS.md"), "product-owned direct edit\n", "utf8");
+
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
+  });
+
   it("can adopt an existing repo by managing only selected bootstrap files", async () => {
     const targetDir = await makeTempDir();
     await writeFile(path.join(targetDir, "README.md"), "Existing README\n", "utf8");

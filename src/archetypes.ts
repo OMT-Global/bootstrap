@@ -1075,7 +1075,7 @@ function releaseBuildScript(manifest: BootstrapManifest): string {
     # Add repo-specific build steps above this line to populate \${artifact_dir}
     # with downloadable release assets before checksums are generated.
 
-    mapfile -t artifacts < <(find "\${artifact_dir}" -maxdepth 1 -type f ! -name SHA256SUMS | sort)
+    mapfile -t artifacts < <(find "\${artifact_dir}" -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-evidence.json ! -name validation-evidence.json | sort)
     if [[ \${#artifacts[@]} -eq 0 ]]; then
       echo "No release artifacts were produced in \${artifact_dir}."
       echo "This repo ships no downloadable assets; add build steps to scripts/ci/run-release-build.sh when it does."
@@ -2154,7 +2154,7 @@ function releaseTrainDoc(): string {
   `;
 }
 
-function releaseTrainContractDoc(): string {
+function releaseTrainContractDoc(manifest: BootstrapManifest): string {
   return dedent`
     # Governed Release Train Contract
 
@@ -2175,8 +2175,8 @@ function releaseTrainContractDoc(): string {
     release:
       enabled: true
       maturity: governed
-      reusableWorkflowRepo: OMT-Global/bootstrap
-      reusableWorkflowRef: refs/heads/main
+      reusableWorkflowRepo: ${manifest.release.reusableWorkflowRepo}
+      reusableWorkflowRef: ${manifest.release.reusableWorkflowRef}
     \`\`\`
 
     Governed repos receive thin caller workflows for preflight, validation, publish, and postpublish verification. Package-specific behavior belongs in hook scripts under \`scripts/release/\`.
@@ -3290,7 +3290,7 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           {
             path: "docs/bootstrap/release-train-contract.md",
             reason: "Governed release train contract",
-            contents: `${releaseTrainContractDoc()}\n`
+            contents: `${releaseTrainContractDoc(manifest)}\n`
           },
           {
             path: "docs/bootstrap/release-evidence-schema.md",

@@ -207,7 +207,7 @@ ci:
     model: unknown
     promptHash: unknown
     reusableWorkflowRepo: OMT-Global/bootstrap
-    reusableWorkflowRef: refs/heads/main
+    reusableWorkflowRef: d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
 release:
   enabled: true
   maturity: governed
@@ -216,7 +216,7 @@ release:
   updateMajorTag: true
   updateMinorTag: true
   reusableWorkflowRepo: OMT-Global/bootstrap
-  reusableWorkflowRef: refs/heads/main
+  reusableWorkflowRef: d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
   changelog:
     enabled: true
     mode: github-generated-notes

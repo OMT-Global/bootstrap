@@ -65,7 +65,7 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 
 ## AI Attestation
 
-- `.github/workflows/ai-attestation.yml` calls `OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@refs/heads/main`.
+- `.github/workflows/ai-attestation.yml` calls `OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50`.
 - Override default metadata with repo variables (`AI_ATTESTATION_PROVIDER`, `AI_ATTESTATION_MODEL`, `AI_ATTESTATION_PROMPT_HASH`) before treating the artifact metadata as authoritative.
 - Pin the reusable workflow to a tag or SHA once the control-plane contract is stable.
 

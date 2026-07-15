@@ -2326,7 +2326,7 @@ function releaseTrainDoc(): string {
   `;
 }
 
-function releaseTrainContractDoc(): string {
+function releaseTrainContractDoc(manifest: BootstrapManifest): string {
   return dedent`
     # Governed Release Train Contract
 
@@ -2347,8 +2347,8 @@ function releaseTrainContractDoc(): string {
     release:
       enabled: true
       maturity: governed
-      reusableWorkflowRepo: OMT-Global/bootstrap
-      reusableWorkflowRef: refs/heads/main
+      reusableWorkflowRepo: ${manifest.release.reusableWorkflowRepo}
+      reusableWorkflowRef: ${manifest.release.reusableWorkflowRef}
     \`\`\`
 
     Governed repos receive thin caller workflows for preflight, validation, publish, and postpublish verification. Package-specific behavior belongs in hook scripts under \`scripts/release/\`.
@@ -3515,7 +3515,7 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           {
             path: "docs/bootstrap/release-train-contract.md",
             reason: "Governed release train contract",
-            contents: `${releaseTrainContractDoc()}\n`
+            contents: `${releaseTrainContractDoc(manifest)}\n`
           },
           {
             path: "docs/bootstrap/release-evidence-schema.md",

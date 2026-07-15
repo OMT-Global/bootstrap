@@ -50,7 +50,7 @@ Example security caller:
 ```yaml
 jobs:
   security:
-    uses: OMT-Global/bootstrap/.github/workflows/security-pr.yml@refs/heads/main
+    uses: OMT-Global/bootstrap/.github/workflows/security-pr.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
     with:
       dependency-review: true
       run-osv: true
@@ -68,7 +68,7 @@ on:
 
 jobs:
   release:
-    uses: OMT-Global/bootstrap/.github/workflows/release.yml@refs/heads/main
+    uses: OMT-Global/bootstrap/.github/workflows/release.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
     secrets: inherit
     with:
       runs-on: '["ubuntu-latest"]'
@@ -110,7 +110,7 @@ env:
 
 jobs:
   attest:
-    uses: OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@refs/heads/main
+    uses: OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
     with:
       artifact_name: ai-attestation
       retention_days: 90
@@ -119,7 +119,7 @@ jobs:
       prompt_hash: ${{ vars.AI_ATTESTATION_PROMPT_HASH || env.AI_ATTESTATION_PROMPT_HASH_DEFAULT }}
 ```
 
-Pin to a tag or SHA for production rollout. Use branch refs only while iterating on the contract, and override the attestation metadata defaults with repo variables before treating the signed payload as authoritative.
+Pin to an exact tag or SHA for every production rollout, and override the attestation metadata defaults with repo variables before treating the signed payload as authoritative.
 
 ## Publish Readiness
 

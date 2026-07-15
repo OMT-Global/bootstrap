@@ -414,6 +414,7 @@ describe("renderManagedFiles", () => {
       (file) => file.path === ".github/workflows/release-publish-reusable.yml"
     );
     const releaseTrain = files.find((file) => file.path === "docs/release-train.md");
+    const releaseTrainContract = files.find((file) => file.path === "docs/bootstrap/release-train-contract.md");
     const issueTemplate = files.find((file) => file.path === ".github/ISSUE_TEMPLATE/release_train.yml");
 
     expect(paths).not.toContain(".github/workflows/release-tag.yml");
@@ -428,6 +429,7 @@ describe("renderManagedFiles", () => {
       "uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@refs/tags/bootstrap-v1"
     );
     expect(publish?.contents).toContain("require_release_issue: true");
+    expect(releaseTrainContract?.contents).toContain("reusableWorkflowRef: refs/tags/bootstrap-v1");
     expect(publish?.contents).toContain("require_signed_tag: false");
     expect(reusablePublish?.contents).toContain("gh run download");
     expect(reusablePublish?.contents).toContain("PREFLIGHT_ARTIFACT_DIR");

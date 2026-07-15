@@ -67,7 +67,7 @@ Cut patch releases from `release/X.Y` branches when you maintain an older minor 
 
 ## AI Attestation
 
-This bootstrap also renders `.github/workflows/ai-attestation.yml` as a caller for the shared attestation workflow at `OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@refs/heads/main`.
+This bootstrap also renders `.github/workflows/ai-attestation.yml` as a caller for the shared attestation workflow at `OMT-Global/bootstrap/.github/workflows/ai-attestation-reusable.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50`.
 
 Override the default provider, model, and prompt hash with repo variables (`AI_ATTESTATION_PROVIDER`, `AI_ATTESTATION_MODEL`, `AI_ATTESTATION_PROMPT_HASH`) or update `project.bootstrap.yaml` before production rollout.
 

@@ -305,7 +305,7 @@ async function main(): Promise<void> {
 
   notifications
     .command("deliver")
-    .description("Write a material-action notification to its governing GitHub target; configured webhook delivery is currently disabled.")
+    .description("Write a material-action notification to its governing GitHub target and configured webhook.")
     .requiredOption("--input <path>", "Path to a material-action JSON document")
     .option("--manifest <path>", "Path to manifest")
     .option("--json", "Emit versioned JSON")
@@ -320,7 +320,7 @@ async function main(): Promise<void> {
     .command("exceptions")
     .description("Plan expiring-exception notifications, or deliver them with --deliver.")
     .option("--manifest <path>", "Path to manifest")
-    .option("--deliver", "Write notifications to governing GitHub targets; configured webhook delivery is currently disabled")
+    .option("--deliver", "Write notifications to governing GitHub targets and the configured webhook")
     .option("--json", "Emit versioned JSON")
     .action(async (options) => {
       const manifest = await loadManifest(resolveManifestPath(options.manifest));

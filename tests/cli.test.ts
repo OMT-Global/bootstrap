@@ -8,13 +8,15 @@ const tsx = new URL("../node_modules/.bin/tsx", import.meta.url).pathname;
 const cli = new URL("../src/cli.ts", import.meta.url).pathname;
 
 describe("notification CLI help", () => {
-  it("does not promise disabled webhook delivery", async () => {
+  it("describes configured webhook delivery", async () => {
     const [deliver, exceptions] = await Promise.all([
       execFileAsync(tsx, [cli, "notifications", "deliver", "--help"]),
       execFileAsync(tsx, [cli, "notifications", "exceptions", "--help"])
     ]);
 
-    expect(deliver.stdout).toContain("configured webhook delivery is currently disabled");
-    expect(exceptions.stdout).toContain("configured webhook delivery is currently disabled");
+    expect(deliver.stdout).toContain("configured webhook");
+    expect(deliver.stdout).not.toContain("currently disabled");
+    expect(exceptions.stdout).toContain("configured webhook");
+    expect(exceptions.stdout).not.toContain("currently disabled");
   });
 });

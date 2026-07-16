@@ -47,10 +47,27 @@ function summary(results: ConformanceResult[]): ConformanceReport["summary"] {
 
 export async function runConformance(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceReport> {
   const results: ConformanceResult[] = [];
+  const exceptionReport = validatePolicyExceptions(manifest.exceptions);
+  const validExceptionIds = new Set(
+    exceptionReport.results.filter((entry) => entry.status !== "block").map((entry) => entry.exceptionId)
+  );
+  const classException = manifest.exceptions.find(
+    (entry) =>
+      entry.policy === "repository-classification" &&
+      entry.scope === "repo.class" &&
+      validExceptionIds.has(entry.id)
+  );
 
   results.push(
     manifest.repo.class
       ? result("PRS-CLASS-001", "pass", [manifest.repo.class], "Keep the canonical repository class current.")
+      : classException
+        ? result(
+            "PRS-CLASS-001",
+            "pass",
+            [`approved exception ${classException.id}`],
+            "Keep the approved repository-classification exception current until a canonical class is declared."
+          )
       : result("PRS-CLASS-001", "blocking", ["repo.class is absent"], "Declare a canonical repo.class or complete an explicit legacy migration.")
   );
   results.push(
@@ -75,7 +92,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     }
   }
 
-  for (const exception of validatePolicyExceptions(manifest.exceptions).results) {
+  for (const exception of exceptionReport.results) {
     results.push(
       result(
         exception.ruleId,

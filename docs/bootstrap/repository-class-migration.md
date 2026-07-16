@@ -23,3 +23,26 @@ to `infrastructure` instead.
 `project.maturity` describes the product lifecycle (`experimental` through
 `archived`). It is intentionally independent from `release.maturity`, which
 selects the release-automation profile.
+
+## Publisher defaults and class deviations
+
+The resolved publisher key defaults to `project.owner`. A publisher can set a
+different stable key and an explicit spending approval threshold with a
+non-negative amount and three-letter ISO currency code:
+
+```yaml
+publisher:
+  key: acme-public
+  spendingApprovalThreshold:
+    amount: 500
+    currency: USD
+```
+
+Bootstrap does not invent a monetary threshold when the publisher omits one.
+Callers must treat that state as an unresolved human decision rather than as
+permission to spend.
+
+A repository that cannot yet declare one of the seven canonical classes must
+carry a currently valid policy exception with `policy:
+repository-classification` and `scope: repo.class`. Missing, expired, or
+otherwise invalid exceptions remain blocking conformance violations.

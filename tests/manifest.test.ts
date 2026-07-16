@@ -82,6 +82,38 @@ describe("normalizeManifest", () => {
     expect(manifest.release.maturity).toBe("regulated");
   });
 
+  it("resolves publisher identity without inventing a spending threshold", () => {
+    const defaultPublisher = normalizeManifest({
+      project: { name: "publisher-default", owner: "acme" },
+      archetype: { kind: "generic-empty" }
+    });
+
+    expect(defaultPublisher.publisher).toEqual({ key: "acme" });
+    expect(stringifyManifest(defaultPublisher)).not.toContain("publisher:");
+
+    const configuredPublisher = normalizeManifest({
+      project: { name: "publisher-configured", owner: "acme" },
+      publisher: {
+        key: "acme-public",
+        spendingApprovalThreshold: { amount: 500, currency: "USD" }
+      },
+      archetype: { kind: "generic-empty" }
+    });
+
+    expect(configuredPublisher.publisher).toEqual({
+      key: "acme-public",
+      spendingApprovalThreshold: { amount: 500, currency: "USD" }
+    });
+    expect(stringifyManifest(configuredPublisher)).toContain("spendingApprovalThreshold:");
+    expect(() =>
+      normalizeManifest({
+        project: { name: "invalid-currency", owner: "acme" },
+        publisher: { spendingApprovalThreshold: { amount: 500, currency: "ZZZ" } },
+        archetype: { kind: "generic-empty" }
+      })
+    ).toThrow();
+  });
+
   it("applies defaults and reviewer-derived governance", () => {
     const manifest = normalizeManifest({
       project: {

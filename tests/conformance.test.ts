@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { conformanceReportSchema, formatConformanceReport, runConformance } from "../src/conformance.js";
 import { normalizeManifest } from "../src/manifest.js";
@@ -45,5 +45,43 @@ describe("runConformance", () => {
     expect(report.summary.warning).toBe(1);
     expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-PROFILE-001", severity: "warning" }));
     expect(formatConformanceReport(report)).toContain("Conformance: 0 blocking, 1 warning");
+  });
+
+  it("accepts a missing canonical class with a valid scoped exception that is nearing expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    const directory = await fixtureDirectory();
+    const manifest = normalizeManifest({
+      project: { name: "class-exception", owner: "acme", maturity: "maintenance" },
+      archetype: { kind: "generic-empty" },
+      exceptions: [
+        {
+          id: "legacy-class",
+          policy: "repository-classification",
+          scope: "repo.class",
+          rationale: "Class selection is pending owner review.",
+          approvedBy: "alice",
+          issue: "#56",
+          expiresAt: "2026-07-20"
+        }
+      ]
+    });
+
+    try {
+      const report = await runConformance(manifest, directory);
+
+      expect(report.results).toContainEqual(
+        expect.objectContaining({
+          ruleId: "PRS-CLASS-001",
+          severity: "pass",
+          evidence: ["approved exception legacy-class"]
+        })
+      );
+      expect(report.results).toContainEqual(
+        expect.objectContaining({ ruleId: "PRS-EXCEPTION-001", severity: "warning" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

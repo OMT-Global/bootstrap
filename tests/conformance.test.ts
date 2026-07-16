@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -34,17 +34,12 @@ describe("runConformance", () => {
     const manifest = normalizeManifest({
       project: { name: "canonical-contract", owner: "acme", maturity: "stable" },
       repo: { class: "service" },
-      archetype: { kind: "generic-empty" }
-    });
-    await applyRepo(manifest, directory);
-
-    const evaluatedManifest = normalizeManifest({
-      project: { name: "canonical-contract", owner: "acme", maturity: "stable" },
-      repo: { class: "service" },
       archetype: { kind: "node-ts-service" }
     });
+    await applyRepo(manifest, directory);
+    await rm(path.join(directory, "src/index.ts"));
 
-    const report = await runConformance(evaluatedManifest, directory);
+    const report = await runConformance(manifest, directory);
 
     expect(report.exitCode).toBe(0);
     expect(report.summary.warning).toBe(1);

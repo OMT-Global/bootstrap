@@ -579,7 +579,7 @@ function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapM
           docs: {
             readme: repo.docs.readme ?? true,
             contributing: repo.docs.contributing ?? true,
-            security: repo.docs.security ?? false
+            ...(repo.docs.security !== undefined ? { security: repo.docs.security } : {})
           }
         }
       : {}),

@@ -205,6 +205,17 @@ describe("renderManagedFiles", () => {
     expect(renderManagedFiles(optedOutManifest).some((file) => file.path === "SECURITY.md")).toBe(false);
   });
 
+  it("projects SECURITY.md when public repository docs omit security", () => {
+    const manifest = normalizeManifest({
+      project: { name: "partial-docs-policy", owner: "acme", visibility: "public" },
+      repo: { docs: { readme: true } },
+      archetype: { kind: "generic-empty" }
+    });
+
+    expect(manifest.repo.docs).toEqual({ readme: true, contributing: true });
+    expect(renderManagedFiles(manifest).some((file) => file.path === "SECURITY.md")).toBe(true);
+  });
+
   it("renders version 2 docs, templates, environment, and workflow switches", () => {
     const manifest = normalizeManifest({
       version: 2,

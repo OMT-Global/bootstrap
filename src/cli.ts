@@ -16,6 +16,14 @@ import {
 import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
 import { planFleetPolicyUpgrades, type FleetUpgradeCandidate } from "./upgrades.js";
+import {
+  deliverExceptionNotifications,
+  deliverMaterialAction,
+  formatExceptionNotificationReport,
+  formatMaterialActionReport,
+  planExceptionNotifications,
+  planMaterialAction
+} from "./notifications.js";
 
 function defaultTargetDir(manifest: Awaited<ReturnType<typeof loadManifest>>, cwd = process.cwd()): string {
   const currentBasename = path.basename(cwd);
@@ -73,6 +81,11 @@ function formatFleetReport(report: Awaited<ReturnType<typeof reconcileFleet>>): 
       return `- ${details.join(" - ")}`;
     })
   ].join("\n");
+}
+
+async function readJsonInput(inputPath: string): Promise<unknown> {
+  const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(inputPath), "utf8"));
+  return JSON.parse(raw) as unknown;
 }
 
 async function main(): Promise<void> {
@@ -270,6 +283,53 @@ async function main(): Promise<void> {
       const targetDir = options.target ? path.resolve(options.target) : defaultTargetDir(manifest);
       const report = await runConformance(manifest, targetDir);
       process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatConformanceReport(report)}\n`);
+      process.exitCode = report.exitCode;
+    });
+
+  const notifications = program
+    .command("notifications")
+    .description("Plan or deliver material-action notifications and enforce defined human hard stops.");
+
+  notifications
+    .command("plan")
+    .description("Validate a material action and print its non-mutating notification plan.")
+    .requiredOption("--input <path>", "Path to a material-action JSON document")
+    .option("--manifest <path>", "Path to manifest")
+    .option("--json", "Emit versioned JSON")
+    .action(async (options) => {
+      const manifest = await loadManifest(resolveManifestPath(options.manifest));
+      const report = planMaterialAction(manifest, await readJsonInput(options.input));
+      process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatMaterialActionReport(report)}\n`);
+      process.exitCode = report.exitCode;
+    });
+
+  notifications
+    .command("deliver")
+    .description("Write a material-action notification to its governing GitHub target and configured webhook.")
+    .requiredOption("--input <path>", "Path to a material-action JSON document")
+    .option("--manifest <path>", "Path to manifest")
+    .option("--json", "Emit versioned JSON")
+    .action(async (options) => {
+      const manifest = await loadManifest(resolveManifestPath(options.manifest));
+      const report = await deliverMaterialAction(manifest, await readJsonInput(options.input));
+      process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatMaterialActionReport(report)}\n`);
+      process.exitCode = report.exitCode;
+    });
+
+  notifications
+    .command("exceptions")
+    .description("Plan expiring-exception notifications, or deliver them with --deliver.")
+    .option("--manifest <path>", "Path to manifest")
+    .option("--deliver", "Write notifications to the governing GitHub targets and configured webhook")
+    .option("--json", "Emit versioned JSON")
+    .action(async (options) => {
+      const manifest = await loadManifest(resolveManifestPath(options.manifest));
+      const report = options.deliver
+        ? await deliverExceptionNotifications(manifest)
+        : planExceptionNotifications(manifest);
+      process.stdout.write(
+        `${options.json ? JSON.stringify(report, null, 2) : formatExceptionNotificationReport(report)}\n`
+      );
       process.exitCode = report.exitCode;
     });
 

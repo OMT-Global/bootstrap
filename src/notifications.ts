@@ -1,7 +1,4 @@
 import { createHash } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { request as httpsRequest } from "node:https";
-import { BlockList, isIP, type LookupFunction } from "node:net";
 
 import { z } from "zod";
 
@@ -156,23 +153,8 @@ interface GitHubCollaboratorPermission {
 
 const maintainerRoles = new Set(["admin", "maintain"]);
 
-export interface WebhookResult {
-  ok: boolean;
-  status: number;
-}
-
-export type WebhookSender = (url: string, payload: MaterialActionPlan["webhookPayload"]) => Promise<WebhookResult>;
-export interface ResolvedWebhookAddress {
-  address: string;
-  family: 4 | 6;
-}
-export type WebhookResolver = (hostname: string) => Promise<ResolvedWebhookAddress[]>;
-
 export interface DeliveryOptions {
   githubClient?: GitHubClient;
-  environment?: NodeJS.ProcessEnv;
-  webhookSender?: WebhookSender;
-  webhookResolver?: WebhookResolver;
 }
 
 export interface ExceptionDeliveryOptions extends DeliveryOptions {
@@ -473,197 +455,6 @@ export function planMaterialAction(manifest: BootstrapManifest, input: unknown):
   });
 }
 
-const WEBHOOK_ALLOWED_HOSTS_ENV = "BOOTSTRAP_NOTIFICATION_WEBHOOK_ALLOWED_HOSTS";
-const reservedWebhookIpv4Addresses = new BlockList();
-const reservedWebhookIpv6Addresses = new BlockList();
-const publicWebhookIpv6Addresses = new BlockList();
-publicWebhookIpv6Addresses.addSubnet("2000::", 3, "ipv6");
-
-for (const [network, prefix] of [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.88.99.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4]
-] as const) {
-  reservedWebhookIpv4Addresses.addSubnet(network, prefix, "ipv4");
-}
-
-for (const [network, prefix] of [
-  ["::", 128],
-  ["::1", 128],
-  ["::ffff:0:0", 96],
-  ["64:ff9b::", 96],
-  ["64:ff9b:1::", 48],
-  ["100::", 64],
-  ["2001::", 23],
-  ["2001:db8::", 32],
-  ["2002::", 16],
-  ["3fff::", 20],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["ff00::", 8]
-] as const) {
-  reservedWebhookIpv6Addresses.addSubnet(network, prefix, "ipv6");
-}
-
-function normalizeWebhookHostname(hostname: string): string {
-  const withoutBrackets = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  return withoutBrackets.replace(/\.$/, "").toLowerCase();
-}
-
-function approvedWebhookHosts(environment: NodeJS.ProcessEnv): Set<string> {
-  return new Set(
-    (environment[WEBHOOK_ALLOWED_HOSTS_ENV] ?? "")
-      .split(",")
-      .map((hostname) => normalizeWebhookHostname(hostname.trim()))
-      .filter(Boolean)
-  );
-}
-
-function isPublicWebhookAddress(address: string): address is string {
-  const family = isIP(address);
-  if (family === 4) return !reservedWebhookIpv4Addresses.check(address, "ipv4");
-  if (family === 6) {
-    return publicWebhookIpv6Addresses.check(address, "ipv6") && !reservedWebhookIpv6Addresses.check(address, "ipv6");
-  }
-  return false;
-}
-
-const defaultWebhookResolver: WebhookResolver = async (hostname) => {
-  const family = isIP(hostname);
-  if (family === 4 || family === 6) return [{ address: hostname, family }];
-  const addresses = await lookup(hostname, { all: true, verbatim: true });
-  return addresses.map(({ address, family: resolvedFamily }) => ({
-    address,
-    family: resolvedFamily === 6 ? 6 : 4
-  }));
-};
-
-async function validateWebhookDestination(
-  webhookUrl: string,
-  environment: NodeJS.ProcessEnv,
-  resolver: WebhookResolver,
-  deadline: number
-): Promise<{ url: URL; addresses: ResolvedWebhookAddress[] }> {
-  const url = new URL(webhookUrl);
-  if (url.protocol !== "https:") throw new Error("Webhook must use HTTPS.");
-  if (url.username || url.password) throw new Error("Webhook URLs must not contain credentials.");
-  if (url.port && url.port !== "443") throw new Error("Webhook delivery is restricted to HTTPS port 443.");
-
-  const hostname = normalizeWebhookHostname(url.hostname);
-  if (!approvedWebhookHosts(environment).has(hostname)) {
-    throw new Error(`Webhook hostname is not approved by ${WEBHOOK_ALLOWED_HOSTS_ENV}.`);
-  }
-
-  const addresses = await withDeadline(resolver(hostname), deadline, "Webhook hostname resolution timed out.");
-  if (addresses.length === 0) throw new Error("Webhook hostname did not resolve.");
-  const validated: ResolvedWebhookAddress[] = addresses.map(({ address }) => {
-    const family = isIP(address);
-    if ((family !== 4 && family !== 6) || !isPublicWebhookAddress(address)) {
-      throw new Error("Webhook hostname resolved to a non-public address.");
-    }
-    return { address, family: family as 4 | 6 };
-  });
-  return { url, addresses: validated };
-}
-
-async function withDeadline<T>(operation: Promise<T>, deadline: number, message: string): Promise<T> {
-  const remainingMilliseconds = deadline - Date.now();
-  if (remainingMilliseconds <= 0) throw new Error(message);
-
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), remainingMilliseconds);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-function pinnedLookup(address: ResolvedWebhookAddress): LookupFunction {
-  return ((_hostname, options, callback) => {
-    if (typeof options === "object" && options.all) {
-      callback(null, [address]);
-      return;
-    }
-    callback(null, address.address, address.family);
-  }) as LookupFunction;
-}
-
-function sendWebhookToAddress(
-  url: URL,
-  body: string,
-  address: ResolvedWebhookAddress,
-  timeoutMilliseconds: number
-): Promise<WebhookResult> {
-  return new Promise((resolve, reject) => {
-    const request = httpsRequest(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body)
-        },
-        agent: false,
-        lookup: pinnedLookup(address),
-        signal: AbortSignal.timeout(timeoutMilliseconds)
-      },
-      (response) => {
-        response.once("error", reject);
-        response.resume();
-        response.once("end", () =>
-          resolve({
-            ok: response.statusCode !== undefined && response.statusCode >= 200 && response.statusCode < 300,
-            status: response.statusCode ?? 0
-          })
-        );
-      }
-    );
-    request.once("error", reject);
-    request.end(body);
-  });
-}
-
-async function defaultWebhookSender(
-  url: URL,
-  payload: MaterialActionPlan["webhookPayload"],
-  addresses: ResolvedWebhookAddress[],
-  deadline: number
-): Promise<WebhookResult> {
-  const body = JSON.stringify(payload);
-  let lastError: unknown;
-
-  for (const [index, address] of addresses.entries()) {
-    const remainingMilliseconds = deadline - Date.now();
-    if (remainingMilliseconds <= 0) break;
-    const remainingAddresses = addresses.length - index;
-    const attemptMilliseconds = Math.max(1, Math.floor(remainingMilliseconds / remainingAddresses));
-    try {
-      return await sendWebhookToAddress(url, body, address, attemptMilliseconds);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error("Webhook delivery exhausted all validated addresses.");
-}
-
 export async function deliverMaterialAction(
   manifest: BootstrapManifest,
   input: unknown,
@@ -673,8 +464,6 @@ export async function deliverMaterialAction(
   const plan = planMaterialAction(manifest, input);
   const githubTarget = parseGitHubTarget(plan.governingTarget, manifest);
   const githubClient = options.githubClient ?? new GitHubClient();
-  const environment = options.environment ?? process.env;
-  const webhookResolver = options.webhookResolver ?? defaultWebhookResolver;
   const destinations: MaterialActionPlan["notification"]["destinations"] = [];
   const hardStop = await verifiedHardStopResult(action, manifest, githubTarget, githubClient);
   const commentBody = materialActionCommentBody(action, buildPublicPayload(action), hardStop, plan.approvalDigest);
@@ -706,46 +495,13 @@ export async function deliverMaterialAction(
     }
   }
 
-  const webhookEnvironmentName = manifest.notifications?.webhookUrlEnv;
-  const webhookUrl = webhookEnvironmentName ? environment[webhookEnvironmentName] : undefined;
-  if (!githubTarget) {
-    destinations.push({
-      destination: "configured-webhook",
-      status: "failed",
-      detail: "Webhook delivery skipped because the governing target is invalid."
-    });
-  } else if (!webhookEnvironmentName || !webhookUrl) {
-    destinations.push({
-      destination: "configured-webhook",
-      status: "failed",
-      detail: webhookEnvironmentName
-        ? `Environment variable ${webhookEnvironmentName} is not set.`
-        : "No webhook environment-variable reference is configured."
-    });
-  } else {
-    try {
-      const deadline = Date.now() + 10_000;
-      const destination = await validateWebhookDestination(webhookUrl, environment, webhookResolver, deadline);
-      const response = options.webhookSender
-        ? await withDeadline(
-            options.webhookSender(webhookUrl, plan.webhookPayload),
-            deadline,
-            "Webhook delivery timed out."
-          )
-        : await defaultWebhookSender(destination.url, plan.webhookPayload, destination.addresses, deadline);
-      destinations.push({
-        destination: "configured-webhook",
-        status: response.ok ? "delivered" : "failed",
-        detail: response.ok ? `Webhook returned HTTP ${response.status}.` : `Webhook rejected delivery with HTTP ${response.status}.`
-      });
-    } catch {
-      destinations.push({
-        destination: "configured-webhook",
-        status: "failed",
-        detail: "Webhook delivery failed."
-      });
-    }
-  }
+  destinations.push({
+    destination: "configured-webhook",
+    status: "failed",
+    detail: githubTarget
+      ? "Webhook delivery is disabled until the secure transport follow-up is merged."
+      : "Webhook delivery skipped because the governing target is invalid."
+  });
 
   const delivered = destinations.every((destination) => destination.status === "delivered");
   const notification = notificationResultSchema.parse({

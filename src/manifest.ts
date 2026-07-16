@@ -196,6 +196,18 @@ const policySchema = z.object({
   })
 });
 
+const publisherSchema = z.object({
+  key: z.string().min(1).optional(),
+  spendingApprovalThreshold: z
+    .object({
+      amount: z.number().finite().nonnegative(),
+      currency: z
+        .string()
+        .refine((value) => Intl.supportedValuesOf("currency").includes(value), "Use a supported ISO 4217 currency code.")
+    })
+    .optional()
+});
+
 const exceptionSchema = z.object({
   id: z.string().min(1),
   policy: z.string().min(1),
@@ -289,6 +301,7 @@ const manifestSchema = z.object({
     owner: z.string().min(1),
     defaultBranch: z.string().min(1).optional()
   }),
+  publisher: publisherSchema.optional(),
   repo: z
     .object({
       class: z
@@ -418,7 +431,7 @@ const manifestSchema = z.object({
 }).passthrough();
 
 const KNOWN_MANIFEST_SETTINGS = new Set([
-  "version", "project", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
+  "version", "project", "publisher", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
 ]);
 
 function slugify(value: string): string {
@@ -757,6 +770,12 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       owner: parsed.project.owner,
       defaultBranch
     },
+    publisher: {
+      key: parsed.publisher?.key ?? parsed.project.owner,
+      ...(parsed.publisher?.spendingApprovalThreshold
+        ? { spendingApprovalThreshold: { ...parsed.publisher.spendingApprovalThreshold } }
+        : {})
+    },
     repo: normalizeRepo(parsed.repo),
     archetype: {
       kind: parsed.archetype.kind,
@@ -924,6 +943,7 @@ export async function loadManifest(manifestPath: string): Promise<BootstrapManif
 
 interface ManifestOverrides {
   project?: Partial<BootstrapManifest["project"]>;
+  publisher?: Partial<BootstrapManifest["publisher"]>;
   repo?: Partial<BootstrapManifest["repo"]>;
   archetype?: Partial<BootstrapManifest["archetype"]>;
   github?: Partial<BootstrapManifest["github"]>;
@@ -946,6 +966,7 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
       owner: overrides?.project?.owner ?? "your-org",
       defaultBranch: overrides?.project?.defaultBranch ?? "main"
     },
+    publisher: overrides?.publisher,
     repo: overrides?.repo,
     archetype: {
       kind: overrides?.archetype?.kind ?? "node-ts-service",
@@ -964,7 +985,11 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
 }
 
 function serializableManifest(manifest: BootstrapManifest): BootstrapManifest | Record<string, unknown> {
-  const { unknownSettings: _unknownSettings, ...serializable } = manifest;
+  const { unknownSettings: _unknownSettings, publisher, ...withoutInternalSettings } = manifest;
+  const serializable =
+    publisher.key === manifest.project.owner && publisher.spendingApprovalThreshold === undefined
+      ? withoutInternalSettings
+      : { ...withoutInternalSettings, publisher };
   if (manifest.version !== 2 || !manifest.capabilities?.release) {
     return serializable;
   }

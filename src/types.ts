@@ -55,7 +55,7 @@ export interface RepoConfig {
   docs?: {
     readme: boolean;
     contributing: boolean;
-    security: boolean;
+    security?: boolean;
   };
   templates?: {
     pullRequest: "standard" | "none";

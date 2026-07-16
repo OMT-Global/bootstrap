@@ -2898,7 +2898,19 @@ function repoDocEnabled(
   key: "readme" | "contributing" | "security",
   fallback: boolean
 ): boolean {
-  return manifest.repo.docs?.[key] ?? fallback;
+  if (manifest.repo.docs?.[key] !== undefined) {
+    return manifest.repo.docs[key];
+  }
+
+  // Public repositories need a discoverable vulnerability-reporting route even
+  // when the manifest predates the v2 docs block. The generated policy uses
+  // GitHub's private advisory flow and does not add a contact address. An
+  // explicit `repo.docs.security: false` remains the migration opt-out.
+  if (key === "security") {
+    return manifest.project.visibility === "public";
+  }
+
+  return fallback;
 }
 
 function envExampleEnabled(manifest: BootstrapManifest): boolean {

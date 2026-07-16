@@ -190,6 +190,32 @@ describe("renderManagedFiles", () => {
   });
 
 
+  it("projects SECURITY.md for public repositories unless explicitly disabled", () => {
+    const publicManifest = normalizeManifest({
+      project: { name: "public-policy", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(renderManagedFiles(publicManifest).some((file) => file.path === "SECURITY.md")).toBe(true);
+
+    const optedOutManifest = normalizeManifest({
+      project: { name: "public-policy", owner: "acme", visibility: "public" },
+      repo: { docs: { security: false } },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(renderManagedFiles(optedOutManifest).some((file) => file.path === "SECURITY.md")).toBe(false);
+  });
+
+  it("projects SECURITY.md when public repository docs omit security", () => {
+    const manifest = normalizeManifest({
+      project: { name: "partial-docs-policy", owner: "acme", visibility: "public" },
+      repo: { docs: { readme: true } },
+      archetype: { kind: "generic-empty" }
+    });
+
+    expect(manifest.repo.docs).toEqual({ readme: true, contributing: true });
+    expect(renderManagedFiles(manifest).some((file) => file.path === "SECURITY.md")).toBe(true);
+  });
+
   it("renders version 2 docs, templates, environment, and workflow switches", () => {
     const manifest = normalizeManifest({
       version: 2,

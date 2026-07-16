@@ -37,6 +37,10 @@ export interface PublisherConfig {
   spendingApprovalThreshold?: SpendingApprovalThreshold;
 }
 
+export interface NotificationConfig {
+  webhookUrlEnv: string;
+}
+
 export interface CodeownerRule {
   pattern: string;
   owners: string[];
@@ -186,6 +190,7 @@ export interface BootstrapManifest {
     defaultBranch: string;
   };
   publisher: PublisherConfig;
+  notifications?: NotificationConfig;
   repo: RepoConfig;
   archetype: {
     kind: ArchetypeKind;

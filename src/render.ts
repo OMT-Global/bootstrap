@@ -51,20 +51,30 @@ interface OwnershipSidecar {
   managedFiles?: Record<string, { sha256?: unknown }>;
 }
 
-async function loadOwnershipHashes(targetDir: string): Promise<Record<string, string>> {
+interface OwnershipHashes {
+  hashes: Record<string, string>;
+  sidecarPresent: boolean;
+}
+
+async function loadOwnershipHashes(targetDir: string): Promise<OwnershipHashes> {
   const raw = await readTextIfExists(path.join(targetDir, ".bootstrap/managed-files.json"));
-  if (!raw) return {};
+  if (!raw) return { hashes: {}, sidecarPresent: false };
 
   try {
     const sidecar = JSON.parse(raw) as OwnershipSidecar;
-    if (sidecar.schemaVersion !== 1 || sidecar.owner !== "bootstrap" || !sidecar.managedFiles) return {};
-    return Object.fromEntries(
-      Object.entries(sidecar.managedFiles)
-        .filter(([, entry]) => isManagedContentHash(typeof entry?.sha256 === "string" ? entry.sha256 : undefined))
-        .map(([filePath, entry]) => [filePath, entry.sha256 as string])
-    );
+    if (sidecar.schemaVersion !== 1 || sidecar.owner !== "bootstrap" || !sidecar.managedFiles) {
+      return { hashes: {}, sidecarPresent: false };
+    }
+    return {
+      hashes: Object.fromEntries(
+        Object.entries(sidecar.managedFiles)
+          .filter(([, entry]) => isManagedContentHash(typeof entry?.sha256 === "string" ? entry.sha256 : undefined))
+          .map(([filePath, entry]) => [filePath, entry.sha256 as string])
+      ),
+      sidecarPresent: true
+    };
   } catch {
-    return {};
+    return { hashes: {}, sidecarPresent: false };
   }
 }
 
@@ -161,8 +171,16 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
 
   for (const file of files) {
     const existingContents = await readTextIfExists(path.join(targetDir, file.path));
-    const managedHash = existingState?.managedFiles[file.path] ?? ownershipHashes[file.path];
+    const managedHash = existingState?.managedFiles[file.path] ?? ownershipHashes.hashes[file.path];
+    const missingSidecarHash =
+      !existingState &&
+      ownershipHashes.sidecarPresent &&
+      file.path !== ".bootstrap/managed-files.json" &&
+      existingContents !== undefined &&
+      managedHash === undefined &&
+      existingContents !== file.contents;
     if (
+      missingSidecarHash ||
       existingContents !== undefined &&
       isManagedContentHash(managedHash) &&
       sha256(existingContents) !== managedHash &&

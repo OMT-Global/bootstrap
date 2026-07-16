@@ -88,6 +88,24 @@ describe("repo smoke", () => {
     await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
   });
 
+  it("blocks direct edits when the ownership sidecar is missing a rendered managed file", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({
+      project: { name: "sidecar-missing-owned-edit", owner: "acme" },
+      archetype: { kind: "generic-empty" }
+    });
+
+    await applyRepo(manifest, targetDir);
+    await rm(path.join(targetDir, ".bootstrap/bootstrap-state.json"));
+    const ownershipPath = path.join(targetDir, OWNERSHIP_SIDECAR_PATH);
+    const ownership = JSON.parse(await readFile(ownershipPath, "utf8"));
+    delete ownership.managedFiles["AGENTS.md"];
+    await writeFile(ownershipPath, `${JSON.stringify(ownership, null, 2)}\n`, "utf8");
+    await writeFile(path.join(targetDir, "AGENTS.md"), "product-owned direct edit\n", "utf8");
+
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
+  });
+
   it("can adopt an existing repo by managing only selected bootstrap files", async () => {
     const targetDir = await makeTempDir();
     await writeFile(path.join(targetDir, "README.md"), "Existing README\n", "utf8");

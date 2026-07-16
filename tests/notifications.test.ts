@@ -8,22 +8,11 @@ import {
   exceptionNotificationReportSchema,
   materialActionPlanSchema,
   planExceptionNotifications,
-  planMaterialAction,
-  type WebhookResolver,
-  type WebhookSender
+  planMaterialAction
 } from "../src/notifications.js";
 import type { CommandRunner } from "../src/lib/process.js";
 
 const githubPat = ["github", "pat"].join("_") + "_abcdefghijklmnopqrstuvwxyz123456";
-const publicWebhookResolver: WebhookResolver = async () => [{ address: "8.8.8.8", family: 4 }];
-
-function webhookEnvironment(url = "https://notifications.example.test/hooks/material"): NodeJS.ProcessEnv {
-  const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
-  return {
-    BOOTSTRAP_NOTIFICATION_WEBHOOK_URL: url,
-    BOOTSTRAP_NOTIFICATION_WEBHOOK_ALLOWED_HOSTS: hostname
-  };
-}
 
 function manifest(withNotifications = true) {
   return normalizeManifest({
@@ -76,7 +65,7 @@ describe("material-action notifications", () => {
     expect(report.exitCode).toBe(1);
   });
 
-  it("delivers to GitHub and the configured webhook before allowing work to continue", async () => {
+  it("delivers to GitHub but fails closed while secure webhook transport is deferred", async () => {
     const approvalEvidence = "https://github.com/ACME/Notifications/issues/55#issuecomment-1";
     const actionInput = action({
       action: "license-change",
@@ -98,26 +87,18 @@ describe("material-action notifications", () => {
       stderr: "",
       exitCode: 0
     }));
-    const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
-    const report = await deliverMaterialAction(
-      manifest(),
-      actionInput,
-      {
-        githubClient: new GitHubClient({ runner }),
-        environment: webhookEnvironment(),
-        webhookSender,
-        webhookResolver: publicWebhookResolver
-      }
-    );
+    const report = await deliverMaterialAction(manifest(), actionInput, {
+      githubClient: new GitHubClient({ runner })
+    });
 
     expect(planned.hardStop.status).toBe("verification-required");
     expect(planned.approvalDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(planned.continueAfterNotification).toBe(false);
     expect(planned.exitCode).toBe(1);
-    expect(report.notification.status).toBe("delivered");
+    expect(report.notification.status).toBe("blocking");
     expect(report.hardStop.status).toBe("approved");
-    expect(report.continueAfterNotification).toBe(true);
-    expect(report.exitCode).toBe(0);
+    expect(report.continueAfterNotification).toBe(false);
+    expect(report.exitCode).toBe(1);
     expect(report.commentBody).toContain("- Approval evidence: ");
     expect(report.commentBody).toContain("(verified)");
     expect(report.commentBody).toContain("- Decision: continue after required notifications are delivered");
@@ -126,9 +107,12 @@ describe("material-action notifications", () => {
       expect.arrayContaining(["/repos/acme/notifications/issues/55/comments"]),
       expect.objectContaining({ input: expect.stringContaining("PRS-NOTIFY-001") })
     );
-    expect(webhookSender).toHaveBeenCalledWith(
-      "https://notifications.example.test/hooks/material",
-      expect.objectContaining({ ruleId: "PRS-NOTIFY-001", actionId: "action-55", hardStopCategory: "license-change" })
+    expect(report.notification.destinations).toContainEqual(
+      expect.objectContaining({
+        destination: "configured-webhook",
+        status: "failed",
+        detail: expect.stringContaining("secure transport follow-up")
+      })
     );
   });
 
@@ -150,18 +134,11 @@ describe("material-action notifications", () => {
       stderr: "",
       exitCode: 0
     });
-    const report = await deliverMaterialAction(
-      manifest(),
-      actionInput,
-      {
-        githubClient: new GitHubClient({ runner }),
-        environment: webhookEnvironment(),
-        webhookSender: async () => ({ ok: true, status: 204 }),
-        webhookResolver: publicWebhookResolver
-      }
-    );
+    const report = await deliverMaterialAction(manifest(), actionInput, {
+      githubClient: new GitHubClient({ runner })
+    });
 
-    expect(report.notification.status).toBe("delivered");
+    expect(report.notification.status).toBe("blocking");
     expect(report.hardStop).toMatchObject({ status: "blocking", category: "license-change" });
     expect(report.continueAfterNotification).toBe(false);
     expect(report.exitCode).toBe(1);
@@ -195,10 +172,7 @@ describe("material-action notifications", () => {
     });
 
     const report = await deliverMaterialAction(manifest(), changedInput, {
-      githubClient: new GitHubClient({ runner }),
-      environment: webhookEnvironment(),
-      webhookSender: async () => ({ ok: true, status: 204 }),
-      webhookResolver: publicWebhookResolver
+      githubClient: new GitHubClient({ runner })
     });
 
     expect(planMaterialAction(manifest(), changedInput).approvalDigest).not.toBe(approvedPlan.approvalDigest);
@@ -240,12 +214,9 @@ describe("material-action notifications", () => {
     expect(report.commentBody).toContain("- Decision: continue after required notifications are delivered");
   });
 
-  it("does not send invalid governing targets to the configured webhook", async () => {
-    const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
+  it("does not attempt webhook delivery for invalid governing targets", async () => {
     const report = await deliverMaterialAction(manifest(), action({ governingTarget: "not-a-github-target" }), {
-      githubClient: new GitHubClient({ runner: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }) }),
-      environment: webhookEnvironment(),
-      webhookSender
+      githubClient: new GitHubClient({ runner: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }) })
     });
 
     expect(report.governingTarget).toBe("[INVALID:GOVERNING-TARGET]");
@@ -253,7 +224,6 @@ describe("material-action notifications", () => {
     expect(report.notification.destinations).toContainEqual(
       expect.objectContaining({ destination: "configured-webhook", status: "failed", detail: expect.stringContaining("skipped") })
     );
-    expect(webhookSender).not.toHaveBeenCalled();
     expect(JSON.stringify(report)).not.toContain("not-a-github-target");
     for (const governingTarget of ["acme/repo?x#55", "#9007199254740993"]) {
       const planned = planMaterialAction(manifest(), action({ governingTarget }));
@@ -264,128 +234,20 @@ describe("material-action notifications", () => {
     }
   });
 
-  it("rejects allowlisted literal loopback, link-local, and private webhook addresses", async () => {
+  it("fails closed when the configured mechanism is absent or transport is deferred", async () => {
     const runner: CommandRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
-    for (const url of [
-      "https://127.0.0.1/hooks/material",
-      "https://169.254.169.254/hooks/material",
-      "https://10.0.0.7/hooks/material",
-      "https://[::1]/hooks/material",
-      "https://[::ffff:127.0.0.1]/hooks/material",
-      "https://[fe80::1]/hooks/material"
-    ]) {
-      const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
-      const report = await deliverMaterialAction(manifest(), action(), {
-        githubClient: new GitHubClient({ runner }),
-        environment: webhookEnvironment(url),
-        webhookSender
-      });
-
-      expect(report.notification).toMatchObject({ status: "blocking" });
-      expect(report.notification.destinations).toContainEqual(
-        expect.objectContaining({ destination: "configured-webhook", status: "failed" })
-      );
-      expect(webhookSender).not.toHaveBeenCalled();
-      expect(JSON.stringify(report)).not.toContain(new URL(url).hostname);
-    }
-  });
-
-  it("rejects an allowlisted hostname when any DNS answer is private", async () => {
-    const runner: CommandRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
-    const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
-    const webhookResolver = vi.fn<WebhookResolver>(async () => [
-      { address: "8.8.8.8", family: 4 },
-      { address: "10.0.0.7", family: 4 }
-    ]);
-    const report = await deliverMaterialAction(manifest(), action(), {
-      githubClient: new GitHubClient({ runner }),
-      environment: webhookEnvironment("https://internal.example.test/hooks/material"),
-      webhookSender,
-      webhookResolver
-    });
-
-    expect(webhookResolver).toHaveBeenCalledWith("internal.example.test");
-    expect(report.notification).toMatchObject({ status: "blocking" });
-    expect(webhookSender).not.toHaveBeenCalled();
-    expect(JSON.stringify(report)).not.toContain("internal.example.test");
-    expect(JSON.stringify(report)).not.toContain("10.0.0.7");
-  });
-
-  it("rejects allowlisted hostnames that resolve to reserved IPv6 documentation ranges", async () => {
-    const runner: CommandRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
-    for (const address of ["2001:db8::1", "3fff::1"]) {
-      const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
-      const report = await deliverMaterialAction(manifest(), action(), {
-        githubClient: new GitHubClient({ runner }),
-        environment: webhookEnvironment("https://reserved.example.test/hooks/material"),
-        webhookSender,
-        webhookResolver: async () => [{ address, family: 6 }]
-      });
-
-      expect(report.notification).toMatchObject({ status: "blocking" });
-      expect(webhookSender).not.toHaveBeenCalled();
-      expect(JSON.stringify(report)).not.toContain(address);
-    }
-  });
-
-  it("rejects a public webhook hostname that is absent from the executor allowlist", async () => {
-    const runner: CommandRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
-    const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
-    const webhookResolver = vi.fn(publicWebhookResolver);
-    const report = await deliverMaterialAction(manifest(), action(), {
-      githubClient: new GitHubClient({ runner }),
-      environment: {
-        BOOTSTRAP_NOTIFICATION_WEBHOOK_URL: "https://notifications.example.test/hooks/material",
-        BOOTSTRAP_NOTIFICATION_WEBHOOK_ALLOWED_HOSTS: "approved.example.test"
-      },
-      webhookSender,
-      webhookResolver
-    });
-
-    expect(report.notification).toMatchObject({ status: "blocking" });
-    expect(webhookResolver).not.toHaveBeenCalled();
-    expect(webhookSender).not.toHaveBeenCalled();
-  });
-
-  it("fails closed when allowlisted-host DNS resolution exceeds the delivery deadline", async () => {
-    vi.useFakeTimers();
-    const runner: CommandRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
-    const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
-    const delivery = deliverMaterialAction(manifest(), action(), {
-      githubClient: new GitHubClient({ runner }),
-      environment: webhookEnvironment(),
-      webhookSender,
-      webhookResolver: async () => new Promise<never>(() => undefined)
-    });
-
-    try {
-      await vi.advanceTimersByTimeAsync(10_000);
-      const report = await delivery;
-      expect(report.notification).toMatchObject({ status: "blocking" });
-      expect(webhookSender).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("fails closed when the configured mechanism is absent or rejects delivery", async () => {
-    const runner: CommandRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
-    const webhookSender: WebhookSender = async () => ({ ok: false, status: 503 });
     const missingConfiguration = planMaterialAction(manifest(false), action());
-    const rejected = await deliverMaterialAction(manifest(), action(), {
-      githubClient: new GitHubClient({ runner }),
-      environment: webhookEnvironment(),
-      webhookSender,
-      webhookResolver: publicWebhookResolver
+    const deferred = await deliverMaterialAction(manifest(), action(), {
+      githubClient: new GitHubClient({ runner })
     });
 
     expect(missingConfiguration.notification.status).toBe("blocking");
     expect(missingConfiguration.continueAfterNotification).toBe(false);
     expect(missingConfiguration.exitCode).toBe(1);
-    expect(rejected.notification).toMatchObject({ status: "blocking", ruleId: "PRS-NOTIFY-001" });
-    expect(rejected.continueAfterNotification).toBe(false);
-    expect(rejected.exitCode).toBe(1);
-    expect(JSON.stringify(rejected)).not.toContain("notifications.example.test");
+    expect(deferred.notification).toMatchObject({ status: "blocking", ruleId: "PRS-NOTIFY-001" });
+    expect(deferred.continueAfterNotification).toBe(false);
+    expect(deferred.exitCode).toBe(1);
+    expect(JSON.stringify(deferred)).not.toContain("notifications.example.test");
   });
 
   it("serializes only the webhook environment-variable reference", () => {
@@ -414,14 +276,10 @@ describe("material-action notifications", () => {
     });
     const now = new Date("2026-07-16T12:00:00.000Z");
     const runner = vi.fn<CommandRunner>(async () => ({ stdout: "{}", stderr: "", exitCode: 0 }));
-    const webhookSender = vi.fn<WebhookSender>(async () => ({ ok: true, status: 204 }));
     const planned = planExceptionNotifications(expiringManifest, now);
     const delivered = await deliverExceptionNotifications(expiringManifest, {
       now,
-      githubClient: new GitHubClient({ runner }),
-      environment: webhookEnvironment(),
-      webhookSender,
-      webhookResolver: publicWebhookResolver
+      githubClient: new GitHubClient({ runner })
     });
 
     expect(exceptionNotificationReportSchema.parse(planned)).toEqual(planned);
@@ -432,8 +290,8 @@ describe("material-action notifications", () => {
       governingTarget: "acme/notifications#55",
       notification: { status: "ready" }
     });
-    expect(delivered).toMatchObject({ mode: "deliver", blockingExceptions: false, exitCode: 0 });
-    expect(delivered.notifications[0]?.notification.status).toBe("delivered");
+    expect(delivered).toMatchObject({ mode: "deliver", blockingExceptions: false, exitCode: 1 });
+    expect(delivered.notifications[0]?.notification.status).toBe("blocking");
   });
 
   it("keeps blocking exception validation fail-closed when no expiry notification is due", () => {

@@ -103,7 +103,28 @@ describe("repo smoke", () => {
     await writeFile(ownershipPath, `${JSON.stringify(ownership, null, 2)}\n`, "utf8");
     await writeFile(path.join(targetDir, "AGENTS.md"), "product-owned direct edit\n", "utf8");
 
-    await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("ownership sidecar is invalid or incomplete");
+  });
+
+  it("fails closed for invalid ownership-sidecar schema", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({ project: { name: "invalid-sidecar-schema", owner: "acme" }, archetype: { kind: "generic-empty" } });
+    await applyRepo(manifest, targetDir);
+    await rm(path.join(targetDir, ".bootstrap/bootstrap-state.json"));
+    const ownershipPath = path.join(targetDir, OWNERSHIP_SIDECAR_PATH);
+    const ownership = JSON.parse(await readFile(ownershipPath, "utf8"));
+    ownership.schemaVersion = 2;
+    await writeFile(ownershipPath, JSON.stringify(ownership), "utf8");
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("ownership sidecar is invalid or incomplete");
+  });
+
+  it("fails closed for malformed ownership-sidecar JSON", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({ project: { name: "malformed-sidecar", owner: "acme" }, archetype: { kind: "generic-empty" } });
+    await applyRepo(manifest, targetDir);
+    await rm(path.join(targetDir, ".bootstrap/bootstrap-state.json"));
+    await writeFile(path.join(targetDir, OWNERSHIP_SIDECAR_PATH), "{invalid", "utf8");
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow("ownership sidecar is invalid or incomplete");
   });
 
   it("can adopt an existing repo by managing only selected bootstrap files", async () => {

@@ -27,6 +27,20 @@ export interface PolicyException {
   adr?: string;
 }
 
+export interface SpendingApprovalThreshold {
+  amount: number;
+  currency: string;
+}
+
+export interface PublisherConfig {
+  key: string;
+  spendingApprovalThreshold?: SpendingApprovalThreshold;
+}
+
+export interface NotificationConfig {
+  webhookUrlEnv: string;
+}
+
 export interface CodeownerRule {
   pattern: string;
   owners: string[];
@@ -175,6 +189,8 @@ export interface BootstrapManifest {
     owner: string;
     defaultBranch: string;
   };
+  publisher: PublisherConfig;
+  notifications?: NotificationConfig;
   repo: RepoConfig;
   archetype: {
     kind: ArchetypeKind;

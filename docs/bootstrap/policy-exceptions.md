@@ -24,15 +24,26 @@ exceptions:
 ## Material-action notifications and hard stops
 
 Configure the second required notification destination by naming the
-environment variable that will contain its webhook URL. Store only the variable
+environment variable that contains its webhook URL. Store only the variable
 name in the manifest; the URL and any secret-bearing routing token remain in
-the execution environment. Webhook transmission remains disabled and fails
-closed until the secure transport follow-up is merged.
+the execution environment. The executor must also set the fixed
+`BOOTSTRAP_NOTIFICATION_WEBHOOK_ALLOWED_HOSTS` variable to a comma-separated
+allowlist of exact webhook hostnames. The manifest cannot select or replace
+this allowlist.
 
 ```yaml
 notifications:
   webhookUrlEnv: BOOTSTRAP_NOTIFICATION_WEBHOOK_URL
 ```
+
+```sh
+export BOOTSTRAP_NOTIFICATION_WEBHOOK_ALLOWED_HOSTS=hooks.example.com
+```
+
+Delivery accepts only HTTPS on port 443, resolves every allowlisted hostname
+before connecting, and rejects loopback, link-local, private, multicast, and
+reserved addresses. The built-in transport pins a validated public address for
+the TLS connection so a second DNS lookup cannot rebind the destination.
 
 Describe one material action in a JSON file. The governing target accepts a
 local issue or pull request such as `#55`, an `owner/repo#55` shorthand, or a
@@ -64,9 +75,8 @@ bootstrap notifications exceptions --manifest project.bootstrap.yaml --deliver
 
 All notification commands support `--json` and return stable `PRS-NOTIFY-001` and
 `PRS-HARDSTOP-001` results. Delivery writes the redacted notification to the
-governing GitHub issue or pull request. The configured webhook destination
-remains blocking until the secure transport follow-up is merged, so ordinary
-material actions cannot continue on partial delivery.
+governing GitHub issue or pull request and to the configured HTTPS webhook. A
+failed destination blocks continuation.
 
 For a defined hard stop, add its category plus explicit human approval
 evidence. Planning and delivery remain blocking until both fields are present:

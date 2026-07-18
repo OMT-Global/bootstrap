@@ -196,7 +196,7 @@ function repoAgents(manifest: BootstrapManifest): string {
     - Always work on a feature branch. Hooks block commits to \`main\` and \`master\`; enable them with \`git config core.hooksPath .githooks\`.
     - Stack baseline: ${stack}.
     - CI baseline: fast PR checks stay cheap and shell-safe; extended validation runs on \`main\`, nightly, or manual dispatch.
-    - Self-hosted runner policy: shell-safe jobs must use \`[self-hosted, linux, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`; native repos must use self-hosted runners for required automation, with Docker, service-container, browser, or \`container:\` workloads routed to dedicated self-hosted capability pools.
+    - Self-hosted runner policy: private-repository trusted jobs may use their matching capability pool. Public repository security workflows use GitHub-hosted isolation; fork pull-request jobs always remain read-only and GitHub-hosted.
     - Add or update tests for every interactive, branching, or operator-facing behavior change.
     - For a task that may open or update a PR, handle autoreview access before implementation: request required network access immediately and, for a private repository, explicit authorization to send the forthcoming intended PR diff to the external reviewer. At closeout, use the \`autoreview\` skill against the actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If authorization is declined or the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.
     - PRs must use the generated pull request template. The required PR gate validates summary, issue linkage, validation evidence, and risk notes.
@@ -1534,6 +1534,78 @@ function dependabotConfig(manifest: BootstrapManifest): string {
   ].join("\n");
 }
 
+function codeQlLanguages(manifest: BootstrapManifest): string {
+  if (manifest.ci.codeqlLanguages.length === 0) {
+    throw new Error(
+      "Public repositories using the generic-empty archetype must configure ci.codeqlLanguages before Bootstrap can project a CodeQL baseline."
+    );
+  }
+  return manifest.ci.codeqlLanguages.join(",");
+}
+
+function publicSecurityWorkflow(manifest: BootstrapManifest): string {
+  return dedent`
+    name: Public Security Baseline
+
+    on:
+      pull_request:
+      push:
+        branches: [${JSON.stringify(manifest.project.defaultBranch)}]
+      schedule:
+        - cron: '23 6 * * 1'
+
+    permissions:
+      contents: read
+
+    jobs:
+      dependency-review:
+        if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+          pull-requests: read
+        steps:
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+            with:
+              fail-on-severity: high
+
+      codeql:
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        runs-on: ubuntu-latest
+        strategy:
+          fail-fast: false
+          matrix:
+            language: ${JSON.stringify(manifest.ci.codeqlLanguages)}
+        permissions:
+          contents: read
+          security-events: write
+        steps:
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+            with:
+              languages: \${{ matrix.language }}
+              build-mode: none
+          - uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+            with:
+              category: "/language:\${{ matrix.language }}"
+
+      sbom:
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        runs-on: ubuntu-latest
+        permissions:
+          contents: write
+        steps:
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+            with:
+              path: .
+              format: spdx-json
+              artifact-name: sbom.spdx.json
+              upload-release-assets: false
+  `;
+}
+
 function aiAttestationCallerWorkflow(manifest: BootstrapManifest): string {
   const config = manifest.ci.aiAttestation;
   const reusableWorkflow =
@@ -2820,6 +2892,19 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
 
 ${indentBlock(organizationGovernanceSection(manifest), 4)}
 ${indentBlock(additionalWorkflowSection(manifest), 4)}
+${manifest.project.visibility === "public"
+  ? indentBlock(
+      dedent`
+        ## Public Security Baseline
+
+        - Review \`docs/bootstrap/security.md\` before changing security workflow events, permissions, or runner labels.
+        - Confirm dependency review is the only security job reachable from fork pull requests and runs on GitHub-hosted isolation; CodeQL and SBOM jobs must remain trusted-event only and GitHub-hosted.
+        - Capture the seven required GitHub capability observations before treating remote security controls as verified.
+        - Confirm \`SECURITY.md\` private reporting and response targets match the maintained operational policy.
+      `,
+      4
+    )
+  : ""}
 
     ## Environments
 
@@ -2829,8 +2914,9 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
 
     ## Runner Policy
 
-    - Shell-safe jobs must use \`[self-hosted, linux, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`.
-    - Native repos must use self-hosted runners for required automation; Docker, service-container, browser, and \`container:\` workloads require a dedicated self-hosted runner pool with matching capability labels.
+    - Private-repository trusted shell-safe jobs use \`[self-hosted, linux, shell-only, private]\`.
+    - Public repository security workflows use GitHub-hosted isolation. Fork pull-request jobs always remain read-only and GitHub-hosted.
+    - Native repos must use self-hosted runners for trusted required automation; Docker, service-container, browser, and \`container:\` workloads require a dedicated self-hosted runner pool with matching capability labels.
     - Keep PR checks cheap. Add heavy validation to \`scripts/ci/run-extended-validation.sh\` instead of the PR lane.
     ${manifest.ci.additionalWorkflows.length > 0
       ? `- Keep repo-specific workflow lanes (${manifest.ci.additionalWorkflows
@@ -3072,13 +3158,47 @@ function securityDoc(manifest: BootstrapManifest): string {
 
     ## Reporting
 
-    Open a private security advisory or contact the repository maintainers before disclosing a vulnerability publicly.
+    Report suspected vulnerabilities through [GitHub private vulnerability reporting](https://github.com/${manifest.project.owner}/${manifest.project.name}/security/advisories/new). If that form is unavailable, open a public issue titled \`Private security contact requested\` without vulnerability details; maintainers will establish a confidential channel before accepting the report. Never include exploit details in public issues or discussions.
+
+    ## Response Targets
+
+    - Acknowledge a complete report within 3 business days.
+    - Provide a status update within 10 business days, even when investigation is ongoing.
+    - Target remediation within 7 days for critical findings, 30 days for high findings, and 90 days for moderate findings. Low-severity findings are scheduled by maintainers.
+    - Coordinate disclosure timing with the reporter after a fix or documented mitigation is available.
 
     ## Baseline
 
     - Dependabot policy: ${dependabot ? "enabled" : "disabled by manifest"}
     - Secret scanning hints: ${secretHints ? "enabled" : "disabled by manifest"}
     - Generated hooks and CI helpers must not require committed secrets or machine-local environment files.
+  `;
+}
+
+function securityModelDoc(manifest: BootstrapManifest): string {
+  return dedent`
+    # Public Repository Security Model
+
+    ## Trust Boundaries
+
+    - Pull requests, including forks, are untrusted input. The pull-request lane runs on GitHub-hosted isolation with read-only repository permissions, does not read GitHub Actions secrets, and runs only dependency review after GitHub provisioning enables the dependency graph and sets \`DEPENDENCY_REVIEW_ENABLED=true\`.
+    - Code scanning and SBOM generation run only for trusted default-branch pushes and schedules on GitHub-hosted isolation.
+    - GitHub-hosted security capabilities are evaluated from a versioned capability snapshot so unsupported plan features remain distinct from repository misconfiguration.
+
+    ## Required Controls
+
+    - Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. Dependency review stays skipped until provisioning enables its prerequisite and activation variable.
+    - \`.github/dependabot.yml\` keeps both dependency and GitHub Actions pins updateable.
+    - \`.github/workflows/security.yml\` performs dependency review, CodeQL analysis for \`${codeQlLanguages(manifest)}\`, and SPDX JSON SBOM generation using immutable action SHAs.
+    - \`SECURITY.md\` directs reporters to a private advisory and defines acknowledgement, update, remediation, and coordinated-disclosure targets.
+
+    ## Fork Safety
+
+    The security workflow uses \`pull_request\`, never \`pull_request_target\`. Its top-level permission is \`contents: read\`; the only job reachable from a pull request uses a GitHub-hosted runner, has read-only permissions, and has no secret references. Jobs needing \`security-events: write\` are explicitly excluded from pull-request events.
+
+    ## Capability Evidence
+
+    Capture authorized observations for these controls and pass them to \`bootstrap conform --github-capabilities <path>\`: \`dependency-graph\`, \`dependabot-alerts\`, \`dependabot-security-updates\`, \`secret-scanning\`, \`push-protection\`, \`code-scanning\`, and \`private-vulnerability-reporting\`. Unsupported controls remain warnings with remediation; available but disabled controls are blocking misconfigurations. Current typed exceptions may waive only their matching \`github.<control>\` scope.
   `;
 }
 
@@ -3327,6 +3447,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           }
         ]
       : []),
+    ...(manifest.project.visibility === "public"
+      ? [
+          {
+            path: "docs/bootstrap/security.md",
+            reason: "Public repository security model and response targets",
+            contents: `${securityModelDoc(manifest)}\n`
+          }
+        ]
+      : []),
     ...(claudeEnabled(manifest)
       ? [
           {
@@ -3423,6 +3552,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Extended validation workflow",
       contents: `${extendedWorkflow(manifest)}\n`
     },
+    ...(manifest.project.visibility === "public"
+      ? [
+          {
+            path: ".github/workflows/security.yml",
+            reason: "Fork-safe public repository security baseline",
+            contents: `${publicSecurityWorkflow(manifest)}\n`
+          }
+        ]
+      : []),
     ...(manifest.github.repoFeatures.hasIssues
       ? [
           {

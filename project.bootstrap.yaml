@@ -15,7 +15,7 @@ repo:
   docs:
     readme: true
     contributing: false
-    security: false
+    security: true
   templates:
     pullRequest: standard
     issueTemplates: []
@@ -171,6 +171,8 @@ ci:
     - integration
     - release-readiness
   nightlyCron: 0 7 * * *
+  codeqlLanguages:
+    - javascript-typescript
   prGovernance:
     enforceAfter: 2026-07-13T23:00:00Z
   additionalWorkflows: []

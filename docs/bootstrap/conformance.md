@@ -26,6 +26,13 @@ sensitive, and pass the versioned JSON snapshot to conformance.
   "schemaVersion": 1,
   "observations": [
     {
+      "control": "dependency-graph",
+      "status": "supported",
+      "evidence": "enabled",
+      "remediation": "Keep the dependency graph and pull-request review enabled.",
+      "dependencyReviewEnabled": true
+    },
+    {
       "control": "secret-scanning",
       "status": "supported",
       "evidence": "enabled",
@@ -40,6 +47,10 @@ sensitive, and pass the versioned JSON snapshot to conformance.
   ]
 }
 ```
+
+Set `dependencyReviewEnabled: true` only when the authorized inspection also
+verifies the repository variable `DEPENDENCY_REVIEW_ENABLED=true`. A supported
+dependency graph without that typed activation evidence remains `unverified`.
 
 ```sh
 bootstrap conform \
@@ -63,12 +74,23 @@ An exception changes a governed deviation to severity `pass` and classification
 | Required managed artifacts | `repository-files` | `repo.managed-artifacts` |
 | Action and reusable-workflow pins | `supply-chain` | `github.workflows.actions` |
 | Language-profile conflict | `language-profile` | `repo.profile` |
+| Public security projection and fork safety | `security-baseline` | `repo.security` |
 | GitHub capability observation | `github-capability` | `github.<control>` |
 
 Repository classification retains its existing target:
 `repository-classification` / `repo.class`. Exception-validation results report
 whether the exception record itself is conformant; they are not labeled as a
 waiver unless they are applied to a matching control.
+
+Public security jobs require GitHub-hosted isolation. CodeQL conformance also
+requires a per-language matrix and matching analysis categories so remote
+planning can verify a successful default-branch result for every configured
+language.
+
+The managed public security workflow rejects every `secrets` context reference,
+including references in trusted-only jobs. Its CodeQL and SBOM contracts need no
+external credential, and the strict ban prevents later event or condition drift
+from exposing a dormant secret reference to pull-request execution.
 
 Pinned action and Docker references retain a safe, single-line readable version
 or release label. This label may use non-SemVer identifiers such as `bookworm`,

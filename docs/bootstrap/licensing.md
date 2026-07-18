@@ -10,7 +10,7 @@ Bootstrap copies an approved repository-local template into `LICENSE`, substitut
 | --- | --- | --- | --- |
 | New open-source repository | `spdx` with one identifier | Projects the approved SPDX template and reports local recognition as unverified | Confirm template and verify GitHub detection after publication |
 | New private commercial repository | `proprietary` | Projects the counsel-approved proprietary template | Confirm holder, years, and template approval reference |
-| Private repository without a license decision | omitted | Does not create or infer a license | Legal/stewardship decision |
+| Private repository without a license decision | omitted | Does not create or infer a license; conformance blocks | Legal/stewardship decision |
 | Existing license matches the configured template | explicit matching mode | Adopts it without rewriting legal text | Review the manifest and template provenance |
 | Existing license would change | explicit replacement mode | Hard-stops until transition evidence is present | Legal approval plus ownership, contributor, and distribution-history evidence |
 | License policy is removed after Bootstrap managed it | omitted | Hard-stops; Bootstrap will not delete the license | Choose an explicit replacement mode and complete legal review |
@@ -61,7 +61,7 @@ Bootstrap records the managed license mode and exact content hash in the tracked
 
 Existing `LICENSE` and `THIRD_PARTY_NOTICES.md` outputs must be regular, singly linked files that physically remain in the repository. Bootstrap rejects symlinks, dangling links, hard links, devices, and other non-regular output aliases before reading or planning changes.
 
-`bootstrap plan` prints the exact before/after mode and every file mutation. Proprietary notices are always reported as non-SPDX and non-OSI; SPDX recognition remains unverified until GitHub's published community profile is checked.
+`bootstrap plan` prints the exact before/after mode and every file mutation. `bootstrap conform` reports stable license, template, encoding, notice, transition, and recognition rule IDs. Proprietary notices are always reported as non-SPDX and non-OSI; SPDX recognition remains a warning until GitHub's published community profile is checked.
 
 ## Migration fixtures
 

@@ -2,10 +2,18 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { renderManagedFiles } from "./archetypes.js";
 import { validatePolicyExceptions } from "./exceptions.js";
 import { readTextIfExists } from "./lib/fs.js";
+import { sha256 } from "./lib/hash.js";
 import { resolveLanguageProfiles } from "./language-profiles.js";
-import { planRepo } from "./render.js";
+import {
+  LICENSE_PATH,
+  THIRD_PARTY_NOTICES_PATH,
+  projectLicensePolicy,
+  readManagedLegalOutputTextIfExists
+} from "./licensing.js";
+import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, selectManagedFiles } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import type { BootstrapManifest } from "./types.js";
 
@@ -35,6 +43,22 @@ function result(
   remediation: string
 ): ConformanceResult {
   return { ruleId, severity, evidence: [...evidence].sort(), remediation };
+}
+
+function pushUnique(results: ConformanceResult[], entry: ConformanceResult): void {
+  const ownershipDriftKey = (evidence: string): string | undefined => {
+    const match = evidence.match(/managed(?: file)? (\S+) was (deleted|directly modified)/i);
+    return match ? `${match[1]!.toLowerCase()}:${match[2]!.toLowerCase()}` : undefined;
+  };
+  const entryDriftKey = entry.ruleId === "PRS-OWNERSHIP-001" ? ownershipDriftKey(entry.evidence.join("\n")) : undefined;
+  if (!results.some((existing) =>
+    existing.ruleId === entry.ruleId &&
+    existing.severity === entry.severity &&
+    (existing.evidence.join("\n") === entry.evidence.join("\n") ||
+      (entryDriftKey !== undefined && ownershipDriftKey(existing.evidence.join("\n")) === entryDriftKey))
+  )) {
+    results.push(entry);
+  }
 }
 
 function summary(results: ConformanceResult[]): ConformanceReport["summary"] {
@@ -75,6 +99,90 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
       ? result("PRS-MATURITY-001", "pass", [manifest.project.maturity], "Keep product maturity separate from release automation maturity.")
       : result("PRS-MATURITY-001", "blocking", ["project.maturity is absent"], "Declare project.maturity from experimental through archived.")
   );
+
+  if (!manifest.license) {
+    try {
+      const existingLicense = await readManagedLegalOutputTextIfExists(targetDir, LICENSE_PATH);
+      results.push(
+        result(
+          "PRS-LICENSE-001",
+          "blocking",
+          [existingLicense === undefined ? "license policy and LICENSE are absent" : "LICENSE exists without an explicit license policy"],
+          "Declare an explicit SPDX or proprietary license policy; repository visibility never selects a license."
+        )
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-LICENSE-001";
+      results.push(result(ruleId, "blocking", [detail], "Restore the legal output as a regular repository file before conforming."));
+    }
+  } else {
+    try {
+      const selectedManagedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+      const { state: effectiveState } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
+      for (const [managedPath, managedHash] of Object.entries(effectiveState?.managedFiles ?? {})) {
+        const existing = managedPath === LICENSE_PATH || managedPath === THIRD_PARTY_NOTICES_PATH
+          ? await readManagedLegalOutputTextIfExists(targetDir, managedPath)
+          : await readTextIfExists(path.join(targetDir, managedPath));
+        const detail = existing === undefined
+          ? `Managed file ${managedPath} was deleted.`
+          : sha256(existing) !== managedHash
+            ? `Managed file ${managedPath} was directly modified.`
+            : undefined;
+        if (detail) {
+          pushUnique(
+            results,
+            result("PRS-OWNERSHIP-001", "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
+          );
+        }
+      }
+      const projection = await projectLicensePolicy(
+        manifest,
+        targetDir,
+        effectiveState,
+        [
+          ...selectedManagedFiles.map((file) => file.path),
+          ...Object.keys(effectiveState?.managedFiles ?? {}),
+          ...BOOTSTRAP_STATE_OUTPUT_PATHS
+        ]
+      );
+      const expectedLicense = projection?.files.find((file) => file.path === LICENSE_PATH)?.contents;
+      const expectedNotices = projection?.files.find((file) => file.path === THIRD_PARTY_NOTICES_PATH)?.contents;
+      const [existingLicense, existingNotices] = await Promise.all([
+        readManagedLegalOutputTextIfExists(targetDir, LICENSE_PATH),
+        readManagedLegalOutputTextIfExists(targetDir, THIRD_PARTY_NOTICES_PATH)
+      ]);
+      results.push(
+        existingLicense === expectedLicense
+          ? result("PRS-LICENSE-001", "pass", [`mode=${projection?.summary.afterMode}`], "Keep the approved license template and declared mode current.")
+          : result("PRS-LICENSE-001", "blocking", [LICENSE_PATH], "Run bootstrap apply repo after satisfying any legal transition hard stop.")
+      );
+      results.push(
+        existingNotices === expectedNotices
+          ? result("PRS-LICENSE-NOTICES-001", "pass", [THIRD_PARTY_NOTICES_PATH], "Keep dependency, asset, font, media, and incorporated-source obligations current.")
+          : result("PRS-LICENSE-NOTICES-001", "blocking", [THIRD_PARTY_NOTICES_PATH], "Generate or reconcile the separate third-party notice inventory.")
+      );
+      results.push(
+        manifest.license.mode === "proprietary"
+          ? result(
+              "PRS-LICENSE-RECOGNITION-001",
+              "pass",
+              ["proprietary notice; SPDX and OSI recognition not claimed"],
+              "Do not present the proprietary notice as an open-source license."
+            )
+          : result(
+              "PRS-LICENSE-RECOGNITION-001",
+              "warning",
+              [`declared SPDX identifier ${manifest.license.identifier}; GitHub recognition not verified locally`],
+              "Verify GitHub's detected license/community profile after publication."
+            )
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-LICENSE-001";
+      pushUnique(results, result(ruleId, "blocking", [detail], "Resolve the declared license policy or required legal evidence before applying."));
+    }
+  }
 
   const profiles = await resolveLanguageProfiles(manifest, targetDir);
   if (profiles.conflicts.length === 0) {
@@ -125,7 +233,11 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     await planRepo(manifest, targetDir);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    results.push(result("PRS-OWNERSHIP-001", "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes."));
+    const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
+    pushUnique(
+      results,
+      result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
+    );
   }
 
   const sorted = results.sort((left, right) => left.ruleId.localeCompare(right.ruleId) || left.evidence.join("\n").localeCompare(right.evidence.join("\n")));

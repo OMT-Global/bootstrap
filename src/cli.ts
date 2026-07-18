@@ -4,7 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 
 import { runDoctor } from "./doctor.js";
-import { formatConformanceReport, runConformance } from "./conformance.js";
+import { formatConformanceReport, githubCapabilitySnapshotSchema, runConformance } from "./conformance.js";
 import { reconcileFleet } from "./fleet.js";
 import { planGitHub, applyGitHub } from "./github/provision.js";
 import { planHome, applyHome } from "./home/sync.js";
@@ -288,11 +288,15 @@ async function main(): Promise<void> {
     .description("Validate the deterministic Public Repository Standard conformance core.")
     .option("--manifest <path>", "Path to manifest")
     .option("--target <path>", "Target repository directory")
+    .option("--github-capabilities <path>", "Deterministic JSON snapshot of GitHub capability observations")
     .option("--json", "Emit versioned JSON")
     .action(async (options) => {
       const manifest = await loadManifest(resolveManifestPath(options.manifest));
       const targetDir = options.target ? path.resolve(options.target) : defaultTargetDir(manifest);
-      const report = await runConformance(manifest, targetDir);
+      const githubCapabilities = options.githubCapabilities
+        ? githubCapabilitySnapshotSchema.parse(await readJsonInput(options.githubCapabilities))
+        : { schemaVersion: 1 as const, observations: [] };
+      const report = await runConformance(manifest, targetDir, { githubCapabilities });
       process.stdout.write(`${options.json ? JSON.stringify(report, null, 2) : formatConformanceReport(report)}\n`);
       process.exitCode = report.exitCode;
     });

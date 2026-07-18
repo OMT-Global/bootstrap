@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { conformanceReportSchema, formatConformanceReport, runConformance } from "../src/conformance.js";
+import { conformanceReportSchema, formatConformanceReport, githubCapabilitySnapshotSchema, runConformance } from "../src/conformance.js";
 import { normalizeManifest } from "../src/manifest.js";
 import { applyRepo } from "../src/render.js";
 import { sha256 } from "../src/lib/hash.js";
@@ -24,12 +24,15 @@ describe("runConformance", () => {
     expect(conformanceReportSchema.parse(report)).toEqual(report);
     expect(report.exitCode).toBe(1);
     expect(report.results.map((entry) => entry.ruleId)).toEqual([
+      "PRS-ACTION-PIN-001",
       "PRS-CLASS-001",
       "PRS-LICENSE-001",
       "PRS-MATURITY-001",
       "PRS-OWNERSHIP-001",
-      "PRS-PROFILE-001"
+      "PRS-PROFILE-001",
+      "PRS-REQUIRED-FILE-001"
     ]);
+    expect(report.results.every((entry) => entry.classification.length > 0)).toBe(true);
   });
 
   it("passes the core for an applied canonical contract", async () => {
@@ -47,7 +50,8 @@ describe("runConformance", () => {
         thirdPartyNotices: []
       },
       repo: { class: "service" },
-      archetype: { kind: "node-ts-service" }
+      archetype: { kind: "node-ts-service" },
+      release: { reusableWorkflowRef: "a".repeat(40) }
     });
     await applyRepo(manifest, directory);
 
@@ -58,6 +62,169 @@ describe("runConformance", () => {
     expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-PROFILE-001", severity: "pass" }));
     expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-LICENSE-RECOGNITION-001", severity: "pass" }));
     expect(formatConformanceReport(report)).toContain("Conformance: 0 blocking, 0 warning");
+  });
+
+  it("distinguishes supported, unsupported, misconfigured, and waived controls", async () => {
+    const directory = await fixtureDirectory();
+    const manifest = normalizeManifest({
+      project: { name: "capabilities", owner: "acme", maturity: "stable" },
+      repo: { class: "service" },
+      archetype: { kind: "generic-empty" },
+      exceptions: [{
+        id: "temporary-pages-waiver",
+        policy: "github-pages",
+        scope: "github.pages",
+        rationale: "The current plan does not provide the required control.",
+        approvedBy: "alice",
+        issue: "#58",
+        expiresAt: "2099-01-01"
+      }, {
+        id: "temporary-branch-waiver",
+        policy: "github-capability",
+        scope: "github.branch-protection",
+        rationale: "The migration cannot apply required checks yet.",
+        approvedBy: "alice",
+        issue: "#58",
+        expiresAt: "2099-01-01"
+      }]
+    });
+
+    const report = await runConformance(manifest, directory, {
+      githubCapabilities: { schemaVersion: 1, observations: [
+        { control: "secret-scanning", status: "supported", evidence: "enabled", remediation: "Keep enabled." },
+        { control: "push-protection", status: "unsupported", evidence: "plan does not expose control", remediation: "Upgrade the plan or retain an approved waiver." },
+        { control: "branch-protection", status: "misconfigured", evidence: "required checks absent", remediation: "Apply the required branch protection." }
+      ] }
+    });
+
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-GITHUB-CAPABILITY-001", classification: "conformant", severity: "pass" }));
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-GITHUB-CAPABILITY-001", classification: "unsupported", severity: "warning" }));
+    expect(report.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-GITHUB-CAPABILITY-001",
+      classification: "waived",
+      severity: "pass",
+      evidence: expect.arrayContaining(["approved exception temporary-branch-waiver"])
+    }));
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-EXCEPTION-001").every((entry) => entry.classification === "conformant")).toBe(true);
+  });
+
+  it("applies valid waivers only to their canonical conformance targets", async () => {
+    const directory = await fixtureDirectory();
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows"), { recursive: true }));
+    await writeFile(path.join(directory, ".github/workflows/unsafe.yml"), "jobs:\n  test:\n    uses: owner/workflow/.github/workflows/test.yml@main\n");
+    const manifest = normalizeManifest({
+      project: { name: "waivers", owner: "acme", maturity: "stable" },
+      repo: { class: "service" },
+      archetype: { kind: "generic-empty" },
+      exceptions: [
+        { id: "files", policy: "repository-files", scope: "repo.managed-artifacts", rationale: "migration", approvedBy: "alice", issue: "#58", expiresAt: "2099-01-01" },
+        { id: "pins", policy: "supply-chain", scope: "github.workflows.actions", rationale: "migration", approvedBy: "alice", issue: "#58", expiresAt: "2099-01-01" }
+      ]
+    });
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-REQUIRED-FILE-001", severity: "pass", classification: "waived" }));
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-ACTION-PIN-001", severity: "pass", classification: "waived" }));
+  });
+
+  it("rejects unsafe or multiline capability evidence", () => {
+    const base = { schemaVersion: 1, observations: [{ control: "secret-scanning", status: "supported", evidence: "enabled", remediation: "Keep enabled." }] };
+    expect(githubCapabilitySnapshotSchema.safeParse(base).success).toBe(true);
+    expect(githubCapabilitySnapshotSchema.safeParse({
+      ...base,
+      observations: [{ ...base.observations[0], evidence: ["access", "token"].join("_") + String.fromCharCode(61) + "fixture" }]
+    }).success).toBe(false);
+    expect(githubCapabilitySnapshotSchema.safeParse({
+      ...base,
+      observations: [{ ...base.observations[0], evidence: "enabled\nprivate state" }]
+    }).success).toBe(false);
+    expect(githubCapabilitySnapshotSchema.safeParse({
+      ...base,
+      observations: [{ ...base.observations[0], evidence: "enabled\u0008changed" }]
+    }).success).toBe(false);
+    expect(githubCapabilitySnapshotSchema.safeParse({
+      ...base,
+      observations: [...base.observations, { ...base.observations[0], status: "misconfigured" }]
+    }).success).toBe(false);
+    expect(githubCapabilitySnapshotSchema.safeParse({
+      ...base,
+      observations: [{ ...base.observations[0], evidence: "   ", remediation: "\t" }]
+    }).success).toBe(false);
+  });
+
+  it("parses actual YAML uses fields and blocks mutable or undocumented references", async () => {
+    const directory = await fixtureDirectory();
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows/fixtures"), { recursive: true }));
+    await writeFile(path.join(directory, ".github/workflows/unsafe.yml"), [
+      "jobs:",
+      "  test:",
+      "    steps:",
+      "      - { uses: 'actions/checkout@v4' }",
+      "      - uses: > # v4",
+      "          actions/cache@v4",
+      "      - &mutable { uses: actions/upload-artifact@v4 }",
+      "      - *mutable",
+      `      - uses: actions/setup-node@${"a".repeat(40)} #   `,
+      `      - uses: actions/cache@${"d".repeat(40)} # TODO`,
+      "      - uses: actions/checkout",
+      "      - uses: docker://alpine:latest",
+      `      - uses: docker://alpine@sha256:${"b".repeat(64)}`,
+      `      - uses: docker://alpine@sha256:${"c".repeat(64)} # 3.20`,
+      `      - uses: docker://debian@sha256:${"e".repeat(64)} # bookworm`,
+      `      - uses: actions/checkout@${"f".repeat(40)} # release/2026-07`,
+      "      - name: &uses-key uses",
+      "      - ? *uses-key",
+      "        : actions/download-artifact@v4",
+      "      - uses: null",
+      "      - run: |",
+      "          uses: ignored/example@v1"
+    ].join("\n"));
+    await writeFile(path.join(directory, ".github/workflows/fixtures/not-a-workflow.yml"), "jobs:\n  ignored:\n    uses: ignored/example@v1\n");
+    const manifest = normalizeManifest({ project: { name: "pins", owner: "acme", maturity: "stable" }, repo: { class: "service" }, archetype: { kind: "generic-empty" } });
+
+    const report = await runConformance(manifest, directory);
+    const pinFailures = report.results.filter((entry) => entry.ruleId === "PRS-ACTION-PIN-001");
+
+    expect(pinFailures).toHaveLength(11);
+    expect(pinFailures.every((entry) => entry.severity === "blocking")).toBe(true);
+    expect(pinFailures.map((entry) => entry.evidence[0])).toEqual(expect.arrayContaining([
+      expect.stringContaining("actions/checkout@v4 is not pinned"),
+      expect.stringContaining("actions/cache@v4 is not pinned"),
+      expect.stringContaining("actions/upload-artifact@v4 is not pinned"),
+      expect.stringContaining("actions/setup-node@" + "a".repeat(40) + " lacks readable release metadata"),
+      expect.stringContaining("actions/cache@" + "d".repeat(40) + " lacks readable release metadata"),
+      expect.stringContaining("actions/checkout lacks an immutable action reference"),
+      expect.stringContaining("actions/download-artifact@v4 is not pinned"),
+      expect.stringContaining("uses must be a string action reference"),
+      expect.stringContaining("docker://alpine:latest is not pinned"),
+      expect.stringContaining("docker://alpine@sha256:" + "b".repeat(64) + " lacks readable release metadata")
+    ]));
+    expect(pinFailures.map((entry) => entry.evidence.join(" ")).join(" ")).not.toContain("sha256:" + "c".repeat(64));
+    expect(pinFailures.map((entry) => entry.evidence.join(" ")).join(" ")).not.toContain("sha256:" + "e".repeat(64));
+    expect(pinFailures.map((entry) => entry.evidence.join(" ")).join(" ")).not.toContain("actions/checkout@" + "f".repeat(40));
+    expect(pinFailures.map((entry) => entry.evidence.join(" ")).join(" ")).not.toContain("ignored/example");
+    expect(pinFailures.find((entry) => entry.evidence[0]?.includes("docker://alpine:latest"))?.remediation).toContain("64-character sha256 digest");
+    expect(pinFailures.find((entry) => entry.evidence[0]?.includes("uses must be a string"))?.remediation).toContain("malformed uses value");
+  });
+
+  it("rejects a symlinked workflow root without reading outside the repository", async () => {
+    const directory = await fixtureDirectory();
+    const external = await fixtureDirectory();
+    await writeFile(path.join(external, "outside.yml"), "jobs:\n  test:\n    uses: outside/action@v1\n");
+    await symlink(external, path.join(directory, ".github"));
+    const manifest = normalizeManifest({ project: { name: "root-link", owner: "acme", maturity: "stable" }, repo: { class: "service" }, archetype: { kind: "generic-empty" } });
+
+    const report = await runConformance(manifest, directory);
+    const pinFailures = report.results.filter((entry) => entry.ruleId === "PRS-ACTION-PIN-001");
+
+    expect(pinFailures).toHaveLength(1);
+    expect(pinFailures[0]).toMatchObject({
+      severity: "blocking",
+      evidence: [expect.stringContaining(".github: workflow root component")],
+      remediation: expect.stringContaining("regular directories and files")
+    });
+    expect(pinFailures[0]?.evidence.join(" ")).not.toContain("outside/action");
   });
 
   it("accepts a missing canonical class with a valid scoped exception that is nearing expiry", async () => {
@@ -87,6 +254,7 @@ describe("runConformance", () => {
         expect.objectContaining({
           ruleId: "PRS-CLASS-001",
           severity: "pass",
+          classification: "waived",
           evidence: ["approved exception legacy-class"]
         })
       );

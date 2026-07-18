@@ -2479,7 +2479,7 @@ ${yamlList(paths.ci, 18)}
           - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
-${indentBlock(setupSteps(manifest), 6)}
+${indentBlock(setupSteps(manifest), 10)}
           - name: Run fast checks
             run: bash scripts/ci/run-fast-checks.sh
 
@@ -2737,7 +2737,7 @@ ${yamlList(paths.extended, 18)}
         if: needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true'
         steps:
           - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-${indentBlock(setupSteps(manifest), 6)}
+${indentBlock(setupSteps(manifest), 10)}
           - name: Run fast checks
             run: bash scripts/ci/run-fast-checks.sh
 
@@ -2749,7 +2749,7 @@ ${indentBlock(setupSteps(manifest), 6)}
         if: needs.changes.outputs.extended == 'true' || needs.changes.outputs.app == 'true'
         steps:
           - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-${indentBlock(setupSteps(manifest), 6)}
+${indentBlock(setupSteps(manifest), 10)}
           - name: Run extended validation
             run: bash scripts/ci/run-extended-validation.sh
 

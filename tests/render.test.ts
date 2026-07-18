@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parseDocument } from "yaml";
 
 import { renderManagedFiles } from "../src/archetypes.js";
 import { normalizeManifest } from "../src/manifest.js";
@@ -33,6 +34,10 @@ describe("renderManagedFiles", () => {
       });
 
       const files = renderManagedFiles(manifest);
+      const workflowErrors = files
+        .filter((file) => /^\.github\/workflows\/.*\.ya?ml$/.test(file.path))
+        .flatMap((file) => parseDocument(file.contents).errors.map((error) => ({ path: file.path, message: error.message })));
+      expect(workflowErrors).toEqual([]);
       expect(
         files.map((file) => ({
           path: file.path,

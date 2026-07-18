@@ -70,14 +70,24 @@ export async function writeRepoState(targetDir: string, state: RepoState): Promi
 }
 
 export function createRepoState(manifest: BootstrapManifest, files: RenderedFile[]): RepoState {
+  const licenseFile = files.find((file) => file.path === "LICENSE");
   return {
     manifestHash: sha256(JSON.stringify(manifest)),
     templateVersion: TEMPLATE_VERSION,
-    managedFiles: Object.fromEntries(files.map((file) => [file.path, sha256(file.contents)]))
+    managedFiles: Object.fromEntries(files.map((file) => [file.path, sha256(file.contents)])),
+    ...(manifest.license && licenseFile
+      ? {
+          license: {
+            mode: manifest.license.mode,
+            ...(manifest.license.mode === "spdx" ? { identifier: manifest.license.identifier } : {}),
+            contentSha256: sha256(licenseFile.contents)
+          }
+        }
+      : {})
   };
 }
 
-export function createOwnershipSidecar(files: RenderedFile[]): RenderedFile {
+export function createOwnershipSidecar(manifest: BootstrapManifest, files: RenderedFile[]): RenderedFile {
   const managedFiles = Object.fromEntries(
     files
       .filter((file) => file.path !== OWNERSHIP_SIDECAR_PATH)
@@ -93,6 +103,15 @@ export function createOwnershipSidecar(files: RenderedFile[]): RenderedFile {
         owner: "bootstrap",
         templateVersion: TEMPLATE_VERSION,
         regenerationCommand: "bootstrap apply repo --manifest ./project.bootstrap.yaml",
+        ...(manifest.license && managedFiles.LICENSE
+          ? {
+              license: {
+                mode: manifest.license.mode,
+                ...(manifest.license.mode === "spdx" ? { identifier: manifest.license.identifier } : {}),
+                contentSha256: managedFiles.LICENSE.sha256
+              }
+            }
+          : {}),
         managedFiles
       },
       null,

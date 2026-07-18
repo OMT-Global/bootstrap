@@ -81,11 +81,18 @@ describe("repo smoke", () => {
       archetype: { kind: "generic-empty" }
     });
 
+    await execFileAsync("git", ["init", "-q"], { cwd: targetDir });
+    await execFileAsync("git", ["config", "user.name", "Bootstrap Tests"], { cwd: targetDir });
+    await execFileAsync("git", ["config", "user.email", "bootstrap-tests@example.invalid"], { cwd: targetDir });
     await applyRepo(manifest, targetDir);
-    await rm(path.join(targetDir, ".bootstrap/bootstrap-state.json"));
+    await execFileAsync("git", ["add", "-A"], { cwd: targetDir });
+    await execFileAsync("git", ["-c", "commit.gpgsign=false", "commit", "-qm", "test: track generated projection"], { cwd: targetDir });
+    await rm(path.join(targetDir, ".git/info/bootstrap-state.json"));
     await writeFile(path.join(targetDir, "AGENTS.md"), "product-owned direct edit\n", "utf8");
 
-    await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
+    await expect(planRepo(manifest, targetDir)).rejects.toThrow(
+      "AGENTS.md cannot be updated from mutable sidecar ownership alone"
+    );
   });
 
   it("blocks direct edits when the ownership sidecar is missing a rendered managed file", async () => {

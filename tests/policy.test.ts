@@ -15,6 +15,24 @@ describe("resolveFlowPolicy", () => {
     expect(resolved.manifest).toBe(manifest);
     expect(resolved.policy.version).toBe("1.0.0");
     expect(resolved.unknownManifestSettings).toEqual(["future.setting"]);
+    expect(resolved.license).toBeUndefined();
+  });
+
+  it("exposes the explicit license policy in the resolved contract", () => {
+    const licensed = normalizeManifest({
+      project: { name: "example", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: "a".repeat(64), approval: "counsel:P-1" },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    });
+    const resolved = resolveFlowPolicy(licensed, bundle, { ref: "refs/tags/v1.0.0", sha256: flowPolicyDigest(bundle) });
+    expect(resolved.license).toMatchObject({ mode: "proprietary", template: { approval: "counsel:P-1" } });
   });
 
   it("loads a verified manifest-declared bundle without network access", async () => {

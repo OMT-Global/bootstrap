@@ -2,7 +2,168 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_ISSUE_LABELS, normalizeManifest, stringifyManifest } from "../src/manifest.js";
 
+const templateDigest = "a".repeat(64);
+
 describe("normalizeManifest", () => {
+  it("requires explicit typed licensing and never derives it from repository visibility", () => {
+    const privateManifest = normalizeManifest({
+      project: { name: "private-product", owner: "acme", visibility: "private" },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(privateManifest.license).toBeUndefined();
+
+    const proprietary = normalizeManifest({
+      project: { name: "private-product", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2024-2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(proprietary.license).toMatchObject({ mode: "proprietary", holder: "Acme LLC", holderVerification: "legal-entity:acme-llc", years: "2024-2026" });
+
+    expect(() => normalizeManifest({
+      project: { name: "invalid-license", owner: "acme" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        years: "2026-2024",
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    } as never)).toThrow();
+  });
+
+  it("rejects blank legal evidence and nonexistent SPDX identifiers", () => {
+    const transition = {
+      approvedBy: "legal-reviewer",
+      issue: "LEGAL-42",
+      ownership: "Ownership verified",
+      contributors: "Contributor rights verified",
+      distributionHistory: "Distribution history recorded",
+      fromMode: "existing-unclassified",
+      fromContentSha256: "b".repeat(64),
+      toMode: "proprietary",
+      toContentSha256: "c".repeat(64)
+    };
+
+    for (const field of Object.keys(transition) as Array<keyof typeof transition>) {
+      expect(() => normalizeManifest({
+        project: { name: "blank-transition", owner: "acme", visibility: "private" },
+        license: {
+          mode: "proprietary",
+          holder: "Acme LLC",
+          holderVerification: "legal-entity:acme-llc",
+          years: "2026",
+          template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" },
+          thirdPartyNotices: [],
+          transition: { ...transition, [field]: "   " }
+        },
+        archetype: { kind: "generic-empty" }
+      })).toThrow();
+    }
+
+    expect(() => normalizeManifest({
+      project: { name: "invalid-spdx", owner: "acme", visibility: "public" },
+      license: {
+        mode: "spdx",
+        identifier: "Definitely-Not-A-License",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: {
+          path: "legal/license.txt",
+          sha256: templateDigest,
+          approval: "maintainer-approved",
+          spdxIdentifier: "Definitely-Not-A-License"
+        },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("Use a recognized SPDX license identifier");
+
+    expect(() => normalizeManifest({
+      project: { name: "mismatched-spdx-template", owner: "acme", visibility: "public" },
+      license: {
+        mode: "spdx",
+        identifier: "Apache-2.0",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: {
+          path: "legal/mit.txt",
+          sha256: templateDigest,
+          approval: "maintainer-approved",
+          spdxIdentifier: "MIT"
+        },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("SPDX templates must be approved for the selected license identifier");
+
+    expect(() => normalizeManifest({
+      project: { name: "injected-holder", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC\nAdditional terms",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("Use one line without control, format, or separator characters");
+
+    expect(() => normalizeManifest({
+      project: { name: "spoofed-approval", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:\u001b[2Jspoofed" },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("Use one line without control, format, or separator characters");
+
+    expect(() => normalizeManifest({
+      project: { name: "unicode-spoofed-approval", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:\u202Espoofed" },
+        thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("Use one line without control, format, or separator characters");
+
+    expect(normalizeManifest({
+      project: { name: "multiline-notice", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" },
+        thirdPartyNotices: [{
+          name: "SDK",
+          kind: "dependency",
+          license: "Apache-2.0",
+          source: "https://example.invalid/sdk",
+          notice: "Copyright contributors.\nSee bundled NOTICE."
+        }]
+      },
+      archetype: { kind: "generic-empty" }
+    }).license?.thirdPartyNotices[0]?.notice).toContain("\n");
+  });
+
   it("accepts version 2 manifests as compatibility input", () => {
     const manifest = normalizeManifest({
       version: 2,

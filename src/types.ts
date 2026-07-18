@@ -14,6 +14,55 @@ export type RepoClass =
 export type LegacyRepoClass = "application" | "tooling";
 export type ProductMaturity = "experimental" | "alpha" | "beta" | "stable" | "maintenance" | "archived";
 export type CiPolicy = "standard" | "standard-public" | "experimental" | "strict";
+export type LicenseMode = "spdx" | "proprietary";
+export type ThirdPartyComponentKind = "dependency" | "asset" | "font" | "media" | "incorporated-source";
+
+export interface LicenseTemplateReference {
+  path: string;
+  sha256: string;
+  approval: string;
+  spdxIdentifier?: string;
+}
+
+export interface ThirdPartyNotice {
+  name: string;
+  kind: ThirdPartyComponentKind;
+  license: string;
+  source: string;
+  notice?: string;
+}
+
+export interface LicenseTransitionEvidence {
+  approvedBy: string;
+  issue: string;
+  ownership: string;
+  contributors: string;
+  distributionHistory: string;
+  fromMode: string;
+  fromContentSha256: string;
+  toMode: string;
+  toContentSha256: string;
+}
+
+interface LicensePolicyBase {
+  holder: string;
+  holderVerification: string;
+  years: string;
+  template: LicenseTemplateReference;
+  thirdPartyNotices: ThirdPartyNotice[];
+  transition?: LicenseTransitionEvidence;
+}
+
+export interface SpdxLicensePolicy extends LicensePolicyBase {
+  mode: "spdx";
+  identifier: string;
+}
+
+export interface ProprietaryLicensePolicy extends LicensePolicyBase {
+  mode: "proprietary";
+}
+
+export type LicensePolicy = SpdxLicensePolicy | ProprietaryLicensePolicy;
 
 export interface PolicyException {
   id: string;
@@ -190,6 +239,7 @@ export interface BootstrapManifest {
     defaultBranch: string;
   };
   publisher: PublisherConfig;
+  license?: LicensePolicy;
   notifications?: NotificationConfig;
   repo: RepoConfig;
   archetype: {
@@ -338,6 +388,11 @@ export interface RepoState {
   manifestHash: string;
   templateVersion: string;
   managedFiles: Record<string, string>;
+  license?: {
+    mode: LicenseMode;
+    identifier?: string;
+    contentSha256: string;
+  };
 }
 
 export interface PlannedGitHubAction {

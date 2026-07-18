@@ -4,14 +4,30 @@ import { renderManagedFiles } from "./archetypes.js";
 import { sha256 } from "./lib/hash.js";
 import { readTextIfExists, removeFileIfExists, writeTextFile } from "./lib/fs.js";
 import { resolveLanguageProfiles, type LanguageProfileResolution } from "./language-profiles.js";
-import { createOwnershipSidecar, createRepoState, loadRepoState, writeRepoState } from "./state.js";
-import type { BootstrapManifest, PlannedFileChange, RenderedFile } from "./types.js";
+import { LICENSE_PATH, projectLicensePolicy, type LicensePlanSummary } from "./licensing.js";
+import {
+  createOwnershipSidecar,
+  createRepoState,
+  FALLBACK_REPO_STATE_PATH,
+  loadRepoState,
+  OWNERSHIP_SIDECAR_PATH,
+  REPO_STATE_FILENAME,
+  writeRepoState
+} from "./state.js";
+import type { BootstrapManifest, PlannedFileChange, RenderedFile, RepoState } from "./types.js";
 
 export interface RepoPlan {
   changes: PlannedFileChange[];
   files: RenderedFile[];
   languageProfiles: LanguageProfileResolution;
+  license?: LicensePlanSummary;
 }
+
+export const BOOTSTRAP_STATE_OUTPUT_PATHS = [
+  OWNERSHIP_SIDECAR_PATH,
+  FALLBACK_REPO_STATE_PATH,
+  `.git/info/${REPO_STATE_FILENAME}`
+] as const;
 
 function globToRegExp(pattern: string): RegExp {
   const normalized = pattern.replace(/\\/g, "/");
@@ -45,14 +61,35 @@ function isManagedContentHash(value: string | undefined): value is string {
   return value !== undefined && /^[a-f0-9]{64}$/i.test(value);
 }
 
+function isSafeManagedPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/");
+  return normalized.length > 0 && normalized === filePath && !path.posix.isAbsolute(normalized) &&
+    path.posix.normalize(normalized) === normalized && normalized !== ".." && !normalized.startsWith("../") &&
+    !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(normalized);
+}
+
 interface OwnershipSidecar {
   schemaVersion?: unknown;
   owner?: unknown;
   managedFiles?: Record<string, { sha256?: unknown }>;
+  license?: { mode?: unknown; identifier?: unknown; contentSha256?: unknown };
 }
 
 interface OwnershipHashes {
   hashes: Record<string, string>;
+  claimsLicense: boolean;
+}
+
+export async function loadEffectiveRepoState(
+  targetDir: string,
+  renderedFiles: RenderedFile[]
+): Promise<{ state?: RepoState; ownership: OwnershipHashes }> {
+  const existingState = await loadRepoState(targetDir);
+  const ownership = await loadOwnershipHashes(targetDir, renderedFiles);
+  if (existingState && Object.keys(existingState.managedFiles).some((filePath) => !isSafeManagedPath(filePath))) {
+    return invalidOwnershipSidecar();
+  }
+  return { ...(existingState ? { state: existingState } : {}), ownership };
 }
 
 function invalidOwnershipSidecar(): never {
@@ -61,7 +98,7 @@ function invalidOwnershipSidecar(): never {
 
 async function loadOwnershipHashes(targetDir: string, renderedFiles: RenderedFile[]): Promise<OwnershipHashes> {
   const raw = await readTextIfExists(path.join(targetDir, ".bootstrap/managed-files.json"));
-  if (raw === undefined) return { hashes: {} };
+  if (raw === undefined) return { hashes: {}, claimsLicense: false };
 
   try {
     const sidecar = JSON.parse(raw) as OwnershipSidecar;
@@ -69,14 +106,31 @@ async function loadOwnershipHashes(targetDir: string, renderedFiles: RenderedFil
       return invalidOwnershipSidecar();
     }
     const entries = Object.entries(sidecar.managedFiles);
-    if (entries.some(([, entry]) => !isManagedContentHash(typeof entry?.sha256 === "string" ? entry.sha256 : undefined))) {
+    if (entries.some(([filePath, entry]) =>
+      !isSafeManagedPath(filePath) || !isManagedContentHash(typeof entry?.sha256 === "string" ? entry.sha256 : undefined)
+    )) {
       return invalidOwnershipSidecar();
     }
     const hashes = Object.fromEntries(entries.map(([filePath, entry]) => [filePath, entry.sha256 as string]));
     if (renderedFiles.some((file) => hashes[file.path] === undefined)) {
       return invalidOwnershipSidecar();
     }
-    return { hashes };
+    if (sidecar.license !== undefined) {
+      const { mode, identifier, contentSha256 } = sidecar.license;
+      if (
+        (mode !== "spdx" && mode !== "proprietary") ||
+        !isManagedContentHash(typeof contentSha256 === "string" ? contentSha256 : undefined) ||
+        hashes[LICENSE_PATH] !== contentSha256 ||
+        (mode === "spdx" && typeof identifier !== "string") ||
+        (mode === "proprietary" && identifier !== undefined)
+      ) return invalidOwnershipSidecar();
+    }
+    return {
+      hashes,
+      // A mutable sidecar license entry is validated for internal consistency
+      // but never returned as authoritative prior legal classification.
+      claimsLicense: hashes[LICENSE_PATH] !== undefined
+    };
   } catch {
     return invalidOwnershipSidecar();
   }
@@ -125,7 +179,7 @@ function expandManagedPathDependencies(files: RenderedFile[], selectedFiles: Ren
   return files.filter((file) => selectedPaths.has(file.path));
 }
 
-function selectManagedFiles(manifest: BootstrapManifest, files: RenderedFile[]): RenderedFile[] {
+export function selectManagedFiles(manifest: BootstrapManifest, files: RenderedFile[]): RenderedFile[] {
   if (manifest.repo.managedPaths.length === 0) {
     return files;
   }
@@ -166,16 +220,60 @@ function validateManagedPathDependencies(files: RenderedFile[]): void {
 }
 
 export async function planRepo(manifest: BootstrapManifest, targetDir: string): Promise<RepoPlan> {
-  const renderedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
-  const files = [...renderedFiles, createOwnershipSidecar(renderedFiles)];
+  const selectedManagedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
+  if (
+    !manifest.license &&
+    (effectiveState?.license || effectiveState?.managedFiles[LICENSE_PATH] || ownershipHashes.claimsLicense)
+  ) {
+    throw new Error(
+      "PRS-LICENSE-TRANSITION-001: removing an existing managed license policy is forbidden; choose an explicit replacement mode with legal transition evidence."
+    );
+  }
+  const licenseProjection = await projectLicensePolicy(
+    manifest,
+    targetDir,
+    effectiveState,
+    [
+      ...selectedManagedFiles.map((file) => file.path),
+      ...Object.keys(effectiveState?.managedFiles ?? {}),
+      ...BOOTSTRAP_STATE_OUTPUT_PATHS
+    ]
+  );
+  const renderedFiles = [
+    ...selectedManagedFiles,
+    ...(licenseProjection?.files ?? [])
+  ];
+  const files = [...renderedFiles, createOwnershipSidecar(manifest, renderedFiles)];
   const languageProfiles = await resolveLanguageProfiles(manifest, targetDir);
-  const existingState = await loadRepoState(targetDir);
-  const ownershipHashes = await loadOwnershipHashes(targetDir, renderedFiles);
   const changes: PlannedFileChange[] = [];
 
   for (const file of files) {
     const existingContents = await readTextIfExists(path.join(targetDir, file.path));
-    const managedHash = existingState?.managedFiles[file.path] ?? ownershipHashes.hashes[file.path];
+    const managedHash = effectiveState?.managedFiles[file.path];
+    const sidecarClaimHash = ownershipHashes.hashes[file.path];
+    const hasSidecarOnlyClaim = managedHash === undefined && isManagedContentHash(sidecarClaimHash);
+    const hasExplicitLicenseTransition =
+      file.path === LICENSE_PATH && licenseProjection?.summary.transitionRequired === true;
+    // The caller-supplied control plane authorizes its own canonical rendering;
+    // all other sidecar-only updates need an independent migration authority.
+    const isManifestControlPlane = file.path === "project.bootstrap.yaml";
+    if (existingContents === undefined && hasSidecarOnlyClaim) {
+      throw new Error(
+        `Managed file ${file.path} was deleted, but only mutable sidecar ownership is available. Restore the file and re-establish local state before applying Bootstrap changes.`
+      );
+    }
+    if (
+      existingContents !== undefined &&
+      existingContents !== file.contents &&
+      hasSidecarOnlyClaim &&
+      !hasExplicitLicenseTransition &&
+      !isManifestControlPlane
+    ) {
+      throw new Error(
+        `Managed file ${file.path} cannot be updated from mutable sidecar ownership alone. Re-establish local state from an unchanged projection or use an explicit migration.`
+      );
+    }
     if (
       existingContents !== undefined &&
       isManagedContentHash(managedHash) &&
@@ -200,15 +298,23 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
     });
   }
 
-  if (existingState) {
-    const plannedPaths = new Set(files.map((file) => file.path));
-    for (const stalePath of Object.keys(existingState.managedFiles)) {
+  const plannedPaths = new Set(files.map((file) => file.path));
+  for (const claimedPath of Object.keys(ownershipHashes.hashes)) {
+    if (!plannedPaths.has(claimedPath) && effectiveState?.managedFiles[claimedPath] === undefined) {
+      throw new Error(
+        `Managed file ${claimedPath} cannot be removed from mutable sidecar ownership alone. Re-establish local state or use an explicit migration.`
+      );
+    }
+  }
+
+  if (effectiveState) {
+    for (const stalePath of Object.keys(effectiveState.managedFiles)) {
       if (!plannedPaths.has(stalePath)) {
         const existingContents = await readTextIfExists(path.join(targetDir, stalePath));
         if (
           existingContents !== undefined &&
-          isManagedContentHash(existingState.managedFiles[stalePath]) &&
-          sha256(existingContents) !== existingState.managedFiles[stalePath]
+          isManagedContentHash(effectiveState.managedFiles[stalePath]) &&
+          sha256(existingContents) !== effectiveState.managedFiles[stalePath]
         ) {
           throw new Error(
             `Managed file ${stalePath} was directly modified. Restore it or use an explicit migration before Bootstrap removes it.`
@@ -226,7 +332,8 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
   return {
     changes: changes.sort((left, right) => left.path.localeCompare(right.path)),
     files,
-    languageProfiles
+    languageProfiles,
+    ...(licenseProjection ? { license: licenseProjection.summary } : {})
   };
 }
 

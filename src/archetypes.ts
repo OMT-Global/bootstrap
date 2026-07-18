@@ -164,7 +164,8 @@ function baseGitignore(manifest: BootstrapManifest): string {
     "coverage/",
     ".playwright-cli/",
     "tmp/",
-    ".bootstrap/",
+    ".bootstrap/*",
+    "!.bootstrap/managed-files.json",
     ".new-project-bootstrap/"
   ];
 
@@ -2794,6 +2795,14 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
     - \`.github/PULL_REQUEST_TEMPLATE.md\` defines the standard PR shape: summary, governing issue link, validation notes, and bootstrap governance checklist.
     - To retrofit an existing bootstrapped repo, add \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` to \`repo.managedPaths\` when that repo restricts managed paths, then run \`bootstrap apply repo --manifest ./project.bootstrap.yaml\`.
     - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
+
+    ## Licensing
+
+    - Repository visibility never selects or grants a license. Declare \`license.mode\` explicitly before Bootstrap manages \`LICENSE\`.
+    - Current manifest mode: ${manifest.license ? `\`${manifest.license.mode === "spdx" ? `spdx:${manifest.license.identifier}` : "proprietary"}\` using approval \`${manifest.license.template.approval}\`` : "not declared; Bootstrap will not create, replace, or remove a license"}.
+    - Keep \`THIRD_PARTY_NOTICES.md\` separate from the first-party notice and inventory dependencies, assets, fonts, media, and incorporated source.
+    - Any existing-license replacement requires legal ownership, contributor, distribution-history, issue, and approver evidence in the manifest. Previously granted rights are not revoked.
+    - Verify GitHub license detection after publishing an SPDX license. Never describe a proprietary notice as SPDX, OSI approved, or GitHub-recognized.
 
     ## Fleet Reconciliation
 

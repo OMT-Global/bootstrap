@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { renderManagedFiles } from "../src/archetypes.js";
@@ -63,6 +64,13 @@ describe("renderManagedFiles", () => {
       expect(files.find((file) => file.path === "scripts/ci/check-pr-governance.sh")?.contents).toContain("PRS-DCO-001");
       expect(prWorkflow?.contents).toContain("validate-action-pins:");
       expect(files.find((file) => file.path === "scripts/ci/check-action-pins.sh")?.contents).toContain("SA-ACTION-PIN-001");
+      const issueHygieneWorkflow = files.find((file) => file.path === ".github/workflows/issue-hygiene.yml");
+      const issueHygieneScript = files.find((file) => file.path === "scripts/ci/report-issue-hygiene.mjs");
+      expect(issueHygieneWorkflow?.contents).toContain("name: Issue Hygiene Report");
+      expect(issueHygieneWorkflow?.contents).toContain("issues: read");
+      expect(issueHygieneWorkflow?.contents).not.toContain("issues: write");
+      expect(issueHygieneScript?.contents).toBe(readFileSync("scripts/ci/report-issue-hygiene.mjs", "utf8"));
+      expect(files.find((file) => file.path === "docs/bootstrap/issue-hygiene.md")?.contents).toContain("Automation never comments, labels, closes, reschedules");
 
       const prTemplate = files.find((file) => file.path === ".github/PULL_REQUEST_TEMPLATE.md");
       const dependabot = files.find((file) => file.path === ".github/dependabot.yml");
@@ -109,6 +117,19 @@ describe("renderManagedFiles", () => {
     const files = renderManagedFiles(manifest);
     expect(files.some((file) => file.path === ".github/dependabot.yml")).toBe(false);
     expect(manifest.ci.dependabot.securityUpdates).toBe(true);
+  });
+
+  it("does not project issue hygiene when repository issues are disabled", () => {
+    const manifest = normalizeManifest({
+      project: { name: "issue-free", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      github: { repoFeatures: { hasIssues: false } }
+    });
+
+    const files = renderManagedFiles(manifest);
+    expect(files.some((file) => file.path === ".github/workflows/issue-hygiene.yml")).toBe(false);
+    expect(files.some((file) => file.path === "scripts/ci/report-issue-hygiene.mjs")).toBe(false);
+    expect(files.some((file) => file.path === "docs/bootstrap/issue-hygiene.md")).toBe(false);
   });
 
   it("uses the primary required status check name in the generated PR workflow", () => {

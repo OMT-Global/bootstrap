@@ -152,6 +152,10 @@ const managedPathDependencies = [
   {
     path: ".github/PULL_REQUEST_TEMPLATE.md",
     requires: ["docs/bootstrap/onboarding.md"]
+  },
+  {
+    path: ".github/workflows/issue-hygiene.yml",
+    requires: ["scripts/ci/report-issue-hygiene.mjs", "docs/bootstrap/issue-hygiene.md"]
   }
 ];
 

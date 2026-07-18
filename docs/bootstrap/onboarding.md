@@ -15,6 +15,7 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Confirm `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` are present as the required contributor and PR guidance surfaces.
 - Confirm `AGENTS.md` requires the `autoreview` skill against the intended PR diff before an agent opens or updates a PR, and that the PR template records the final command and result.
 - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before CI Gate can pass.
+- Confirm `Issue Hygiene Report` runs weekly with read-only issue permission and retains its JSON evidence artifact.
 - Confirm PR Fast CI uses the fork-safe `pull_request` event with only read permissions. It must validate Conventional titles, contributed-commit DCO trailers, changed-line accounting, and material-change ADR/reviewer evidence without accessing repository secrets.
 - Confirm every third-party `uses:` entry is a 40-character commit SHA followed by readable tag metadata. The `Validate Action Pins` check fails closed on mutable references and silently ignores local or Bootstrap-owned reusable workflows.
 - Confirm `delete branch on merge` and `allow auto-merge` are enabled when the GitHub plan supports them; otherwise record the plan-limit evidence and use the fallback merge-readiness policy.
@@ -48,6 +49,12 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - `.github/PULL_REQUEST_TEMPLATE.md` defines the standard PR shape: summary, governing issue link, validation notes, and bootstrap governance checklist.
 - To retrofit an existing bootstrapped repo, add `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` to `repo.managedPaths` when that repo restricts managed paths, then run `bootstrap apply repo --manifest ./project.bootstrap.yaml`.
 - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
+
+## Issue Hygiene
+
+- Review `docs/bootstrap/issue-hygiene.md` before acting on a 30-day review or 90-day close-or-rescope proposal.
+- The scheduled workflow is report-only: it never comments, labels, closes, or reschedules issues.
+- A 90-day proposal always requires a maintainer decision. Record a structured, evidenced future action when the issue should remain open.
 
 ## Licensing
 

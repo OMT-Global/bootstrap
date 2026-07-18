@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 
 import { dedent, indentBlock, yamlList } from "./lib/text.js";
 import { stringifyManifest } from "./manifest.js";
@@ -2615,6 +2616,54 @@ ${indentBlock(setupSteps(manifest), 6)}
   `;
 }
 
+function issueHygieneWorkflow(manifest: BootstrapManifest): string {
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+
+  return dedent`
+    name: Issue Hygiene Report
+
+    on:
+      schedule:
+        - cron: '17 9 * * 1'
+      workflow_dispatch:
+
+    permissions:
+      contents: read
+      issues: read
+
+    jobs:
+      report:
+        name: Report Aging Issues
+        runs-on: ${shellRunner}
+        timeout-minutes: 10
+        steps:
+          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+            with:
+              node-version: '${manifest.ci.nodeVersion}'
+          - name: Build deterministic issue hygiene report
+            shell: bash
+            env:
+              GITHUB_TOKEN: \${{ github.token }}
+            run: |
+              node scripts/ci/report-issue-hygiene.mjs \\
+                --repo "$GITHUB_REPOSITORY" \\
+                --json-output issue-hygiene-report.json \\
+                | tee "$RUNNER_TEMP/issue-hygiene-summary.md"
+              cat "$RUNNER_TEMP/issue-hygiene-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+            with:
+              name: issue-hygiene-report
+              path: issue-hygiene-report.json
+              if-no-files-found: error
+              retention-days: 30
+  `;
+}
+
+function issueHygieneScript(): string {
+  return readFileSync(new URL("../scripts/ci/report-issue-hygiene.mjs", import.meta.url), "utf8");
+}
+
 function extendedWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
   const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
@@ -2765,6 +2814,7 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Confirm \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` are present as the required contributor and PR guidance surfaces.
     - Confirm \`AGENTS.md\` requires the \`autoreview\` skill against the intended PR diff before an agent opens or updates a PR, and that the PR template records the final command and result.
     - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before ${primaryRequiredStatusCheck(manifest)} can pass.
+    ${manifest.github.repoFeatures.hasIssues ? "- Confirm `Issue Hygiene Report` runs weekly with read-only issue permission and retains its JSON evidence artifact." : ""}
     - ${autoMergeOnboardingConfirmation()}
     - Fallback merge readiness requires passing or intentionally skipped required checks, satisfied approvals, resolved conversations, no blocking review state, and a manual maintainer merge.
 
@@ -2795,6 +2845,19 @@ ${indentBlock(additionalWorkflowSection(manifest), 4)}
     - \`.github/PULL_REQUEST_TEMPLATE.md\` defines the standard PR shape: summary, governing issue link, validation notes, and bootstrap governance checklist.
     - To retrofit an existing bootstrapped repo, add \`CONTRIBUTING.md\` and \`.github/PULL_REQUEST_TEMPLATE.md\` to \`repo.managedPaths\` when that repo restricts managed paths, then run \`bootstrap apply repo --manifest ./project.bootstrap.yaml\`.
     - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
+
+${manifest.github.repoFeatures.hasIssues
+  ? indentBlock(
+      dedent`
+        ## Issue Hygiene
+
+        - Review \`docs/bootstrap/issue-hygiene.md\` before acting on a 30-day review or 90-day close-or-rescope proposal.
+        - The scheduled workflow is report-only: it never comments, labels, closes, or reschedules issues.
+        - A 90-day proposal always requires a maintainer decision. Record a structured, evidenced future action when the issue should remain open.
+      `,
+      4
+    )
+  : ""}
 
     ## Licensing
 
@@ -2843,6 +2906,42 @@ ${manifest.ci.aiAttestation.enabled
 
     - Run \`bootstrap apply home --manifest ./project.bootstrap.yaml\` after reviewing the bundled profile content.
     - The bootstrap manages portable Codex assets only. Auth, sessions, caches, and machine-local state stay unmanaged.
+  `;
+}
+
+function issueHygieneDoc(): string {
+  return dedent`
+    # Report-First Issue Hygiene
+
+    \`.github/workflows/issue-hygiene.yml\` inventories open issues every Monday and on manual dispatch. It uses only \`contents: read\` and \`issues: read\`, writes a complete versioned JSON artifact, and appends a Markdown report capped at 900 KiB to the workflow summary.
+
+    ## Aging Rules
+
+    - Fewer than 30 inactive days: current; no report entry.
+    - At least 30 inactive days: review proposal.
+    - At least 90 inactive days without a credible next action: close-or-rescope proposal that requires a maintainer decision.
+    - Automation never comments, labels, closes, reschedules, or otherwise mutates an issue.
+
+    GitHub's \`updated_at\` timestamp is the inactivity source. Pull requests returned by the issues API are excluded.
+
+    ## Preserve A Stale Issue
+
+    Add one structured marker to the issue body. \`outcome\` or an evidence-shaped \`dependency\` is required, \`checkpoint\` must be a future ISO date, and \`evidence\` must be a canonical public GitHub issue, pull-request, or Actions-run URL without query or fragment data, or a positive numeric \`issue:\`, \`pr:\`, or \`run:\` reference.
+
+    \`\`\`html
+    <!-- prs-next-action {"outcome":"Ship resolver","dependency":"issue:54","checkpoint":"2026-08-01","evidence":"issue:10"} -->
+    \`\`\`
+
+    The report publishes only the issue number, single-line title, URL, timestamps, checkpoint, and evidence reference. It never emits the issue body or the next-action outcome.
+
+    ## Local Fixture
+
+    \`\`\`sh
+    node scripts/ci/report-issue-hygiene.mjs \\
+      --fixture /path/to/issues.json \\
+      --as-of 2026-07-18T12:00:00Z \\
+      --json-output issue-hygiene-report.json
+    \`\`\`
   `;
 }
 
@@ -3324,6 +3423,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Extended validation workflow",
       contents: `${extendedWorkflow(manifest)}\n`
     },
+    ...(manifest.github.repoFeatures.hasIssues
+      ? [
+          {
+            path: ".github/workflows/issue-hygiene.yml",
+            reason: "Read-only scheduled issue aging report",
+            contents: `${issueHygieneWorkflow(manifest)}\n`
+          }
+        ]
+      : []),
     ...(manifest.ci.dependabot.enabled && manifest.ci.dependabot.versionUpdates
       ? [
           {
@@ -3443,6 +3551,16 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       contents: `${actionPinScript()}\n`,
       executable: true
     },
+    ...(manifest.github.repoFeatures.hasIssues
+      ? [
+          {
+            path: "scripts/ci/report-issue-hygiene.mjs",
+            reason: "Deterministic report-first issue aging evaluator",
+            contents: issueHygieneScript(),
+            executable: true
+          }
+        ]
+      : []),
     ...(manifest.release.enabled
       ? [
           {
@@ -3514,6 +3632,15 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
       reason: "Operator onboarding checklist",
       contents: `${onboardingDoc(manifest)}\n`
     },
+    ...(manifest.github.repoFeatures.hasIssues
+      ? [
+          {
+            path: "docs/bootstrap/issue-hygiene.md",
+            reason: "Report-first issue aging operator guide",
+            contents: `${issueHygieneDoc()}\n`
+          }
+        ]
+      : []),
     {
       path: "docs/bootstrap/codex-cloud-environment.md",
       reason: "Codex web environment setup guide",

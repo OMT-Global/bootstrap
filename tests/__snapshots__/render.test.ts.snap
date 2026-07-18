@@ -48,6 +48,10 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": false,
+    "path": ".github/workflows/issue-hygiene.yml",
+  },
+  {
+    "executable": false,
     "path": ".github/dependabot.yml",
   },
   {
@@ -80,6 +84,10 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   },
   {
     "executable": true,
+    "path": "scripts/ci/report-issue-hygiene.mjs",
+  },
+  {
+    "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
   },
   {
@@ -105,6 +113,10 @@ exports[`renderManagedFiles > renders a stable managed file set for generic-empt
   {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/issue-hygiene.md",
   },
   {
     "executable": false,
@@ -169,6 +181,10 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   },
   {
     "executable": false,
+    "path": ".github/workflows/issue-hygiene.yml",
+  },
+  {
+    "executable": false,
     "path": ".github/dependabot.yml",
   },
   {
@@ -201,6 +217,10 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   },
   {
     "executable": true,
+    "path": "scripts/ci/report-issue-hygiene.mjs",
+  },
+  {
+    "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
   },
   {
@@ -226,6 +246,10 @@ exports[`renderManagedFiles > renders a stable managed file set for nextjs-web 1
   {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/issue-hygiene.md",
   },
   {
     "executable": false,
@@ -298,6 +322,10 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": false,
+    "path": ".github/workflows/issue-hygiene.yml",
+  },
+  {
+    "executable": false,
     "path": ".github/dependabot.yml",
   },
   {
@@ -330,6 +358,10 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   },
   {
     "executable": true,
+    "path": "scripts/ci/report-issue-hygiene.mjs",
+  },
+  {
+    "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
   },
   {
@@ -355,6 +387,10 @@ exports[`renderManagedFiles > renders a stable managed file set for node-ts-serv
   {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/issue-hygiene.md",
   },
   {
     "executable": false,
@@ -419,6 +455,10 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   },
   {
     "executable": false,
+    "path": ".github/workflows/issue-hygiene.yml",
+  },
+  {
+    "executable": false,
     "path": ".github/dependabot.yml",
   },
   {
@@ -451,6 +491,10 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   },
   {
     "executable": true,
+    "path": "scripts/ci/report-issue-hygiene.mjs",
+  },
+  {
+    "executable": true,
     "path": "scripts/ci/run-release-verification.sh",
   },
   {
@@ -476,6 +520,10 @@ exports[`renderManagedFiles > renders a stable managed file set for python-servi
   {
     "executable": false,
     "path": "docs/bootstrap/onboarding.md",
+  },
+  {
+    "executable": false,
+    "path": "docs/bootstrap/issue-hygiene.md",
   },
   {
     "executable": false,

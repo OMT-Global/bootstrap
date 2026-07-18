@@ -13,17 +13,12 @@ interface GitHubRepo {
   };
 }
 
-interface PrivateVulnerabilityReportingState {
-  enabled?: boolean;
-}
-
-interface AutomatedSecurityFixesState {
+interface SecurityFeatureState {
   enabled?: boolean;
   paused?: boolean;
 }
 
 interface ActionsVariableState {
-  name?: string;
   value?: string;
 }
 
@@ -237,8 +232,8 @@ async function planPublicSecurity(
   );
   const [alerts, automatedFixes, privateReporting, dependencyReviewVariable, codeScanningAnalyses] = await Promise.all([
     client.tryApi<Record<string, never>>("GET", publicSecurityEndpoint(manifest, "vulnerability-alerts")),
-    client.tryApi<AutomatedSecurityFixesState>("GET", publicSecurityEndpoint(manifest, "automated-security-fixes")),
-    client.tryApi<PrivateVulnerabilityReportingState>("GET", publicSecurityEndpoint(manifest, "private-vulnerability-reporting")).catch((error) => {
+    client.tryApi<SecurityFeatureState>("GET", publicSecurityEndpoint(manifest, "automated-security-fixes")),
+    client.tryApi<SecurityFeatureState>("GET", publicSecurityEndpoint(manifest, "private-vulnerability-reporting")).catch((error) => {
       if (!isPrivateReportingPlanCapabilityLimit(error)) throw error;
       privateReportingUnavailable = true;
       return undefined;

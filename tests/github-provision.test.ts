@@ -3,6 +3,46 @@ import { describe, expect, it } from "vitest";
 import { applyGitHub, planGitHub } from "../src/github/provision.js";
 import { DEFAULT_ISSUE_LABELS, normalizeManifest } from "../src/manifest.js";
 
+const PUBLIC_REPO_ENDPOINT = "/repos/acme/example";
+const CODE_SCANNING_ENDPOINT = `${PUBLIC_REPO_ENDPOINT}/code-scanning/analyses?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100`;
+
+function publicManifest(createRepo?: boolean) {
+  return normalizeManifest({
+    project: { name: "example", owner: "acme", visibility: "public" },
+    archetype: { kind: "node-ts-service" },
+    ...(createRepo === undefined ? {} : { github: { createRepo } })
+  });
+}
+
+function publicRepo(scanning?: "enabled" | "disabled") {
+  return {
+    name: "example",
+    full_name: "acme/example",
+    private: false,
+    visibility: "public",
+    ...(scanning
+      ? {
+          security_and_analysis: {
+            secret_scanning: { status: scanning },
+            secret_scanning_push_protection: { status: scanning }
+          }
+        }
+      : {})
+  };
+}
+
+function publicPlanClient(
+  resolve: (endpoint: string) => unknown | Promise<unknown>,
+  repo: unknown = publicRepo()
+) {
+  return {
+    isAvailable: async () => true,
+    isAuthenticated: async () => true,
+    tryApi: async (_method: string, endpoint: string) => endpoint === PUBLIC_REPO_ENDPOINT ? repo : resolve(endpoint),
+    api: async (_method: string, endpoint: string) => endpoint === "/users/acme" ? { login: "acme", type: "Organization" } : {}
+  };
+}
+
 describe("GitHub provisioning", () => {
   it("produces a static plan when gh is unavailable", async () => {
     const manifest = normalizeManifest({
@@ -395,39 +435,18 @@ describe("GitHub provisioning", () => {
   });
 
   it("plans existing public repository security drift", async () => {
-    const manifest = normalizeManifest({
-      project: { name: "example", owner: "acme", visibility: "public" },
-      archetype: { kind: "node-ts-service" }
-    });
-    const client = {
-      isAvailable: async () => true,
-      isAuthenticated: async () => true,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") {
-          return {
-            name: "example",
-            full_name: "acme/example",
-            private: false,
-            visibility: "public",
-            security_and_analysis: {
-              secret_scanning: { status: "disabled" },
-              secret_scanning_push_protection: { status: "disabled" }
-            }
-          };
-        }
-        if (endpoint === "/repos/acme/example/private-vulnerability-reporting") return { enabled: false };
-        if (endpoint === "/repos/acme/example/code-scanning/analyses?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100") {
+    const client = publicPlanClient(
+      (endpoint) => {
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/private-vulnerability-reporting`) return { enabled: false };
+        if (endpoint === CODE_SCANNING_ENDPOINT) {
           return [{ error: "", category: ".github/workflows/security.yml:codeql/language:javascript-typescript" }];
         }
         return undefined;
       },
-      api: async (method: string, endpoint: string) => {
-        if (endpoint === "/users/acme") return { login: "acme", type: "Organization" };
-        return {};
-      }
-    };
+      publicRepo("disabled")
+    );
 
-    const actions = await planGitHub(manifest, client as never);
+    const actions = await planGitHub(publicManifest(), client as never);
     const security = actions.find((action) => action.id === "security-baseline");
 
     expect(security?.description).toContain("Dependabot security updates");
@@ -436,48 +455,28 @@ describe("GitHub provisioning", () => {
   });
 
   it("reports synchronized public security state from dedicated endpoints", async () => {
-    const manifest = normalizeManifest({
-      project: { name: "example", owner: "acme", visibility: "public" },
-      archetype: { kind: "node-ts-service" }
-    });
     let fixesPaused = false;
-    const client = {
-      isAvailable: async () => true,
-      isAuthenticated: async () => true,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") {
-          return {
-            name: "example",
-            full_name: "acme/example",
-            private: false,
-            visibility: "public",
-            security_and_analysis: {
-              secret_scanning: { status: "enabled" },
-              secret_scanning_push_protection: { status: "enabled" }
-            }
-          };
-        }
-        if (endpoint === "/repos/acme/example/vulnerability-alerts") return {};
-        if (endpoint === "/repos/acme/example/automated-security-fixes") return { enabled: true, paused: fixesPaused };
-        if (endpoint === "/repos/acme/example/private-vulnerability-reporting") return { enabled: true };
-        if (endpoint === "/repos/acme/example/code-scanning/analyses?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100") {
+    const client = publicPlanClient(
+      (endpoint) => {
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/vulnerability-alerts`) return {};
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/automated-security-fixes`) return { enabled: true, paused: fixesPaused };
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/private-vulnerability-reporting`) return { enabled: true };
+        if (endpoint === CODE_SCANNING_ENDPOINT) {
           return [{ error: "", category: ".github/workflows/security.yml:codeql/language:javascript-typescript" }];
         }
-        if (endpoint === "/repos/acme/example/actions/variables/DEPENDENCY_REVIEW_ENABLED") return { name: "DEPENDENCY_REVIEW_ENABLED", value: "true" };
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/actions/variables/DEPENDENCY_REVIEW_ENABLED`) {
+          return { name: "DEPENDENCY_REVIEW_ENABLED", value: "true" };
+        }
         return undefined;
       },
-      api: async (method: string, endpoint: string) => {
-        if (endpoint === "/users/acme") return { login: "acme", type: "Organization" };
-        return {};
-      }
-    };
+      publicRepo("enabled")
+    );
 
-    const actions = await planGitHub(manifest, client as never);
-
+    const actions = await planGitHub(publicManifest(), client as never);
     expect(actions).toContainEqual(expect.objectContaining({ id: "security-baseline-sync" }));
 
     fixesPaused = true;
-    const pausedActions = await planGitHub(manifest, client as never);
+    const pausedActions = await planGitHub(publicManifest(), client as never);
     expect(pausedActions).toContainEqual(expect.objectContaining({
       id: "security-baseline",
       description: expect.stringContaining("Dependabot security updates")
@@ -485,30 +484,14 @@ describe("GitHub provisioning", () => {
   });
 
   it("reports an unsupported private-reporting planning capability without aborting", async () => {
-    const manifest = normalizeManifest({
-      project: { name: "example", owner: "acme", visibility: "public" },
-      archetype: { kind: "node-ts-service" }
-    });
-    const client = {
-      isAvailable: async () => true,
-      isAuthenticated: async () => true,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") {
-          return { name: "example", full_name: "acme/example", private: false, visibility: "public" };
-        }
-        if (endpoint === "/repos/acme/example/private-vulnerability-reporting") {
-          throw new Error("gh: private vulnerability reporting is not available for this plan (HTTP 422)");
-        }
-        return undefined;
-      },
-      api: async (method: string, endpoint: string) => {
-        if (endpoint === "/users/acme") return { login: "acme", type: "Organization" };
-        return {};
+    const client = publicPlanClient((endpoint) => {
+      if (endpoint === `${PUBLIC_REPO_ENDPOINT}/private-vulnerability-reporting`) {
+        throw new Error("gh: private vulnerability reporting is not available for this plan (HTTP 422)");
       }
-    };
+      return undefined;
+    });
 
-    const actions = await planGitHub(manifest, client as never);
-
+    const actions = await planGitHub(publicManifest(), client as never);
     expect(actions).toContainEqual(expect.objectContaining({
       id: "security-baseline-unverified",
       description: expect.stringContaining("approved waiver")
@@ -516,41 +499,19 @@ describe("GitHub provisioning", () => {
   });
 
   it("does not report synchronization when code scanning cannot be verified", async () => {
-    const manifest = normalizeManifest({
-      project: { name: "example", owner: "acme", visibility: "public" },
-      archetype: { kind: "node-ts-service" }
-    });
-    const client = {
-      isAvailable: async () => true,
-      isAuthenticated: async () => true,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") {
-          return {
-            name: "example",
-            full_name: "acme/example",
-            private: false,
-            visibility: "public",
-            security_and_analysis: {
-              secret_scanning: { status: "enabled" },
-              secret_scanning_push_protection: { status: "enabled" }
-            }
-          };
-        }
-        if (endpoint === "/repos/acme/example/vulnerability-alerts") return {};
-        if (endpoint === "/repos/acme/example/automated-security-fixes") return { enabled: true, paused: false };
-        if (endpoint === "/repos/acme/example/private-vulnerability-reporting") return { enabled: true };
-        if (endpoint === "/repos/acme/example/actions/variables/DEPENDENCY_REVIEW_ENABLED") return { value: "true" };
-        if (endpoint === "/repos/acme/example/code-scanning/analyses?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100") return [];
+    const client = publicPlanClient(
+      (endpoint) => {
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/vulnerability-alerts`) return {};
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/automated-security-fixes`) return { enabled: true, paused: false };
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/private-vulnerability-reporting`) return { enabled: true };
+        if (endpoint === `${PUBLIC_REPO_ENDPOINT}/actions/variables/DEPENDENCY_REVIEW_ENABLED`) return { value: "true" };
+        if (endpoint === CODE_SCANNING_ENDPOINT) return [];
         return undefined;
       },
-      api: async (method: string, endpoint: string) => {
-        if (endpoint === "/users/acme") return { login: "acme", type: "Organization" };
-        return {};
-      }
-    };
+      publicRepo("enabled")
+    );
 
-    const actions = await planGitHub(manifest, client as never);
-
+    const actions = await planGitHub(publicManifest(), client as never);
     expect(actions).toContainEqual(expect.objectContaining({
       id: "security-baseline-unverified",
       description: expect.stringContaining("successful CodeQL analysis for every configured language")
@@ -559,30 +520,14 @@ describe("GitHub provisioning", () => {
   });
 
   it("reports unavailable code scanning as unverified instead of aborting planning", async () => {
-    const manifest = normalizeManifest({
-      project: { name: "example", owner: "acme", visibility: "public" },
-      archetype: { kind: "node-ts-service" }
-    });
-    const client = {
-      isAvailable: async () => true,
-      isAuthenticated: async () => true,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") {
-          return { name: "example", full_name: "acme/example", private: false, visibility: "public" };
-        }
-        if (endpoint.includes("/code-scanning/analyses?")) {
-          throw new Error("gh: GitHub Advanced Security must be enabled (HTTP 403)");
-        }
-        return undefined;
-      },
-      api: async (method: string, endpoint: string) => {
-        if (endpoint === "/users/acme") return { login: "acme", type: "Organization" };
-        return {};
+    const client = publicPlanClient((endpoint) => {
+      if (endpoint.includes("/code-scanning/analyses?")) {
+        throw new Error("gh: GitHub Advanced Security must be enabled (HTTP 403)");
       }
-    };
+      return undefined;
+    });
 
-    const actions = await planGitHub(manifest, client as never);
-
+    const actions = await planGitHub(publicManifest(), client as never);
     expect(actions).toContainEqual(expect.objectContaining({
       id: "security-baseline-unverified",
       description: expect.stringContaining("code scanning is unavailable on the current plan")
@@ -590,40 +535,22 @@ describe("GitHub provisioning", () => {
   });
 
   it("fails closed on ambiguous security planning authorization and validation errors", async () => {
-    const manifest = normalizeManifest({
-      project: { name: "example", owner: "acme", visibility: "public" },
-      archetype: { kind: "node-ts-service" }
+    const inaccessible = publicPlanClient((endpoint) => {
+      if (endpoint.includes("/code-scanning/analyses?")) {
+        throw new Error("gh: Resource not accessible by integration (HTTP 403)");
+      }
+      return undefined;
     });
-    const baseClient = {
-      isAvailable: async () => true,
-      isAuthenticated: async () => true,
-      api: async (method: string, endpoint: string) => endpoint === "/users/acme"
-        ? { login: "acme", type: "Organization" }
-        : {}
-    };
-    const repo = { name: "example", full_name: "acme/example", private: false, visibility: "public" };
+    await expect(planGitHub(publicManifest(), inaccessible as never))
+      .rejects.toThrow("Resource not accessible");
 
-    await expect(planGitHub(manifest, {
-      ...baseClient,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") return repo;
-        if (endpoint.includes("/code-scanning/analyses?")) {
-          throw new Error("gh: Resource not accessible by integration (HTTP 403)");
-        }
-        return undefined;
+    const invalid = publicPlanClient((endpoint) => {
+      if (endpoint === `${PUBLIC_REPO_ENDPOINT}/private-vulnerability-reporting`) {
+        throw new Error("gh: Validation Failed (HTTP 422)");
       }
-    } as never)).rejects.toThrow("Resource not accessible");
-
-    await expect(planGitHub(manifest, {
-      ...baseClient,
-      tryApi: async (method: string, endpoint: string) => {
-        if (endpoint === "/repos/acme/example") return repo;
-        if (endpoint === "/repos/acme/example/private-vulnerability-reporting") {
-          throw new Error("gh: Validation Failed (HTTP 422)");
-        }
-        return undefined;
-      }
-    } as never)).rejects.toThrow("Validation Failed");
+      return undefined;
+    });
+    await expect(planGitHub(publicManifest(), invalid as never)).rejects.toThrow("Validation Failed");
   });
 
   it("applies public security controls and reports unsupported capabilities distinctly", async () => {

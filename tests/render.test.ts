@@ -326,9 +326,10 @@ describe("renderManagedFiles", () => {
     const onboarding = files.find((file) => file.path === "docs/bootstrap/onboarding.md");
     const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
 
-    expect(agents?.contents).toContain("Before opening or updating a PR, use the `autoreview` skill");
+    expect(agents?.contents).toContain("handle autoreview access before implementation");
+    expect(agents?.contents).toContain("explicit authorization to send the forthcoming intended PR diff");
     expect(agents?.contents).toContain("stop and report the blocker instead of bypassing the gate");
-    expect(contributing?.contents).toContain("For agent-authored changes, use the `autoreview` skill");
+    expect(contributing?.contents).toContain("At the start of agent-authored PR work, request autoreview network access");
     expect(prTemplate?.contents).toContain("Agent-authored changes passed `autoreview`");
     expect(prTemplate?.contents).toContain("Autoreview command and result:");
     expect(onboarding?.contents).toContain("`AGENTS.md` requires the `autoreview` skill");

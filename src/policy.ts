@@ -20,6 +20,7 @@ export interface FlowPolicyBundle {
 
 export interface ResolvedPolicyContract {
   manifest: BootstrapManifest;
+  license: BootstrapManifest["license"];
   policy: FlowPolicyBundle;
   source: FlowPolicySource;
   unknownManifestSettings: string[];
@@ -73,7 +74,7 @@ export function resolveFlowPolicy(
     throw new Error("Flow policy bundle is not a compatible Public Repository Standard v1 policy.");
   }
 
-  return { manifest, policy, source: { ...source, sha256: source.sha256.toLowerCase() }, unknownManifestSettings: [...unknownManifestSettings].sort() };
+  return { manifest, license: manifest.license, policy, source: { ...source, sha256: source.sha256.toLowerCase() }, unknownManifestSettings: [...unknownManifestSettings].sort() };
 }
 
 export async function loadResolvedFlowPolicy(manifest: BootstrapManifest, manifestDir: string): Promise<ResolvedPolicyContract> {

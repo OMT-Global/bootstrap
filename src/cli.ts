@@ -47,6 +47,16 @@ function formatLanguageProfiles(profiles: Awaited<ReturnType<typeof planRepo>>["
   return ["**Language profiles**", `- Selected: ${selected}`, ...conflicts].join("\n");
 }
 
+function formatLicensePlan(license: Awaited<ReturnType<typeof planRepo>>["license"]): string {
+  if (!license) return "**License**\n- No explicit license policy declared.";
+  return [
+    "**License**",
+    `- Mode: ${license.beforeMode} -> ${license.afterMode}`,
+    `- Template approval: ${license.templateApproval}`,
+    `- Legal transition evidence: ${license.transitionRequired ? "required and supplied" : "not required"}`
+  ].join("\n");
+}
+
 function formatGitHubActions(actions: Awaited<ReturnType<typeof planGitHub>>): string {
   return [
     "**GitHub**",
@@ -150,6 +160,7 @@ async function main(): Promise<void> {
             {
               targetDir,
               repo: repoPlan.changes,
+              license: repoPlan.license,
               languageProfiles: repoPlan.languageProfiles,
               github: githubPlan,
               home: homePlan.actions
@@ -162,7 +173,7 @@ async function main(): Promise<void> {
       }
 
       process.stdout.write(
-        `${formatRepoChanges(repoPlan.changes)}\n\n${formatLanguageProfiles(repoPlan.languageProfiles)}\n\n${formatGitHubActions(githubPlan)}\n\n${formatHomeActions(
+        `${formatRepoChanges(repoPlan.changes)}\n\n${formatLicensePlan(repoPlan.license)}\n\n${formatLanguageProfiles(repoPlan.languageProfiles)}\n\n${formatGitHubActions(githubPlan)}\n\n${formatHomeActions(
           homePlan.actions
         )}\n`
       );
@@ -226,7 +237,7 @@ async function main(): Promise<void> {
       const manifest = await loadManifest(resolveManifestPath(options.manifest));
       const targetDir = options.target ? path.resolve(options.target) : defaultTargetDir(manifest);
       const repoPlan = await applyRepo(manifest, targetDir);
-      process.stdout.write(`${formatRepoChanges(repoPlan.changes)}\n`);
+      process.stdout.write(`${formatRepoChanges(repoPlan.changes)}\n\n${formatLicensePlan(repoPlan.license)}\n`);
     });
 
   apply

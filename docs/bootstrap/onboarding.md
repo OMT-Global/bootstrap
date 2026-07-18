@@ -49,6 +49,14 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - To retrofit an existing bootstrapped repo, add `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` to `repo.managedPaths` when that repo restricts managed paths, then run `bootstrap apply repo --manifest ./project.bootstrap.yaml`.
 - Keep these files repo-generic unless project metadata or the manifest requires a stricter local rule.
 
+## Licensing
+
+- Repository visibility never selects or grants a license. Declare `license.mode` explicitly before Bootstrap manages `LICENSE`.
+- Current manifest mode: not declared; Bootstrap will not create, replace, or remove a license.
+- Keep `THIRD_PARTY_NOTICES.md` separate from the first-party notice and inventory dependencies, assets, fonts, media, and incorporated source.
+- Any existing-license replacement requires legal ownership, contributor, distribution-history, issue, and approver evidence in the manifest. Previously granted rights are not revoked.
+- Verify GitHub license detection after publishing an SPDX license. Never describe a proprietary notice as SPDX, OSI approved, or GitHub-recognized.
+
 ## Fleet Reconciliation
 
 - Run `bootstrap reconcile --workspace-root ~/src --report bootstrap-reconcile.json` first; this is plan-only and does not write files.

@@ -6,5 +6,6 @@ dist/
 coverage/
 .playwright-cli/
 tmp/
-.bootstrap/
+.bootstrap/*
+!.bootstrap/managed-files.json
 .new-project-bootstrap/

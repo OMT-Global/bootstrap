@@ -1,4 +1,5 @@
 import path from "node:path";
+import spdxLicenseIdentifiers from "spdx-license-list/simple.js";
 import YAML from "yaml";
 import { z } from "zod";
 
@@ -11,6 +12,7 @@ import type {
   DefaultRepositoryPermission,
   EnvironmentConfig,
   IssueLabelConfig,
+  LicensePolicy,
   OrganizationConfig,
   RepoClass
 } from "./types.js";
@@ -212,6 +214,92 @@ const notificationSchema = z.object({
   webhookUrlEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/)
 });
 
+const licenseYearsSchema = z.string().regex(/^\d{4}(?:-\d{4})?$/, "Use a four-digit year or inclusive year range.").refine((value) => {
+  const start = Number(value.slice(0, 4));
+  const end = value.length === 4 ? start : Number(value.slice(5));
+  return start <= end;
+}, "License year ranges must be chronological.");
+
+const singleLineLicenseString = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (value) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value),
+    "Use one line without control, format, or separator characters."
+  );
+
+const multilineLicenseText = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (value) => !/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/u.test(value),
+    "Do not use control, format, or Unicode separator characters in legal text."
+  );
+
+const licenseTemplateSchema = z.object({
+  path: singleLineLicenseString,
+  sha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  approval: singleLineLicenseString,
+  spdxIdentifier: z.string().optional()
+});
+
+const thirdPartyNoticeSchema = z.object({
+  name: singleLineLicenseString,
+  kind: z.enum(["dependency", "asset", "font", "media", "incorporated-source"]),
+  license: singleLineLicenseString,
+  source: singleLineLicenseString,
+  notice: multilineLicenseText.optional()
+});
+
+const licenseTransitionSchema = z.object({
+  approvedBy: singleLineLicenseString,
+  issue: singleLineLicenseString,
+  ownership: singleLineLicenseString,
+  contributors: singleLineLicenseString,
+  distributionHistory: singleLineLicenseString,
+  fromMode: singleLineLicenseString,
+  fromContentSha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  toMode: singleLineLicenseString,
+  toContentSha256: z.string().regex(/^[0-9a-fA-F]{64}$/)
+});
+
+const licensePolicyBase = {
+  holder: singleLineLicenseString,
+  holderVerification: singleLineLicenseString,
+  years: licenseYearsSchema,
+  template: licenseTemplateSchema,
+  thirdPartyNotices: z.array(thirdPartyNoticeSchema),
+  transition: licenseTransitionSchema.optional()
+};
+
+const licensePolicySchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("spdx"),
+    identifier: z
+      .string()
+      .refine((value) => spdxLicenseIdentifiers.has(value), "Use a recognized SPDX license identifier."),
+    ...licensePolicyBase
+  }),
+  z.object({ mode: z.literal("proprietary"), ...licensePolicyBase })
+]).superRefine((policy, context) => {
+  if (policy.mode === "spdx" && policy.template.spdxIdentifier !== policy.identifier) {
+    context.addIssue({
+      code: "custom",
+      path: ["template", "spdxIdentifier"],
+      message: "SPDX templates must be approved for the selected license identifier."
+    });
+  }
+  if (policy.mode === "proprietary" && policy.template.spdxIdentifier !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["template", "spdxIdentifier"],
+      message: "Proprietary templates cannot declare an SPDX identifier approval."
+    });
+  }
+});
+
 const exceptionSchema = z.object({
   id: z.string().min(1),
   policy: z.string().min(1),
@@ -306,6 +394,7 @@ const manifestSchema = z.object({
     defaultBranch: z.string().min(1).optional()
   }),
   publisher: publisherSchema.optional(),
+  license: licensePolicySchema.optional(),
   notifications: notificationSchema.optional(),
   repo: z
     .object({
@@ -436,7 +525,7 @@ const manifestSchema = z.object({
 }).passthrough();
 
 const KNOWN_MANIFEST_SETTINGS = new Set([
-  "version", "project", "publisher", "notifications", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
+  "version", "project", "publisher", "license", "notifications", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
 ]);
 
 function slugify(value: string): string {
@@ -781,6 +870,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
         ? { spendingApprovalThreshold: { ...parsed.publisher.spendingApprovalThreshold } }
         : {})
     },
+    ...(parsed.license ? { license: parsed.license as LicensePolicy } : {}),
     ...(parsed.notifications ? { notifications: { ...parsed.notifications } } : {}),
     repo: normalizeRepo(parsed.repo),
     archetype: {
@@ -950,6 +1040,7 @@ export async function loadManifest(manifestPath: string): Promise<BootstrapManif
 interface ManifestOverrides {
   project?: Partial<BootstrapManifest["project"]>;
   publisher?: Partial<BootstrapManifest["publisher"]>;
+  license?: BootstrapManifest["license"];
   notifications?: BootstrapManifest["notifications"];
   repo?: Partial<BootstrapManifest["repo"]>;
   archetype?: Partial<BootstrapManifest["archetype"]>;
@@ -974,6 +1065,7 @@ export function createSampleManifest(overrides?: ManifestOverrides): string {
       defaultBranch: overrides?.project?.defaultBranch ?? "main"
     },
     publisher: overrides?.publisher,
+    license: overrides?.license,
     notifications: overrides?.notifications,
     repo: overrides?.repo,
     archetype: {

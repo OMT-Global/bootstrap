@@ -40,7 +40,7 @@ describe("home sync", () => {
     expect(applied.some((action) => action.path.startsWith(".claude/"))).toBe(false);
 
     const codexAgents = await readFile(path.join(homeDir, ".codex/AGENTS.md"), "utf8");
-    expect(codexAgents).toContain("Before opening or updating a PR, use the `autoreview` skill");
+    expect(codexAgents).toContain("request autoreview network access before implementation");
     expect(codexAgents).toContain("Codex Home Profile");
     await expect(access(path.join(homeDir, ".bootstrap/home-state.json"))).resolves.toBeUndefined();
 

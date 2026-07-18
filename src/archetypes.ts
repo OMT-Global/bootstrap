@@ -196,7 +196,7 @@ function repoAgents(manifest: BootstrapManifest): string {
     - CI baseline: fast PR checks stay cheap and shell-safe; extended validation runs on \`main\`, nightly, or manual dispatch.
     - Self-hosted runner policy: shell-safe jobs must use \`[self-hosted, linux, shell-only, ${manifest.project.visibility === "public" ? "public" : "private"}]\`; native repos must use self-hosted runners for required automation, with Docker, service-container, browser, or \`container:\` workloads routed to dedicated self-hosted capability pools.
     - Add or update tests for every interactive, branching, or operator-facing behavior change.
-    - Before opening or updating a PR, use the \`autoreview\` skill to review the intended PR diff against its actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.
+    - For a task that may open or update a PR, handle autoreview access before implementation: request required network access immediately and, for a private repository, explicit authorization to send the forthcoming intended PR diff to the external reviewer. At closeout, use the \`autoreview\` skill against the actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If authorization is declined or the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.
     - PRs must use the generated pull request template. The required PR gate validates summary, issue linkage, validation evidence, and risk notes.
     - Never commit real secrets, runtime auth, or machine-local env files. Use templates and GitHub environments instead.
 
@@ -365,8 +365,8 @@ function contributingDoc(manifest: BootstrapManifest): string {
     ## Validation
 
     - Run the relevant local checks before opening a PR.
-    - For agent-authored changes, use the \`autoreview\` skill against the intended PR diff and actual base. Verify every finding, address accepted in-scope findings, and rerun affected checks and autoreview after edits until no accepted/actionable findings remain.
-    - Record the final autoreview command and result in the PR. If the skill is unavailable or cannot complete, stop and report that blocker instead of opening or updating the PR.
+    - At the start of agent-authored PR work, request autoreview network access and, for private repository diffs, explicit authorization for the forthcoming intended PR diff. At closeout, use the \`autoreview\` skill against the actual base. Verify every finding, address accepted in-scope findings, and rerun affected checks and autoreview after edits until no accepted/actionable findings remain.
+    - Record the final autoreview command and result in the PR. If authorization is declined or the skill is unavailable or cannot complete, stop and report that blocker instead of opening or updating the PR.
     - For this bootstrap contract, the required PR check surface is ${requiredStatusChecksDisplay(manifest)}.
     - Document any skipped checks in the PR with a concrete reason.
 

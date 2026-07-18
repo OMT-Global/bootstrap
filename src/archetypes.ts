@@ -584,7 +584,8 @@ function preCommitHook(): string {
       staged_files+=("$staged_file")
     done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
-    for f in "\${staged_files[@]}"; do
+    for f in "\${staged_files[@]:-}"; do
+      [[ -n "$f" ]] || continue
       case "$f" in
         *.env|.env.*)
           if [[ "$f" != *.example ]]; then

@@ -219,6 +219,7 @@ describe("renderManagedFiles", () => {
   it("projects SECURITY.md for public repositories unless explicitly disabled", () => {
     const publicManifest = normalizeManifest({
       project: { name: "public-policy", owner: "acme", visibility: "public" },
+      ci: { codeqlLanguages: ["javascript-typescript"] },
       archetype: { kind: "generic-empty" }
     });
     expect(renderManagedFiles(publicManifest).some((file) => file.path === "SECURITY.md")).toBe(true);
@@ -226,6 +227,7 @@ describe("renderManagedFiles", () => {
     const optedOutManifest = normalizeManifest({
       project: { name: "public-policy", owner: "acme", visibility: "public" },
       repo: { docs: { security: false } },
+      ci: { codeqlLanguages: ["javascript-typescript"] },
       archetype: { kind: "generic-empty" }
     });
     expect(renderManagedFiles(optedOutManifest).some((file) => file.path === "SECURITY.md")).toBe(false);
@@ -235,11 +237,75 @@ describe("renderManagedFiles", () => {
     const manifest = normalizeManifest({
       project: { name: "partial-docs-policy", owner: "acme", visibility: "public" },
       repo: { docs: { readme: true } },
+      ci: { codeqlLanguages: ["javascript-typescript"] },
       archetype: { kind: "generic-empty" }
     });
 
     expect(manifest.repo.docs).toEqual({ readme: true, contributing: true });
     expect(renderManagedFiles(manifest).some((file) => file.path === "SECURITY.md")).toBe(true);
+  });
+
+  it("requires explicit CodeQL languages for public generic repositories", () => {
+    const manifest = normalizeManifest({
+      project: { name: "polyglot", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" }
+    });
+
+    expect(() => renderManagedFiles(manifest)).toThrow("configure ci.codeqlLanguages");
+  });
+
+  it("projects a pinned, fork-safe public security workflow and response model", () => {
+    const manifest = normalizeManifest({
+      project: { name: "public-security", owner: "acme", visibility: "public" },
+      archetype: { kind: "node-ts-service" }
+    });
+    const files = renderManagedFiles(manifest);
+    const workflow = files.find((file) => file.path === ".github/workflows/security.yml");
+    const policy = files.find((file) => file.path === "SECURITY.md");
+    const model = files.find((file) => file.path === "docs/bootstrap/security.md");
+
+    expect(workflow).toBeDefined();
+    expect(parseDocument(workflow?.contents ?? "").errors).toEqual([]);
+    expect(workflow?.contents).toContain("pull_request:");
+    expect(workflow?.contents).not.toContain("pull_request_target");
+    expect(workflow?.contents).toContain("permissions:\n  contents: read");
+    expect(workflow?.contents).toContain("if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'\n    runs-on: ubuntu-latest");
+    expect(workflow?.contents).toContain("dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0");
+    expect(workflow?.contents).toContain("codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4");
+    expect(workflow?.contents).toContain('language: ["javascript-typescript"]');
+    expect(workflow?.contents).toContain("languages: ${{ matrix.language }}\n          build-mode: none");
+    expect(workflow?.contents).toContain('category: "/language:${{ matrix.language }}"');
+    expect(workflow?.contents).toContain("anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0");
+    expect(workflow?.contents).toContain("if: github.event_name == 'push' || github.event_name == 'schedule'");
+    expect(workflow?.contents).not.toContain("workflow_dispatch");
+    expect(workflow?.contents).not.toContain("secrets.");
+    expect(policy?.contents).toContain("/security/advisories/new");
+    expect(policy?.contents).toContain("Private security contact requested");
+    expect(policy?.contents).toContain("3 business days");
+    expect(policy?.contents).toContain("10 business days");
+    expect(model?.contents).toContain("Pull requests, including forks, are untrusted input");
+    expect(model?.contents).toContain("GitHub-hosted isolation");
+    expect(model?.contents).toContain("private-vulnerability-reporting");
+
+    expect(workflow?.contents).toContain("sbom:\n    if: github.event_name == 'push' || github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write");
+  });
+
+  it("quotes the default branch in the public security workflow", () => {
+    const manifest = normalizeManifest({
+      project: {
+        name: "public-security",
+        owner: "acme",
+        visibility: "public",
+        defaultBranch: "release,2026"
+      },
+      archetype: { kind: "node-ts-service" }
+    });
+    const workflow = renderManagedFiles(manifest).find((file) => file.path === ".github/workflows/security.yml");
+
+    expect(workflow?.contents).toContain('branches: ["release,2026"]');
+    expect(parseDocument(workflow?.contents ?? "").toJS()).toMatchObject({
+      on: { push: { branches: ["release,2026"] } }
+    });
   });
 
   it("renders version 2 docs, templates, environment, and workflow switches", () => {
@@ -285,6 +351,7 @@ describe("renderManagedFiles", () => {
       },
       ci: {
         policy: "experimental",
+        codeqlLanguages: ["python"],
         workflows: {
           prFastCi: true,
           extendedValidation: false,

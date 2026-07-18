@@ -810,4 +810,22 @@ describe("normalizeManifest", () => {
       }
     });
   });
+
+  it("rejects CodeQL languages that require a compiled build contract", () => {
+    expect(() => normalizeManifest({
+      project: { name: "go-service", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" },
+      ci: { codeqlLanguages: ["go"] }
+    } as never)).toThrow();
+  });
+
+  it("accepts compiled CodeQL languages supported by no-build analysis", () => {
+    const manifest = normalizeManifest({
+      project: { name: "compiled-service", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" },
+      ci: { codeqlLanguages: ["c-cpp", "csharp", "rust"] }
+    });
+
+    expect(manifest.ci.codeqlLanguages).toEqual(["c-cpp", "csharp", "rust"]);
+  });
 });

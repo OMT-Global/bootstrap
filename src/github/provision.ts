@@ -7,6 +7,29 @@ interface GitHubRepo {
   private: boolean;
   visibility: string;
   allow_auto_merge?: boolean;
+  security_and_analysis?: {
+    secret_scanning?: { status?: string };
+    secret_scanning_push_protection?: { status?: string };
+  };
+}
+
+interface PrivateVulnerabilityReportingState {
+  enabled?: boolean;
+}
+
+interface AutomatedSecurityFixesState {
+  enabled?: boolean;
+  paused?: boolean;
+}
+
+interface ActionsVariableState {
+  name?: string;
+  value?: string;
+}
+
+interface CodeScanningAnalysisState {
+  error?: string;
+  category?: string;
 }
 
 interface GitHubOwner {
@@ -180,6 +203,177 @@ function autoMergeFallbackAction(): PlannedGitHubAction {
   };
 }
 
+function publicSecurityEndpoint(manifest: BootstrapManifest, suffix: string): string {
+  return `/repos/${manifest.project.owner}/${manifest.project.name}/${suffix}`;
+}
+
+function isGitHubCapabilityLimit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /billing plan supports|upgrade to GitHub|not available for (?:this|the current) plan|current plan does not (?:support|expose)|feature is unavailable on (?:this|your) plan/i.test(message);
+}
+
+function isPrivateReportingPlanCapabilityLimit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return isGitHubCapabilityLimit(error) || /private vulnerability reporting is (?:not available|unavailable) (?:for|on) (?:this|the current) plan/i.test(message);
+}
+
+function isCodeScanningPlanCapabilityLimit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return isGitHubCapabilityLimit(error) || /GitHub Advanced Security (?:must be|is not) enabled|code scanning is not available (?:for|on) (?:this|the current) plan/i.test(message);
+}
+
+async function planPublicSecurity(
+  manifest: BootstrapManifest,
+  repo: GitHubRepo | undefined,
+  client: GitHubClient
+): Promise<PlannedGitHubAction | undefined> {
+  if (manifest.project.visibility !== "public") return undefined;
+  const dependencyReviewVariableEndpoint = publicSecurityEndpoint(manifest, "actions/variables/DEPENDENCY_REVIEW_ENABLED");
+  let privateReportingUnavailable = false;
+  let codeScanningUnavailable = false;
+  const codeScanningEndpoint = publicSecurityEndpoint(
+    manifest,
+    `code-scanning/analyses?ref=${encodeURIComponent(`refs/heads/${manifest.project.defaultBranch}`)}&tool_name=CodeQL&per_page=100`
+  );
+  const [alerts, automatedFixes, privateReporting, dependencyReviewVariable, codeScanningAnalyses] = await Promise.all([
+    client.tryApi<Record<string, never>>("GET", publicSecurityEndpoint(manifest, "vulnerability-alerts")),
+    client.tryApi<AutomatedSecurityFixesState>("GET", publicSecurityEndpoint(manifest, "automated-security-fixes")),
+    client.tryApi<PrivateVulnerabilityReportingState>("GET", publicSecurityEndpoint(manifest, "private-vulnerability-reporting")).catch((error) => {
+      if (!isPrivateReportingPlanCapabilityLimit(error)) throw error;
+      privateReportingUnavailable = true;
+      return undefined;
+    }),
+    client.tryApi<ActionsVariableState>("GET", dependencyReviewVariableEndpoint),
+    client.tryApi<CodeScanningAnalysisState[]>("GET", codeScanningEndpoint).catch((error) => {
+      if (!isCodeScanningPlanCapabilityLimit(error)) throw error;
+      codeScanningUnavailable = true;
+      return undefined;
+    })
+  ]);
+  // GitHub returns 204 with no body when alerts are enabled; GitHubClient.api
+  // normalizes that successful empty response to {}, while only a 404 becomes undefined.
+  const alertsEnabled = alerts !== undefined;
+  const successfulCodeScanningCategories = codeScanningAnalyses
+    ?.filter((analysis) => analysis.error === "")
+    .map((analysis) => analysis.category)
+    .filter((category): category is string => Boolean(category)) ?? [];
+  const codeScanningVerified = manifest.ci.codeqlLanguages.length > 0 &&
+    manifest.ci.codeqlLanguages.every(
+      (language) => successfulCodeScanningCategories.some(
+        (category) => category.startsWith(".github/workflows/security.yml:codeql/") &&
+          category.endsWith(`/language:${language}`)
+      )
+    );
+  const disabled = [
+    !alertsEnabled ? "dependency graph and Dependabot alerts" : null,
+    dependencyReviewVariable?.value !== "true" ? "dependency review activation" : null,
+    automatedFixes?.enabled !== true || automatedFixes.paused === true ? "Dependabot security updates" : null,
+    repo?.security_and_analysis?.secret_scanning?.status !== "enabled" ? "secret scanning" : null,
+    repo?.security_and_analysis?.secret_scanning_push_protection?.status !== "enabled" ? "push protection" : null,
+    !codeScanningVerified ? "code scanning verification" : null,
+    privateReporting?.enabled !== true ? "private vulnerability reporting" : null
+  ].filter((entry): entry is string => Boolean(entry));
+  const unverified = [
+    !codeScanningVerified
+      ? codeScanningUnavailable
+        ? "code scanning is unavailable on the current plan"
+        : "a successful CodeQL analysis for every configured language could not be verified on the default branch"
+      : null,
+    privateReportingUnavailable ? "private vulnerability reporting is unsupported" : null
+  ].filter((entry): entry is string => Boolean(entry));
+
+  return {
+    id: unverified.length > 0
+      ? "security-baseline-unverified"
+      : disabled.length === 0
+        ? "security-baseline-sync"
+        : "security-baseline",
+    description: unverified.length > 0
+      ? `Security capabilities for ${manifest.project.owner}/${manifest.project.name} remain unverified: ${unverified.join("; ")}. Enable ${disabled.filter((entry) => entry !== "private vulnerability reporting" && entry !== "code scanning verification").join(", ") || "the remaining synchronized controls"}, then capture remediation or an approved waiver for every unsupported capability.`
+      : disabled.length === 0
+      ? `Public repository security settings for ${manifest.project.owner}/${manifest.project.name} already match the baseline.`
+      : `Enable ${disabled.join(", ")} for ${manifest.project.owner}/${manifest.project.name}.`
+  };
+}
+
+async function applySecurityCapability(
+  client: GitHubClient,
+  method: "PATCH" | "PUT",
+  endpoint: string,
+  payload: unknown,
+  action: PlannedGitHubAction,
+  unsupportedAction: PlannedGitHubAction,
+  isUnsupported: (error: unknown) => boolean = isGitHubCapabilityLimit
+): Promise<PlannedGitHubAction> {
+  try {
+    await client.api(method, endpoint, payload);
+    return action;
+  } catch (error) {
+    if (!isUnsupported(error)) throw error;
+    return unsupportedAction;
+  }
+}
+
+async function applyPublicSecurity(
+  manifest: BootstrapManifest,
+  client: GitHubClient
+): Promise<PlannedGitHubAction[]> {
+  if (manifest.project.visibility !== "public") return [];
+  const repoEndpoint = `/repos/${manifest.project.owner}/${manifest.project.name}`;
+  const analysis = await applySecurityCapability(
+      client,
+      "PATCH",
+      repoEndpoint,
+      {
+        security_and_analysis: {
+          secret_scanning: { status: "enabled" },
+          secret_scanning_push_protection: { status: "enabled" }
+        }
+      },
+      { id: "security-analysis", description: "Enabled secret scanning and push protection." },
+      { id: "security-analysis-unsupported", description: "GitHub rejected one or more scanning controls for the current plan; capture the unsupported capability and retain remediation or an approved waiver." }
+    );
+  const alerts = await applySecurityCapability(
+      client,
+      "PUT",
+      publicSecurityEndpoint(manifest, "vulnerability-alerts"),
+      undefined,
+      { id: "security-dependabot-alerts", description: "Enabled dependency graph and Dependabot vulnerability alerts." },
+      { id: "security-dependabot-alerts-unsupported", description: "GitHub does not expose dependency graph or Dependabot alerts on the current plan; capture the unsupported capability and remediation." }
+    );
+  let dependencyReviewActivation: PlannedGitHubAction;
+  if (alerts.id === "security-dependabot-alerts") {
+    const variableEndpoint = publicSecurityEndpoint(manifest, "actions/variables/DEPENDENCY_REVIEW_ENABLED");
+    const existingVariable = await client.tryApi<ActionsVariableState>("GET", variableEndpoint);
+    if (existingVariable) {
+      await client.api("PATCH", variableEndpoint, { name: "DEPENDENCY_REVIEW_ENABLED", value: "true" });
+    } else {
+      await client.api("POST", publicSecurityEndpoint(manifest, "actions/variables"), { name: "DEPENDENCY_REVIEW_ENABLED", value: "true" });
+    }
+    dependencyReviewActivation = { id: "security-dependency-review-activation", description: "Activated dependency review after enabling dependency graph and alerts." };
+  } else {
+    dependencyReviewActivation = { id: "security-dependency-review-inactive", description: "Dependency review remains inactive because dependency graph and alerts could not be enabled." };
+  }
+  const automatedFixes = await applySecurityCapability(
+      client,
+      "PUT",
+      publicSecurityEndpoint(manifest, "automated-security-fixes"),
+      undefined,
+      { id: "security-dependabot-fixes", description: "Enabled Dependabot automated security fixes." },
+      { id: "security-dependabot-fixes-unsupported", description: "GitHub does not expose Dependabot automated security fixes on the current plan; capture the unsupported capability and remediation." }
+    );
+  const privateReporting = await applySecurityCapability(
+      client,
+      "PUT",
+      publicSecurityEndpoint(manifest, "private-vulnerability-reporting"),
+      undefined,
+      { id: "security-private-reporting", description: "Enabled private vulnerability reporting." },
+      { id: "security-private-reporting-unsupported", description: "GitHub does not expose private vulnerability reporting on the current plan; capture the unsupported capability and remediation." },
+      isPrivateReportingPlanCapabilityLimit
+    );
+  return [analysis, alerts, dependencyReviewActivation, automatedFixes, privateReporting];
+}
+
 function environmentBranchPolicy(
   manifest: BootstrapManifest,
   environmentName: "dev" | "stage" | "prod"
@@ -323,6 +517,9 @@ export async function planGitHub(
         id: "branch-protection",
         description: `Protect ${manifest.project.defaultBranch} with 1 approval, last-push approval, stale-review dismissal, code owner review, linear history, and required status checks ${requiredStatusChecksLabel(manifest)}.`
       },
+      ...(manifest.project.visibility === "public"
+        ? [{ id: "security-baseline-static", description: "Enable existing-repository scanning, dependency alerts, security updates, push protection, and private vulnerability reporting; report plan limitations explicitly." }]
+        : []),
       {
         id: "environments",
         description: "Ensure dev, stage, and prod environments exist with reviewer gates and self-review prevention."
@@ -365,6 +562,8 @@ export async function planGitHub(
       ? `Update repo settings for ${manifest.project.owner}/${manifest.project.name}.`
       : `Create repo ${manifest.project.owner}/${manifest.project.name}.`
   });
+  const securityPlan = await planPublicSecurity(manifest, repo, client);
+  if (securityPlan) actions.push(securityPlan);
   if (
     repoDisablesAutoMerge(manifest, repo) ||
     organizationPlanDisablesPrivateRepoAutoMerge(manifest, owner, organization)
@@ -476,6 +675,7 @@ export async function applyGitHub(
   ) {
     actions.push(autoMergeFallbackAction());
   }
+  actions.push(...await applyPublicSecurity(manifest, client));
 
   try {
     await client.api(

@@ -277,6 +277,7 @@ describe("repo smoke", () => {
         fastChecks: ["secrets", "unit-tests"],
         extendedChecks: ["template-review", "fixture-regression"],
         nightlyCron: "0 7 * * *",
+        codeqlLanguages: ["python"],
         workflows: {
           prFastCi: true,
           extendedValidation: true,

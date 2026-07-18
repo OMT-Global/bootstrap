@@ -457,6 +457,7 @@ const manifestSchema = z.object({
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
+      codeqlLanguages: z.array(z.enum(["javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust"])).optional(),
       prGovernance: z
         .object({
           enforceAfter: z.string().datetime({ offset: true })
@@ -919,6 +920,13 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
+      codeqlLanguages: parsed.ci?.codeqlLanguages ?? (
+        parsed.archetype.kind === "python-service"
+          ? ["python"]
+          : parsed.archetype.kind === "nextjs-web" || parsed.archetype.kind === "node-ts-service"
+            ? ["javascript-typescript"]
+            : []
+      ),
       ...(parsed.ci?.prGovernance ? { prGovernance: { enforceAfter: parsed.ci.prGovernance.enforceAfter } } : {}),
       additionalWorkflows,
       ...(workflows ? { workflows } : {}),

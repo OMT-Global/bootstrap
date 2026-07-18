@@ -284,6 +284,7 @@ export interface BootstrapManifest {
     fastChecks: string[];
     extendedChecks: string[];
     nightlyCron: string;
+    codeqlLanguages: Array<"javascript-typescript" | "python" | "ruby" | "c-cpp" | "csharp" | "rust">;
     prGovernance?: {
       enforceAfter: string;
     };

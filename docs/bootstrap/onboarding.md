@@ -28,6 +28,13 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Confirm new-repo security defaults keep dependency graph, Dependabot alerts, Dependabot security updates, secret scanning, push protection enabled.
 - Treat upstream-aligned forks as explicit exceptions; keep them aligned with the source fork unless you intentionally manage their GitHub policy here.
 
+## Public Security Baseline
+
+- Review `docs/bootstrap/security.md` before changing security workflow events, permissions, or runner labels.
+- Confirm dependency review is the only security job reachable from fork pull requests and runs on GitHub-hosted isolation; CodeQL and SBOM jobs must remain trusted-event only and GitHub-hosted.
+- Capture the seven required GitHub capability observations before treating remote security controls as verified.
+- Confirm `SECURITY.md` private reporting and response targets match the maintained operational policy.
+
 
 ## Environments
 
@@ -37,8 +44,9 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 
 ## Runner Policy
 
-- Shell-safe jobs must use `[self-hosted, linux, shell-only, public]`.
-- Native repos must use self-hosted runners for required automation; Docker, service-container, browser, and `container:` workloads require a dedicated self-hosted runner pool with matching capability labels.
+- Private-repository trusted shell-safe jobs use `[self-hosted, linux, shell-only, private]`.
+- Public repository security workflows use GitHub-hosted isolation. Fork pull-request jobs always remain read-only and GitHub-hosted.
+- Native repos must use self-hosted runners for trusted required automation; Docker, service-container, browser, and `container:` workloads require a dedicated self-hosted runner pool with matching capability labels.
 - Keep PR checks cheap. Add heavy validation to `scripts/ci/run-extended-validation.sh` instead of the PR lane.
 
 - Consume shared security, release, and AI attestation workflows from the control-plane repo once those contracts are pinned for production use.

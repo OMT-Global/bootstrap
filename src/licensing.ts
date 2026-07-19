@@ -280,10 +280,10 @@ function requireTransitionEvidence(
     );
   }
   const transitionMatches =
-    policy.transition.fromMode === beforeMode &&
-    policy.transition.fromContentSha256.toLowerCase() === beforeContentSha256 &&
-    policy.transition.toMode === afterMode &&
-    policy.transition.toContentSha256.toLowerCase() === afterContentSha256;
+    policy.transition.from.mode === beforeMode &&
+    policy.transition.from.licenseSha256 === beforeContentSha256 &&
+    policy.transition.to.mode === afterMode &&
+    policy.transition.to.licenseSha256 === afterContentSha256;
   if (!transitionMatches) {
     throw new Error(
       `PRS-LICENSE-TRANSITION-001: transition evidence does not match ${beforeMode}@${beforeContentSha256} -> ${afterMode}@${afterContentSha256}.`

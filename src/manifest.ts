@@ -1,9 +1,9 @@
 import path from "node:path";
-import spdxLicenseIdentifiers from "spdx-license-list/simple.js";
 import YAML from "yaml";
 import { z } from "zod";
 
 import { readTextIfExists } from "./lib/fs.js";
+import { isSupportedSpdxIdentifier } from "./spdx.js";
 import type {
   AdditionalWorkflowConfig,
   DependabotConfig,
@@ -214,6 +214,7 @@ const notificationSchema = z.object({
   webhookUrlEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/)
 });
 
+const sha256Schema = z.string().regex(/^[0-9a-fA-F]{64}$/).transform((value) => value.toLowerCase());
 const licenseYearsSchema = z.string().regex(/^\d{4}(?:-\d{4})?$/, "Use a four-digit year or inclusive year range.").refine((value) => {
   const start = Number(value.slice(0, 4));
   const end = value.length === 4 ? start : Number(value.slice(5));
@@ -231,8 +232,7 @@ const singleLineLicenseString = z
 
 const multilineLicenseText = z
   .string()
-  .trim()
-  .min(1)
+  .refine((value) => value.trim().length > 0, "Must not be blank.")
   .refine(
     (value) => !/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/u.test(value),
     "Do not use control, format, or Unicode separator characters in legal text."
@@ -240,9 +240,9 @@ const multilineLicenseText = z
 
 const licenseTemplateSchema = z.object({
   path: singleLineLicenseString,
-  sha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  sha256: sha256Schema,
   approval: singleLineLicenseString,
-  spdxIdentifier: z.string().optional()
+  spdxIdentifier: singleLineLicenseString.optional()
 });
 
 const thirdPartyNoticeSchema = z.object({
@@ -253,16 +253,41 @@ const thirdPartyNoticeSchema = z.object({
   notice: multilineLicenseText.optional()
 });
 
-const licenseTransitionSchema = z.object({
+const currentLicenseTransitionSchema = z.object({
+  from: z.object({ mode: singleLineLicenseString, licenseSha256: sha256Schema }),
+  to: z.object({ mode: singleLineLicenseString, licenseSha256: sha256Schema }),
   approvedBy: singleLineLicenseString,
   issue: singleLineLicenseString,
   ownership: singleLineLicenseString,
   contributors: singleLineLicenseString,
   distributionHistory: singleLineLicenseString,
+  reconciles: z.array(z.object({ path: singleLineLicenseString, licenseSha256: sha256Schema })).optional()
+});
+
+const legacyLicenseTransitionSchema = z.object({
   fromMode: singleLineLicenseString,
-  fromContentSha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  fromContentSha256: sha256Schema,
   toMode: singleLineLicenseString,
-  toContentSha256: z.string().regex(/^[0-9a-fA-F]{64}$/)
+  toContentSha256: sha256Schema,
+  approvedBy: singleLineLicenseString,
+  issue: singleLineLicenseString,
+  ownership: singleLineLicenseString,
+  contributors: singleLineLicenseString,
+  distributionHistory: singleLineLicenseString
+}).transform(({ fromMode, fromContentSha256, toMode, toContentSha256, ...evidence }) => ({
+  from: { mode: fromMode, licenseSha256: fromContentSha256 },
+  to: { mode: toMode, licenseSha256: toContentSha256 },
+  ...evidence
+}));
+
+const licenseTransitionSchema = z.union([currentLicenseTransitionSchema, legacyLicenseTransitionSchema]);
+
+const thirdPartyNoticesTransitionSchema = z.object({
+  fromSha256: sha256Schema,
+  toSha256: sha256Schema,
+  approvedBy: singleLineLicenseString,
+  issue: singleLineLicenseString,
+  reconciliation: singleLineLicenseString
 });
 
 const licensePolicyBase = {
@@ -271,32 +296,23 @@ const licensePolicyBase = {
   years: licenseYearsSchema,
   template: licenseTemplateSchema,
   thirdPartyNotices: z.array(thirdPartyNoticeSchema),
+  thirdPartyNoticesTransition: thirdPartyNoticesTransitionSchema.optional(),
   transition: licenseTransitionSchema.optional()
 };
 
 const licensePolicySchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("spdx"),
-    identifier: z
-      .string()
-      .refine((value) => spdxLicenseIdentifiers.has(value), "Use a recognized SPDX license identifier."),
+    identifier: z.string().refine(isSupportedSpdxIdentifier, "Use a recognized SPDX license identifier from Bootstrap's supported list; LicenseRef values and expressions are not supported."),
     ...licensePolicyBase
   }),
   z.object({ mode: z.literal("proprietary"), ...licensePolicyBase })
 ]).superRefine((policy, context) => {
   if (policy.mode === "spdx" && policy.template.spdxIdentifier !== policy.identifier) {
-    context.addIssue({
-      code: "custom",
-      path: ["template", "spdxIdentifier"],
-      message: "SPDX templates must be approved for the selected license identifier."
-    });
+    context.addIssue({ code: "custom", path: ["template", "spdxIdentifier"], message: "SPDX templates must be approved for the selected license identifier." });
   }
   if (policy.mode === "proprietary" && policy.template.spdxIdentifier !== undefined) {
-    context.addIssue({
-      code: "custom",
-      path: ["template", "spdxIdentifier"],
-      message: "Proprietary templates cannot declare an SPDX identifier approval."
-    });
+    context.addIssue({ code: "custom", path: ["template", "spdxIdentifier"], message: "Proprietary templates cannot declare an SPDX identifier approval." });
   }
 });
 

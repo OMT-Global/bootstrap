@@ -24,7 +24,7 @@ on:
 
 jobs:
   preflight:
-    uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
+    uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@05296606785553deb8f36e4f18313076dfc9646d
     with:
       version: ${{ inputs.version }}
       channel: ${{ inputs.channel }}

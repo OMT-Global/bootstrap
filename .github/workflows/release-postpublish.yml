@@ -20,7 +20,7 @@ on:
 
 jobs:
   postpublish:
-    uses: OMT-Global/bootstrap/.github/workflows/release-postpublish-reusable.yml@d9c5bc7e50f4bcc97e4b4d3d2efc64e4ab3dca50
+    uses: OMT-Global/bootstrap/.github/workflows/release-postpublish-reusable.yml@05296606785553deb8f36e4f18313076dfc9646d
     with:
       tag: ${{ inputs.tag }}
       channel: ${{ inputs.channel }}

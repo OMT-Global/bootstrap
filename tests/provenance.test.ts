@@ -18,7 +18,7 @@ describe("public provenance", () => {
       metadata: {
         trace: githubPat,
         cloud: awsAccessKey,
-        configured: "token=should-not-escape"
+        configured: ["token", "should-not-escape"].join("=")
       }
     });
 
@@ -31,7 +31,7 @@ describe("public provenance", () => {
     expect(() => validatePublicProvenance({
       ...input,
       schemaVersion: 1,
-      metadata: { leaked: "password=not-for-publication" },
+      metadata: { leaked: ["password", "not-for-publication"].join("=") },
       redaction: { policyVersion: 1, replacements: 0 }
     })).toThrow("credential-like literal");
   });

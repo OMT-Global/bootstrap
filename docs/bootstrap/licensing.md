@@ -13,6 +13,7 @@ Bootstrap copies an approved repository-local template into `LICENSE`, substitut
 | Private repository without a license decision | omitted | Does not create or infer a license; conformance blocks | Legal/stewardship decision |
 | Existing license matches the configured template | explicit matching mode | Adopts it without rewriting legal text | Review the manifest and template provenance |
 | Existing license would change | explicit replacement mode | Hard-stops until transition evidence is present | Legal approval plus ownership, contributor, and distribution-history evidence |
+| Managed third-party notices would change | `thirdPartyNoticesTransition` | Hard-stops until SHA-bound notice reconciliation evidence is present | Legal approval and component-obligation reconciliation |
 | License policy is removed after Bootstrap managed it | omitted | Hard-stops; Bootstrap will not delete the license | Choose an explicit replacement mode and complete legal review |
 
 ## Manifest contract
@@ -36,7 +37,7 @@ license:
 
 An SPDX policy uses `mode: spdx`, adds one `identifier`, such as `MIT`, and records the same value as `template.spdxIdentifier`. That binding prevents a template approved for one license from being relabeled as another, and any literal SPDX declaration in the rendered file must also match it. The approved template must contain `{{copyright_holder}}` and `{{copyright_years}}`; an SPDX template may also use `{{spdx_identifier}}`. Bootstrap substitutes supported tokens in one pass and preserves every other approved template byte exactly. Templates must be regular, singly linked UTF-8 files with no symlinked path components, must physically remain inside the target repository, cannot alias any selected managed or generated state output even on case-insensitive filesystems, and must match an exact byte-level SHA-256 pin. Existing `LICENSE` files must also be valid UTF-8, while transition decisions and hashes bind their exact bytes, including a leading BOM. Interpolated holder, approval, reference, and notice metadata rejects Unicode control, format, and separator characters; only notice bodies may span multiple LF-delimited lines. These constraints keep the reviewed source text versioned and prevent Bootstrap from inventing, downloading, silently changing, or spoofing terms.
 
-Third-party entries are sorted deterministically. Their `kind` is one of `dependency`, `asset`, `font`, `media`, or `incorporated-source`. An optional `notice` preserves attribution or other required text. An existing unmanaged `THIRD_PARTY_NOTICES.md` is never overwritten; its obligations must first be reconciled into the manifest.
+Third-party entries are sorted deterministically. Their `kind` is one of `dependency`, `asset`, `font`, `media`, or `incorporated-source`. An optional `notice` preserves attribution or other required text. An existing unmanaged `THIRD_PARTY_NOTICES.md` is never overwritten; its obligations must first be reconciled into the manifest. Changing an already managed notice inventory requires `thirdPartyNoticesTransition` evidence with `approvedBy`, `issue`, `reconciliation`, and SHA-256 hashes of the exact existing and rendered notice bytes.
 
 ## Existing-license hard stop
 

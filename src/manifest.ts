@@ -232,11 +232,12 @@ const singleLineLicenseString = z
 
 const multilineLicenseText = z
   .string()
-  .refine((value) => value.trim().length > 0, "Must not be blank.")
   .refine(
     (value) => !/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/u.test(value),
     "Do not use control, format, or Unicode separator characters in legal text."
-  );
+  )
+  .transform((value) => value.trim())
+  .refine((value) => value.length > 0, "Must not be blank.");
 
 const licenseTemplateSchema = z.object({
   path: singleLineLicenseString,

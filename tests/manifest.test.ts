@@ -209,11 +209,30 @@ describe("normalizeManifest", () => {
           kind: "dependency",
           license: "Apache-2.0",
           source: "https://example.invalid/sdk",
-          notice: "Copyright contributors.\nSee bundled NOTICE."
+          notice: "\nCopyright contributors.\nSee bundled NOTICE.\n"
         }]
       },
       archetype: { kind: "generic-empty" }
-    }).license?.thirdPartyNotices[0]?.notice).toContain("\n");
+    }).license?.thirdPartyNotices[0]?.notice).toBe("Copyright contributors.\nSee bundled NOTICE.");
+
+    expect(() => normalizeManifest({
+      project: { name: "unsafe-notice-boundary", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" },
+        thirdPartyNotices: [{
+          name: "SDK",
+          kind: "dependency",
+          license: "Apache-2.0",
+          source: "https://example.invalid/sdk",
+          notice: "\ufeffCopyright contributors."
+        }]
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("Do not use control, format, or Unicode separator characters in legal text.");
   });
 
   it("accepts version 2 manifests as compatibility input", () => {

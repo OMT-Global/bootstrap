@@ -57,6 +57,8 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("PR_GOVERNANCE_ENFORCE_AFTER:");
       expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
+      expect(prWorkflow?.contents).toMatch(/validate-pr-description:[\s\S]*?if: github\.event\.pull_request\.draft == false \&\& github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/);
+      expect(prWorkflow?.contents).toMatch(/validate-pr-governance:[\s\S]*?if: github\.event\.pull_request\.draft == false \&\& github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/);
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");
       expect(prWorkflow?.contents).toContain("refs?|part[[:space:]]+of");
       expect(prWorkflow?.contents).toContain("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#");

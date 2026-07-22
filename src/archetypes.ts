@@ -2559,7 +2559,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         name: Validate PR Description
         runs-on: ${shellRunner}
         timeout-minutes: 5
-        if: github.event.pull_request.draft == false
+        if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           PR_BODY: \${{ github.event.pull_request.body }}
         steps:
@@ -2621,7 +2621,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         name: Validate PR Governance
         runs-on: ${shellRunner}
         timeout-minutes: 5
-        if: github.event.pull_request.draft == false
+        if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           PR_TITLE: \${{ github.event.pull_request.title }}
           PR_BODY: \${{ github.event.pull_request.body }}

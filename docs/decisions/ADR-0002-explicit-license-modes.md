@@ -25,7 +25,7 @@ When configured, the policy must:
 3. Keep third-party dependency, asset, font, media, and incorporated-source notices separate from the first-party notice.
 4. Bind each SPDX template approval and rendered SPDX declaration to the one selected identifier, reject proprietary templates that contain SPDX declarations, and substitute approved tokens without rescanning legal metadata.
 5. Treat adoption of an unmanaged license, any change to existing license bytes, or any managed legal-classification change as a hard stop until approver, issue, ownership, contributor, and distribution-history evidence is bound to the exact before/after modes and content hashes.
-6. Preserve managed-file ownership and fail when a managed license is edited directly or unmanaged third-party notices would be overwritten.
+6. Preserve managed-file ownership and fail when a managed license or notice inventory is edited directly, unmanaged third-party notices would be overwritten, or a managed notice inventory changes without approved SHA-bound reconciliation evidence.
 7. Show the exact before and after modes in plan output before apply.
 
 The proprietary mode is a projection mechanism only. This decision does not approve a legal entity, copyright holder, or proprietary template for any downstream product.

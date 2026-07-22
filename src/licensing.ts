@@ -280,13 +280,34 @@ function requireTransitionEvidence(
     );
   }
   const transitionMatches =
-    policy.transition.fromMode === beforeMode &&
-    policy.transition.fromContentSha256.toLowerCase() === beforeContentSha256 &&
-    policy.transition.toMode === afterMode &&
-    policy.transition.toContentSha256.toLowerCase() === afterContentSha256;
+    policy.transition.from.mode === beforeMode &&
+    policy.transition.from.licenseSha256 === beforeContentSha256 &&
+    policy.transition.to.mode === afterMode &&
+    policy.transition.to.licenseSha256 === afterContentSha256;
   if (!transitionMatches) {
     throw new Error(
       `PRS-LICENSE-TRANSITION-001: transition evidence does not match ${beforeMode}@${beforeContentSha256} -> ${afterMode}@${afterContentSha256}.`
+    );
+  }
+}
+
+function requireThirdPartyNoticesTransitionEvidence(
+  policy: LicensePolicy,
+  beforeContentSha256: string,
+  afterContentSha256: string
+): void {
+  const transition = policy.thirdPartyNoticesTransition;
+  if (!transition) {
+    throw new Error(
+      "PRS-LICENSE-NOTICES-TRANSITION-001: changing managed third-party notices is a legal hard stop; record approvedBy, issue, reconciliation, and exact before/after SHA-256 evidence."
+    );
+  }
+  if (
+    transition.fromSha256 !== beforeContentSha256 ||
+    transition.toSha256 !== afterContentSha256
+  ) {
+    throw new Error(
+      `PRS-LICENSE-NOTICES-TRANSITION-001: notices transition evidence does not match ${beforeContentSha256} -> ${afterContentSha256}.`
     );
   }
 }
@@ -348,14 +369,33 @@ export async function projectLicensePolicy(
     }
     requireTransitionEvidence(policy, beforeMode, beforeContentSha256, afterMode, afterContentSha256);
   }
+  const managedNoticesHash = state?.managedFiles[THIRD_PARTY_NOTICES_PATH];
+  if (existingNoticesFile === undefined && managedNoticesHash !== undefined) {
+    throw new Error("PRS-OWNERSHIP-001: managed THIRD_PARTY_NOTICES.md was deleted; restore it before planning a legal transition.");
+  }
+  const existingNoticesSha256 = existingNoticesFile === undefined ? undefined : sha256(existingNoticesFile.bytes);
+  if (
+    existingNoticesSha256 !== undefined &&
+    managedNoticesHash !== undefined &&
+    managedNoticesHash !== existingNoticesSha256
+  ) {
+    throw new Error("PRS-OWNERSHIP-001: managed THIRD_PARTY_NOTICES.md was directly modified; restore it before planning a legal transition.");
+  }
   if (
     existingNotices !== undefined &&
     existingNotices !== noticesContents &&
-    state?.managedFiles[THIRD_PARTY_NOTICES_PATH] === undefined
+    managedNoticesHash === undefined
   ) {
     throw new Error(
       "PRS-LICENSE-NOTICES-001: existing third-party notices are unmanaged and would be replaced; incorporate every obligation into license.thirdPartyNotices before applying."
     );
+  }
+  if (
+    existingNoticesSha256 !== undefined &&
+    existingNotices !== noticesContents &&
+    managedNoticesHash !== undefined
+  ) {
+    requireThirdPartyNoticesTransitionEvidence(policy, existingNoticesSha256, sha256(Buffer.from(noticesContents, "utf8")));
   }
 
   return {

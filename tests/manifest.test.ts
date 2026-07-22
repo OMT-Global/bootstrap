@@ -106,6 +106,58 @@ describe("normalizeManifest", () => {
     })).toThrow("SPDX templates must be approved for the selected license identifier");
 
     expect(() => normalizeManifest({
+      project: { name: "unbound-spdx-template", owner: "acme", visibility: "public" },
+      license: {
+        mode: "spdx", identifier: "MIT", holder: "Acme LLC", holderVerification: "legal-entity:acme-llc", years: "2026",
+        template: { path: "legal/mit.txt", sha256: templateDigest, approval: "maintainer-approved" }, thirdPartyNotices: []
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("SPDX templates must be approved for the selected license identifier");
+
+    const fullRegistryPolicy = normalizeManifest({
+      project: { name: "full-spdx-registry", owner: "acme", visibility: "public" },
+      license: { mode: "spdx", identifier: "0BSD", holder: "Acme LLC", holderVerification: "legal-entity:acme-llc", years: "2026", template: { path: "legal/0bsd.txt", sha256: templateDigest, approval: "maintainer-approved", spdxIdentifier: "0BSD" }, thirdPartyNotices: [] },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(fullRegistryPolicy.license).toMatchObject({ mode: "spdx", identifier: "0BSD" });
+
+    const legacyTransition = normalizeManifest({
+      project: { name: "legacy-transition", owner: "acme", visibility: "private" },
+      license: { mode: "proprietary", holder: "Acme LLC", holderVerification: "legal-entity:acme-llc", years: "2026", template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" }, thirdPartyNotices: [], transition },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(legacyTransition.license?.transition).toMatchObject({ from: { mode: "existing-unclassified", licenseSha256: "b".repeat(64) }, to: { mode: "proprietary", licenseSha256: "c".repeat(64) } });
+
+    const currentTransition = normalizeManifest({
+      project: { name: "current-transition", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary", holder: "Acme LLC", holderVerification: "legal-entity:acme-llc", years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest.toUpperCase(), approval: "counsel:P-1" }, thirdPartyNotices: [],
+        transition: {
+          from: { mode: "existing-unclassified", licenseSha256: "B".repeat(64) },
+          to: { mode: "proprietary", licenseSha256: "C".repeat(64) },
+          approvedBy: "legal-reviewer", issue: "LEGAL-42", ownership: "Ownership verified",
+          contributors: "Contributor rights verified", distributionHistory: "Distribution history recorded",
+          reconciles: [{ path: "COPYING", licenseSha256: "D".repeat(64) }]
+        },
+        thirdPartyNoticesTransition: {
+          fromSha256: "E".repeat(64), toSha256: "F".repeat(64), approvedBy: "legal-reviewer",
+          issue: "LEGAL-42", reconciliation: "Every third-party obligation was reviewed"
+        }
+      },
+      archetype: { kind: "generic-empty" }
+    });
+    expect(currentTransition.license).toMatchObject({
+      template: { sha256: templateDigest },
+      transition: {
+        from: { licenseSha256: "b".repeat(64) },
+        to: { licenseSha256: "c".repeat(64) },
+        reconciles: [{ path: "COPYING", licenseSha256: "d".repeat(64) }]
+      },
+      thirdPartyNoticesTransition: { fromSha256: "e".repeat(64), toSha256: "f".repeat(64) }
+    });
+
+    expect(() => normalizeManifest({
       project: { name: "injected-holder", owner: "acme", visibility: "private" },
       license: {
         mode: "proprietary",
@@ -157,11 +209,30 @@ describe("normalizeManifest", () => {
           kind: "dependency",
           license: "Apache-2.0",
           source: "https://example.invalid/sdk",
-          notice: "Copyright contributors.\nSee bundled NOTICE."
+          notice: "\nCopyright contributors.\nSee bundled NOTICE.\n"
         }]
       },
       archetype: { kind: "generic-empty" }
-    }).license?.thirdPartyNotices[0]?.notice).toContain("\n");
+    }).license?.thirdPartyNotices[0]?.notice).toBe("Copyright contributors.\nSee bundled NOTICE.");
+
+    expect(() => normalizeManifest({
+      project: { name: "unsafe-notice-boundary", owner: "acme", visibility: "private" },
+      license: {
+        mode: "proprietary",
+        holder: "Acme LLC",
+        holderVerification: "legal-entity:acme-llc",
+        years: "2026",
+        template: { path: "legal/proprietary.txt", sha256: templateDigest, approval: "counsel:P-1" },
+        thirdPartyNotices: [{
+          name: "SDK",
+          kind: "dependency",
+          license: "Apache-2.0",
+          source: "https://example.invalid/sdk",
+          notice: "\ufeffCopyright contributors."
+        }]
+      },
+      archetype: { kind: "generic-empty" }
+    })).toThrow("Do not use control, format, or Unicode separator characters in legal text.");
   });
 
   it("accepts version 2 manifests as compatibility input", () => {

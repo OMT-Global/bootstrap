@@ -366,12 +366,12 @@ describe("runConformance", () => {
       workflowPath,
       workflow
         .replace(
-          "    steps:\n      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4\n      - uses: github/codeql-action/init@",
-          "    steps:\n      - run: exit 1\n      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4\n      - uses: github/codeql-action/init@"
+          "    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\n      - uses: github/codeql-action/init@",
+          "    steps:\n      - run: exit 1\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\n      - uses: github/codeql-action/init@"
         )
         .replace(
-          "      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4\n      - uses: anchore/sbom-action@",
-          "      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4\n        with:\n          repository: attacker/decoy\n      - uses: anchore/sbom-action@"
+          "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\n      - uses: anchore/sbom-action@",
+          "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\n        with:\n          repository: attacker/decoy\n      - uses: anchore/sbom-action@"
         )
     );
 
@@ -571,7 +571,7 @@ describe("runConformance", () => {
       "      contents: write",
       "    steps:",
       "      - if: false",
-      "        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4",
+      "        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
       "      - if: false",
       "        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
       "  codeql:",
@@ -580,7 +580,7 @@ describe("runConformance", () => {
       "      contents: read",
       "    steps:",
       "      - if: false",
-      "        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4",
+      "        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
       "      - if: false",
       "        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4",
       "        with:",
@@ -591,7 +591,7 @@ describe("runConformance", () => {
       "    if: github.event_name == 'push' || github.event_name == 'schedule'",
       "    steps:",
       "      - if: false",
-      "        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4",
+      "        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
       "      - if: false",
       "        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0",
       "        env:",

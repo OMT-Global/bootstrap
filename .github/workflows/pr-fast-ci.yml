@@ -77,7 +77,7 @@ jobs:
     name: Validate PR Description
     runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
     timeout-minutes: 5
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
     env:
       PR_BODY: ${{ github.event.pull_request.body }}
     steps:
@@ -139,7 +139,7 @@ jobs:
     name: Validate PR Governance
     runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
     timeout-minutes: 5
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
     env:
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}

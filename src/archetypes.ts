@@ -584,7 +584,8 @@ function preCommitHook(): string {
       staged_files+=("$staged_file")
     done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
-    for f in "\${staged_files[@]}"; do
+    for f in "\${staged_files[@]:-}"; do
+      [[ -n "$f" ]] || continue
       case "$f" in
         *.env|.env.*)
           if [[ "$f" != *.example ]]; then
@@ -3187,7 +3188,7 @@ function securityModelDoc(manifest: BootstrapManifest): string {
 
     ## Required Controls
 
-    - Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. Dependency review stays skipped until provisioning enables its prerequisite and activation variable.
+    - Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. The dependency-graph observation must also record \`dependencyReviewEnabled: true\` after provisioning verifies \`DEPENDENCY_REVIEW_ENABLED=true\`.
     - \`.github/dependabot.yml\` keeps both dependency and GitHub Actions pins updateable.
     - \`.github/workflows/security.yml\` performs dependency review, CodeQL analysis for \`${codeQlLanguages(manifest)}\`, and SPDX JSON SBOM generation using immutable action SHAs.
     - \`SECURITY.md\` directs reporters to a private advisory and defines acknowledgement, update, remediation, and coordinated-disclosure targets.
@@ -3198,7 +3199,7 @@ function securityModelDoc(manifest: BootstrapManifest): string {
 
     ## Capability Evidence
 
-    Capture authorized observations for these controls and pass them to \`bootstrap conform --github-capabilities <path>\`: \`dependency-graph\`, \`dependabot-alerts\`, \`dependabot-security-updates\`, \`secret-scanning\`, \`push-protection\`, \`code-scanning\`, and \`private-vulnerability-reporting\`. Unsupported controls remain warnings with remediation; available but disabled controls are blocking misconfigurations. Current typed exceptions may waive only their matching \`github.<control>\` scope.
+    Capture authorized observations for these controls and pass them to \`bootstrap conform --github-capabilities <path>\`: \`dependency-graph\`, \`dependabot-alerts\`, \`dependabot-security-updates\`, \`secret-scanning\`, \`push-protection\`, \`code-scanning\`, and \`private-vulnerability-reporting\`. Record \`dependencyReviewEnabled: true\` only after verifying the repository activation variable. Unsupported controls remain warnings with remediation; available but disabled controls are blocking misconfigurations. Current typed exceptions may waive only their matching \`github.<control>\` scope.
   `;
 }
 

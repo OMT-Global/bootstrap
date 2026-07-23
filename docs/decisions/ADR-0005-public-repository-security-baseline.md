@@ -25,7 +25,7 @@ Every public repository receives these Bootstrap-managed surfaces:
 
 All third-party actions remain pinned to immutable commits with readable release metadata. The public security workflow uses read-only top-level permissions and contains no secret references. Every job uses GitHub-hosted isolation. Jobs that require `security-events: write` or `contents: write` are explicitly unreachable from pull requests.
 
-Conformance adds stable local baseline and fork-safety rules. It also expects authorized observations for dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting. A missing observation is `unverified`, an unsupported plan capability is `unsupported`, and an available but disabled capability is `misconfigured`. Only a current typed exception matching `security-baseline` / `repo.security` or `github-capability` / `github.<control>` can waive the corresponding deviation.
+Conformance adds stable local baseline and fork-safety rules. It also expects authorized observations for dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting. A supported dependency-graph observation must separately record `dependencyReviewEnabled: true` after verifying the activation variable; absence remains `unverified` and `false` is `misconfigured`. A missing observation is `unverified`, an unsupported plan capability is `unsupported`, and an available but disabled capability is `misconfigured`. Only a current typed exception matching `security-baseline` / `repo.security` or `github-capability` / `github.<control>` can waive the corresponding deviation.
 
 ## Consequences
 

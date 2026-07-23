@@ -8,7 +8,7 @@
 
 ## Required Controls
 
-- Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. Dependency review stays skipped until provisioning enables its prerequisite and activation variable.
+- Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. The dependency-graph observation must also record `dependencyReviewEnabled: true` after provisioning verifies `DEPENDENCY_REVIEW_ENABLED=true`.
 - `.github/dependabot.yml` keeps both dependency and GitHub Actions pins updateable.
 - `.github/workflows/security.yml` performs dependency review, CodeQL analysis for `javascript-typescript`, and SPDX JSON SBOM generation using immutable action SHAs.
 - `SECURITY.md` directs reporters to a private advisory and defines acknowledgement, update, remediation, and coordinated-disclosure targets.
@@ -19,4 +19,4 @@ The security workflow uses `pull_request`, never `pull_request_target`. Its top-
 
 ## Capability Evidence
 
-Capture authorized observations for these controls and pass them to `bootstrap conform --github-capabilities <path>`: `dependency-graph`, `dependabot-alerts`, `dependabot-security-updates`, `secret-scanning`, `push-protection`, `code-scanning`, and `private-vulnerability-reporting`. Unsupported controls remain warnings with remediation; available but disabled controls are blocking misconfigurations. Current typed exceptions may waive only their matching `github.<control>` scope.
+Capture authorized observations for these controls and pass them to `bootstrap conform --github-capabilities <path>`: `dependency-graph`, `dependabot-alerts`, `dependabot-security-updates`, `secret-scanning`, `push-protection`, `code-scanning`, and `private-vulnerability-reporting`. Record `dependencyReviewEnabled: true` only after verifying the repository activation variable. Unsupported controls remain warnings with remediation; available but disabled controls are blocking misconfigurations. Current typed exceptions may waive only their matching `github.<control>` scope.

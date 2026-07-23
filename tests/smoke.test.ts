@@ -469,4 +469,23 @@ describe("repo smoke", () => {
     ).resolves.toBeUndefined();
     await expect(access(path.join(targetDir, ".bootstrap/bootstrap-state.json"))).rejects.toThrow();
   });
+
+  it("runs the generated pre-commit hook with no staged files", async () => {
+    const targetDir = await makeTempDir();
+    await execFileAsync("git", ["init", "-b", "feature/pre-commit"], { cwd: targetDir });
+
+    const manifest = normalizeManifest({
+      project: {
+        name: "empty-pre-commit",
+        owner: "acme"
+      },
+      archetype: {
+        kind: "generic-empty"
+      }
+    });
+
+    await applyRepo(manifest, targetDir);
+
+    await expect(execFileAsync("bash", [".githooks/pre-commit"], { cwd: targetDir })).resolves.toBeDefined();
+  });
 });

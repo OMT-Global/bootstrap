@@ -73,11 +73,44 @@ jobs:
       - name: Run fast checks
         run: bash scripts/ci/run-fast-checks.sh
 
+  verify-dependabot-commits:
+    name: Verify Dependabot-only Commits
+    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    outputs:
+      bot_only: ${{ steps.verify.outputs.bot_only }}
+    env:
+      PR_COMMITS_URL: ${{ github.event.pull_request.commits_url }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - id: verify
+        name: Require every PR commit to be Dependabot
+        run: |
+          set -euo pipefail
+          page=1
+          commits_seen=0
+          bot_only=true
+          while :; do
+            response="$(curl --fail-with-body --silent --show-error --location --header "Authorization: Bearer $GITHUB_TOKEN" --header "Accept: application/vnd.github+json" "${PR_COMMITS_URL}?per_page=100&page=$page")"
+            jq -e 'type == "array"' <<<"$response" >/dev/null
+            count="$(jq 'length' <<<"$response")"
+            [[ "$count" -gt 0 ]] || break
+            commits_seen=$((commits_seen + count))
+            if ! jq -e 'all(.[]; .author != null and .author.login == "dependabot[bot]")' <<<"$response" >/dev/null; then bot_only=false; fi
+            [[ "$count" -lt 100 ]] && break
+            page=$((page + 1))
+          done
+          [[ "$commits_seen" -gt 0 ]] || bot_only=false
+          echo "Verified $commits_seen PR commit(s); Dependabot-only=$bot_only"
+          echo "bot_only=$bot_only" >> "$GITHUB_OUTPUT"
+
   validate-pr-description:
     name: Validate PR Description
     runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
     timeout-minutes: 5
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && needs.verify-dependabot-commits.outputs.bot_only != 'true'
+    needs: verify-dependabot-commits
     env:
       PR_BODY: ${{ github.event.pull_request.body }}
     steps:
@@ -139,7 +172,8 @@ jobs:
     name: Validate PR Governance
     runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
     timeout-minutes: 5
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && needs.verify-dependabot-commits.outputs.bot_only != 'true'
+    needs: verify-dependabot-commits
     env:
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}
@@ -176,6 +210,7 @@ jobs:
     needs:
       - changes
       - fast-checks
+      - verify-dependabot-commits
       - validate-pr-description
       - validate-secrets
       - validate-pr-governance
@@ -186,6 +221,7 @@ jobs:
           RESULTS: >-
             changes=${{ needs.changes.result }}
             fast-checks=${{ needs.fast-checks.result }}
+            verify-dependabot-commits=${{ needs.verify-dependabot-commits.result }}
             validate-pr-description=${{ needs.validate-pr-description.result }}
             validate-secrets=${{ needs.validate-secrets.result }}
             validate-pr-governance=${{ needs.validate-pr-governance.result }}

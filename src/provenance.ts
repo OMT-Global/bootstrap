@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PUBLIC_PROVENANCE_SCHEMA_VERSION = 1;
+export const PUBLIC_PROVENANCE_SCHEMA_VERSION = 2;
 export const REDACTED_CREDENTIAL = "[REDACTED:CREDENTIAL]";
 
 const shaPattern = /^[0-9a-f]{40}$/;
@@ -10,6 +10,59 @@ const credentialPatterns = [
   /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/,
   /\b(?:api[_-]?key|access[_-]?token|password|secret|token)\s*[:=]\s*[^\s]+/i
 ];
+export const LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION = 1;
+export const CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION = PUBLIC_PROVENANCE_SCHEMA_VERSION;
+const MAX_PUBLIC_METADATA_INPUT_LENGTH = 512;
+const MAX_PUBLIC_METADATA_OUTPUT_LENGTH = MAX_PUBLIC_METADATA_INPUT_LENGTH * 4;
+
+const legacyReviewerSchema = z.object({
+  login: z.string().min(1),
+  state: z.enum(["approved", "commented", "changes_requested"])
+}).strict();
+
+export const legacyPublicProvenanceSchema = z
+  .object({
+    schemaVersion: z.literal(LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION),
+    runId: z.string().regex(/^[A-Za-z0-9._-]+$/),
+    subject: z.object({
+      repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+      commitSha: z.string().regex(shaPattern),
+      ref: z.string().min(1)
+    }).strict(),
+    execution: z.object({
+      workflow: z.string().min(1),
+      runUrl: z.string().url().optional(),
+      createdAt: z.string().datetime({ offset: true })
+    }).strict(),
+    reviewers: z.array(legacyReviewerSchema),
+    metadata: z.record(z.string(), z.string()),
+    redaction: z.object({
+      policyVersion: z.literal(1),
+      replacements: z.number().int().nonnegative()
+    }).strict()
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    const publicStrings: Array<[string, string]> = [
+      ["runId", manifest.runId],
+      ["subject.repository", manifest.subject.repository],
+      ["subject.ref", manifest.subject.ref],
+      ["execution.workflow", manifest.execution.workflow]
+    ];
+    if (manifest.execution.runUrl) publicStrings.push(["execution.runUrl", manifest.execution.runUrl]);
+    manifest.reviewers.forEach((reviewer, index) => publicStrings.push([`reviewers.${index}.login`, reviewer.login]));
+    Object.entries(manifest.metadata).forEach(([key, value]) => {
+      publicStrings.push([`metadata key ${key}`, key], [`metadata.${key}`, value]);
+    });
+    for (const [path, value] of publicStrings) {
+      if (containsCredential(value)) {
+        context.addIssue({
+          code: "custom",
+          message: `Legacy public provenance field ${path} contains a credential-like literal.`
+        });
+      }
+    }
+  });
 
 const publicText = (label: string, maximumLength: number) =>
   z
@@ -46,12 +99,12 @@ const executionSchema = z.object({
 const metadataInputValue = z
   .string()
   .min(1)
-  .max(512)
+  .max(MAX_PUBLIC_METADATA_INPUT_LENGTH)
   .refine(
     (value) => !value.includes(REDACTED_CREDENTIAL),
     "Public provenance input must not contain the reserved redaction placeholder."
   );
-const metadataOutputValue = publicText("Public provenance metadata", 512);
+const metadataOutputValue = publicText("Public provenance metadata", MAX_PUBLIC_METADATA_OUTPUT_LENGTH);
 const metadataInputShape = {
   policy: metadataInputValue.optional(),
   generator: metadataInputValue.optional(),
@@ -94,7 +147,7 @@ export const publicProvenanceInputSchema = z.object({
 
 export const publicProvenanceSchema = z
   .object({
-    schemaVersion: z.literal(PUBLIC_PROVENANCE_SCHEMA_VERSION),
+    schemaVersion: z.literal(CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION),
     runId: z
       .string()
       .max(128)
@@ -125,6 +178,8 @@ export const publicProvenanceSchema = z
   });
 
 export type PublicProvenance = z.infer<typeof publicProvenanceSchema>;
+export type LegacyPublicProvenance = z.infer<typeof legacyPublicProvenanceSchema>;
+export type SupportedPublicProvenance = PublicProvenance | LegacyPublicProvenance;
 export type PublicProvenanceInput = z.input<typeof publicProvenanceInputSchema>;
 
 export function containsCredential(value: string): boolean {
@@ -158,7 +213,7 @@ export function createPublicProvenance(input: PublicProvenanceInput): PublicProv
   );
 
   return publicProvenanceSchema.parse({
-    schemaVersion: PUBLIC_PROVENANCE_SCHEMA_VERSION,
+    schemaVersion: CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION,
     runId: parsedInput.runId,
     subject: parsedInput.subject,
     execution: parsedInput.execution,
@@ -170,6 +225,10 @@ export function createPublicProvenance(input: PublicProvenanceInput): PublicProv
 
 export function validatePublicProvenance(value: unknown): PublicProvenance {
   return publicProvenanceSchema.parse(value);
+}
+
+export function readLegacyPublicProvenance(value: unknown): LegacyPublicProvenance {
+  return legacyPublicProvenanceSchema.parse(value);
 }
 
 function countOccurrences(value: string, needle: string): number {

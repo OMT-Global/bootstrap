@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION,
+  LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION,
   PUBLIC_PROVENANCE_METADATA_KEYS,
   REDACTED_CREDENTIAL,
   createPublicProvenance,
   publicProvenanceMetadataSchema,
+  readLegacyPublicProvenance,
   validatePublicProvenance
 } from "../src/provenance.js";
 
@@ -33,6 +36,7 @@ describe("public provenance", () => {
     });
 
     expect(provenance.metadata).toEqual({ policy: REDACTED_CREDENTIAL, generator: REDACTED_CREDENTIAL, aiProvider: REDACTED_CREDENTIAL });
+    expect(provenance.schemaVersion).toBe(CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION);
     expect(provenance.redaction.replacements).toBe(3);
     expect(JSON.stringify(provenance)).not.toContain("should-not-escape");
   });
@@ -40,7 +44,7 @@ describe("public provenance", () => {
   it("rejects a hand-authored public manifest containing a credential-like literal", () => {
     expect(() => validatePublicProvenance({
       ...input,
-      schemaVersion: 1,
+      schemaVersion: CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION,
       metadata: { policy: ["password", "not-for-publication"].join("=") },
       redaction: { policyVersion: 1, replacements: 1 }
     })).toThrow("credential-like literal");
@@ -71,7 +75,7 @@ describe("public provenance", () => {
   it("rejects unknown fields at every public schema boundary", () => {
     expect(() => validatePublicProvenance({
       ...input,
-      schemaVersion: 1,
+      schemaVersion: CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION,
       subject: { ...input.subject, unexpected: "not public" },
       metadata: {},
       redaction: { policyVersion: 1, replacements: 0 }
@@ -91,7 +95,7 @@ describe("public provenance", () => {
   it("rejects forged redaction counts", () => {
     expect(() => validatePublicProvenance({
       ...input,
-      schemaVersion: 1,
+      schemaVersion: CURRENT_PUBLIC_PROVENANCE_SCHEMA_VERSION,
       metadata: { generator: REDACTED_CREDENTIAL },
       redaction: { policyVersion: 1, replacements: 0 }
     })).toThrow("redaction evidence does not match");
@@ -126,5 +130,51 @@ describe("public provenance", () => {
       ...input,
       metadata: { generator: REDACTED_CREDENTIAL }
     })).toThrow("reserved redaction placeholder");
+  });
+
+  it("continues to validate legacy version-1 manifests explicitly", () => {
+    const legacyInput = {
+      ...input,
+      schemaVersion: LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION,
+      metadata: { trace: "public-build-trace" },
+      redaction: { policyVersion: 1, replacements: 0 }
+    };
+    const legacy = readLegacyPublicProvenance(legacyInput);
+
+    expect(legacy.schemaVersion).toBe(LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION);
+    expect(legacy.metadata).toEqual({ trace: "public-build-trace" });
+    expect(() => validatePublicProvenance(legacyInput)).toThrow();
+  });
+
+  it("rejects unknown fields in explicit legacy reads", () => {
+    expect(() => readLegacyPublicProvenance({
+      ...input,
+      schemaVersion: LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION,
+      subject: { ...input.subject, privatePayload: "not part of version 1" },
+      metadata: {},
+      redaction: { policyVersion: 1, replacements: 0 }
+    })).toThrow("Unrecognized key");
+  });
+
+  it("rejects credential-like legacy metadata keys", () => {
+    expect(() => readLegacyPublicProvenance({
+      ...input,
+      schemaVersion: LEGACY_PUBLIC_PROVENANCE_SCHEMA_VERSION,
+      metadata: { [githubPat]: "public-build-trace" },
+      redaction: { policyVersion: 1, replacements: 0 }
+    })).toThrow("credential-like literal");
+  });
+
+  it("supports worst-case credential redaction expansion within the output bound", () => {
+    const repeated = Array.from({ length: 60 }, () => ["token", "x"].join("=")).join(" ");
+    const provenance = createPublicProvenance({
+      ...input,
+      metadata: { generator: repeated }
+    });
+
+    expect(provenance.redaction.replacements).toBe(60);
+    expect(provenance.metadata.generator).toBe(
+      Array.from({ length: 60 }, () => REDACTED_CREDENTIAL).join(" ")
+    );
   });
 });

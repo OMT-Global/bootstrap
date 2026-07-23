@@ -18,7 +18,7 @@ Bootstrap is a local TypeScript control-plane CLI plus GitHub Actions workflow s
 ### Primary components
 
 - The `bootstrap provenance create` and `validate` commands read operator-selected JSON files, invoke the Zod contract, and write or print public JSON (`src/cli.ts`, `src/provenance.ts`).
-- The public contract validates subject, execution, reviewer, allowlisted metadata, and redaction evidence. It does not fetch GitHub reviewer state or sign output (`src/provenance.ts`).
+- The version-2 public contract validates subject, execution, reviewer, allowlisted metadata, and redaction evidence. Default validation is v2-only; an explicit strict reader retains version 1 for historical readability, but legacy manifests do not satisfy the current allowlist policy. Neither format fetches GitHub reviewer state or signs output (`src/provenance.ts`).
 - The reusable AI attestation workflow constructs a separate commit-scoped JSON blob, signs it keylessly with cosign using GitHub OIDC, uploads it, then verifies the downloaded artifact (`.github/workflows/ai-attestation-reusable.yml`).
 - The renderer projects attestation callers and workflow configuration into managed repositories (`src/archetypes.ts`, `src/manifest.ts`).
 - Material-action notifications reuse the credential detector before sending governed messages to GitHub or configured webhooks (`src/notifications.ts`, `src/github/client.ts`).

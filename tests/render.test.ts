@@ -66,6 +66,10 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("validate-pr-governance:");
       expect(prWorkflow?.contents).toContain("pull-requests: read");
       expect(prWorkflow?.contents).toContain("PR_COMMITS_URL:");
+      expect(prWorkflow?.contents).toContain("verify-dependabot-commits:");
+      expect(prWorkflow?.contents).toContain("all(.[]; .author != null and .author.login == \"dependabot[bot]\")");
+      expect(prWorkflow?.contents).toContain("needs.verify-dependabot-commits.outputs.bot_only != 'true'");
+      expect(prWorkflow?.contents).toContain("- verify-dependabot-commits");
       expect(files.find((file) => file.path === "scripts/ci/check-pr-governance.sh")?.contents).toContain("PRS-DCO-001");
       expect(prWorkflow?.contents).toContain("validate-action-pins:");
       expect(files.find((file) => file.path === "scripts/ci/check-action-pins.sh")?.contents).toContain("SA-ACTION-PIN-001");

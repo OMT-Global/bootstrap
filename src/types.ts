@@ -33,15 +33,28 @@ export interface ThirdPartyNotice {
 }
 
 export interface LicenseTransitionEvidence {
+  from: {
+    mode: string;
+    licenseSha256: string;
+  };
+  to: {
+    mode: string;
+    licenseSha256: string;
+  };
   approvedBy: string;
   issue: string;
   ownership: string;
   contributors: string;
   distributionHistory: string;
-  fromMode: string;
-  fromContentSha256: string;
-  toMode: string;
-  toContentSha256: string;
+  reconciles?: Array<{ path: string; licenseSha256: string }>;
+}
+
+export interface ThirdPartyNoticesTransitionEvidence {
+  fromSha256: string;
+  toSha256: string;
+  approvedBy: string;
+  issue: string;
+  reconciliation: string;
 }
 
 interface LicensePolicyBase {
@@ -50,6 +63,7 @@ interface LicensePolicyBase {
   years: string;
   template: LicenseTemplateReference;
   thirdPartyNotices: ThirdPartyNotice[];
+  thirdPartyNoticesTransition?: ThirdPartyNoticesTransitionEvidence;
   transition?: LicenseTransitionEvidence;
 }
 

@@ -642,4 +642,100 @@ describe("license policy projection", () => {
     await writeFile(path.join(directory, "THIRD_PARTY_NOTICES.md"), "Existing obligations\n");
     await expect(planRepo(manifest(proprietary()), directory)).rejects.toThrow("PRS-LICENSE-NOTICES-001");
   });
+
+  it("requires SHA-bound evidence before changing managed third-party notices", async () => {
+    const directory = await fixture("managed-third-party-transition");
+    const originalPolicy = proprietary({
+      thirdPartyNotices: [{ name: "Existing SDK", kind: "dependency", license: "MIT", source: "https://example.invalid/sdk" }]
+    });
+    await applyRepo(manifest(originalPolicy), directory);
+    const noticesPath = path.join(directory, "THIRD_PARTY_NOTICES.md");
+    const originalNotices = await readFile(noticesPath, "utf8");
+
+    await writeFile(noticesPath, "Directly edited obligations\n");
+    await expect(planRepo(manifest(originalPolicy), directory)).rejects.toThrow(
+      "PRS-OWNERSHIP-001: managed THIRD_PARTY_NOTICES.md was directly modified"
+    );
+    await writeFile(noticesPath, originalNotices);
+
+    await unlink(noticesPath);
+    await expect(planRepo(manifest(originalPolicy), directory)).rejects.toThrow(
+      "PRS-OWNERSHIP-001: managed THIRD_PARTY_NOTICES.md was deleted"
+    );
+    await writeFile(noticesPath, originalNotices);
+
+    const updatedNotices = [
+      ...originalPolicy.thirdPartyNotices,
+      { name: "New Font", kind: "font" as const, license: "OFL-1.1", source: "assets/fonts/new-font" }
+    ];
+    const withoutEvidence = manifest(proprietary({ thirdPartyNotices: updatedNotices }));
+    await expect(planRepo(withoutEvidence, directory)).rejects.toThrow("PRS-LICENSE-NOTICES-TRANSITION-001");
+
+    const mismatchedEvidence = manifest(proprietary({
+      thirdPartyNotices: updatedNotices,
+      thirdPartyNoticesTransition: {
+        fromSha256: sha256("incorrect before\n"),
+        toSha256: sha256("incorrect after\n"),
+        approvedBy: "legal-reviewer",
+        issue: "LEGAL-42",
+        reconciliation: "Every third-party obligation was reviewed"
+      }
+    }));
+    await expect(planRepo(mismatchedEvidence, directory)).rejects.toThrow("notices transition evidence does not match");
+
+    const updatedNoticesContents = [
+      "# Third-Party Notices",
+      "",
+      "This inventory is separate from the repository's first-party license. Each listed component remains subject to its own terms.",
+      "",
+      "## Existing SDK",
+      "",
+      "- Kind: dependency",
+      "- License: MIT",
+      "- Source: https://example.invalid/sdk",
+      "",
+      "## New Font",
+      "",
+      "- Kind: font",
+      "- License: OFL-1.1",
+      "- Source: assets/fonts/new-font",
+      ""
+    ].join("\n");
+    const withEvidence = manifest(proprietary({
+      thirdPartyNotices: updatedNotices,
+      thirdPartyNoticesTransition: {
+        fromSha256: sha256(originalNotices),
+        toSha256: sha256(updatedNoticesContents),
+        approvedBy: "legal-reviewer",
+        issue: "LEGAL-42",
+        reconciliation: "Every third-party obligation was reviewed"
+      }
+    }));
+    expect((await planRepo(withEvidence, directory)).changes).toContainEqual(
+      expect.objectContaining({ path: "THIRD_PARTY_NOTICES.md", type: "update" })
+    );
+
+    await applyRepo(withEvidence, directory);
+    const noNoticesContents = [
+      "# Third-Party Notices",
+      "",
+      "This inventory is separate from the repository's first-party license. Each listed component remains subject to its own terms.",
+      "",
+      "No third-party notices are declared in the Bootstrap manifest.",
+      ""
+    ].join("\n");
+    const emptyInventory = manifest(proprietary({
+      thirdPartyNotices: [],
+      thirdPartyNoticesTransition: {
+        fromSha256: sha256(await readFile(path.join(directory, "THIRD_PARTY_NOTICES.md"), "utf8")),
+        toSha256: sha256(noNoticesContents),
+        approvedBy: "legal-reviewer",
+        issue: "LEGAL-42",
+        reconciliation: "Every third-party obligation was reviewed"
+      }
+    }));
+    expect((await planRepo(emptyInventory, directory)).changes).toContainEqual(
+      expect.objectContaining({ path: "THIRD_PARTY_NOTICES.md", type: "update" })
+    );
+  });
 });

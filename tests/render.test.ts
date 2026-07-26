@@ -57,6 +57,17 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("PR_GOVERNANCE_ENFORCE_AFTER:");
       expect(prWorkflow?.contents).toContain("['self-hosted', 'linux'");
       expect(prWorkflow?.contents).toContain("validate-pr-description:");
+      expect(prWorkflow?.contents).toContain("verify-dependabot-commits:");
+      expect(prWorkflow?.contents).toContain("Require every PR commit to be Dependabot");
+      expect(prWorkflow?.contents).toContain("PR_AUTHOR: ${{ github.event.pull_request.user.login }}");
+      expect(prWorkflow?.contents).toContain('[[ "$PR_AUTHOR" == "dependabot[bot]" ]]');
+      expect(prWorkflow?.contents).toContain(".author != null and .author.login == \"dependabot[bot]\"");
+      expect(prWorkflow?.contents).toContain('.committer.login == "web-flow"');
+      expect(prWorkflow?.contents).toContain(".commit.verification.verified == true");
+      expect(prWorkflow?.contents).toContain('.commit.verification.reason == "valid"');
+      expect(prWorkflow?.contents).toContain('[[ "$commits_seen" -gt 0 ]] || bot_only=false');
+      expect(prWorkflow?.contents).toContain("page=$((page + 1))");
+      expect(prWorkflow?.contents).toContain("needs.verify-dependabot-commits.outputs.bot_only != 'true'");
       expect(prWorkflow?.contents).toContain("PR body must close/link an issue");
       expect(prWorkflow?.contents).toContain("refs?|part[[:space:]]+of");
       expect(prWorkflow?.contents).toContain("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#");
@@ -64,6 +75,8 @@ describe("renderManagedFiles", () => {
       expect(prWorkflow?.contents).toContain("auto_merge_evidence=");
       expect(prWorkflow?.contents).toContain('<<<"$auto_merge_evidence"');
       expect(prWorkflow?.contents).toContain("validate-pr-governance:");
+      expect(prWorkflow?.contents).toContain("- verify-dependabot-commits");
+      expect(prWorkflow?.contents).toContain("verify-dependabot-commits=${{ needs.verify-dependabot-commits.result }}");
       expect(prWorkflow?.contents).toContain("pull-requests: read");
       expect(prWorkflow?.contents).toContain("PR_COMMITS_URL:");
       expect(files.find((file) => file.path === "scripts/ci/check-pr-governance.sh")?.contents).toContain("PRS-DCO-001");

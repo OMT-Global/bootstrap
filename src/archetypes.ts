@@ -1566,7 +1566,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
           contents: read
           pull-requests: read
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
             with:
               fail-on-severity: high
@@ -1582,7 +1582,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
           contents: read
           security-events: write
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4
             with:
               languages: \${{ matrix.language }}
@@ -1597,7 +1597,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
         permissions:
           contents: write
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
             with:
               path: .
@@ -1877,7 +1877,7 @@ function releasePreflightReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ inputs.target_ref }}
               fetch-depth: 0
@@ -1966,7 +1966,7 @@ function fullReleaseValidationReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ inputs.target_ref }}
               fetch-depth: 0
@@ -2044,7 +2044,7 @@ function releasePublishReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ inputs.tag }}
               fetch-depth: 0
@@ -2191,7 +2191,7 @@ function releasePostpublishReusableWorkflow(): string {
           run:
             shell: bash
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ inputs.tag }}
               fetch-depth: 0
@@ -2549,18 +2549,57 @@ ${yamlList(paths.ci, 18)}
           github.event.pull_request.draft == false &&
           (needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true')
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
 ${indentBlock(setupSteps(manifest), 10)}
           - name: Run fast checks
             run: bash scripts/ci/run-fast-checks.sh
 
+      verify-dependabot-commits:
+        name: Verify Dependabot-only Commits
+        runs-on: ${shellRunner}
+        timeout-minutes: 5
+        if: github.event.pull_request.draft == false
+        outputs:
+          bot_only: \${{ steps.verify.outputs.bot_only }}
+        env:
+          PR_AUTHOR: \${{ github.event.pull_request.user.login }}
+          PR_COMMITS_URL: \${{ github.event.pull_request.commits_url }}
+          GITHUB_TOKEN: \${{ github.token }}
+        steps:
+          - id: verify
+            name: Require every PR commit to be Dependabot
+            run: |
+              set -euo pipefail
+              page=1
+              commits_seen=0
+              bot_only=false
+              if [[ "$PR_AUTHOR" == "dependabot[bot]" ]]; then
+                bot_only=true
+                while :; do
+                  response="$(curl --fail-with-body --silent --show-error --location --header "Authorization: Bearer $GITHUB_TOKEN" --header "Accept: application/vnd.github+json" "$PR_COMMITS_URL?per_page=100&page=$page")"
+                  jq -e 'type == "array"' <<<"$response" >/dev/null
+                  count="$(jq 'length' <<<"$response")"
+                  [[ "$count" -gt 0 ]] || break
+                  commits_seen=$((commits_seen + count))
+                  if ! jq -e 'all(.[]; .author != null and .author.login == "dependabot[bot]" and .committer != null and .committer.login == "web-flow" and .commit.verification.verified == true and .commit.verification.reason == "valid")' <<<"$response" >/dev/null; then
+                    bot_only=false
+                  fi
+                  [[ "$count" -lt 100 ]] && break
+                  page=$((page + 1))
+                done
+                [[ "$commits_seen" -gt 0 ]] || bot_only=false
+              fi
+              echo "Verified $commits_seen PR commit(s); Dependabot-only=$bot_only"
+              echo "bot_only=$bot_only" >> "$GITHUB_OUTPUT"
+
       validate-pr-description:
         name: Validate PR Description
         runs-on: ${shellRunner}
         timeout-minutes: 5
-        if: github.event.pull_request.draft == false
+        if: github.event.pull_request.draft == false && needs.verify-dependabot-commits.outputs.bot_only != 'true'
+        needs: verify-dependabot-commits
         env:
           PR_BODY: \${{ github.event.pull_request.body }}
         steps:
@@ -2612,7 +2651,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         timeout-minutes: 10
         if: github.event.pull_request.draft == false
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
           - name: Scan repository for secret patterns
@@ -2622,7 +2661,8 @@ ${indentBlock(setupSteps(manifest), 10)}
         name: Validate PR Governance
         runs-on: ${shellRunner}
         timeout-minutes: 5
-        if: github.event.pull_request.draft == false
+        if: github.event.pull_request.draft == false && needs.verify-dependabot-commits.outputs.bot_only != 'true'
+        needs: verify-dependabot-commits
         env:
           PR_TITLE: \${{ github.event.pull_request.title }}
           PR_BODY: \${{ github.event.pull_request.body }}
@@ -2634,7 +2674,7 @@ ${indentBlock(setupSteps(manifest), 10)}
           PR_REVIEWS_URL: \${{ github.event.pull_request.url }}/reviews
           GITHUB_TOKEN: \${{ github.token }}
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
           - name: Validate title, DCO, size, ADR, and reviewer evidence
@@ -2646,7 +2686,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         timeout-minutes: 5
         if: github.event.pull_request.draft == false
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ github.event.pull_request.head.sha }}
           - name: Require immutable third-party action pins
@@ -2659,6 +2699,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         needs:
           - changes
           - fast-checks
+          - verify-dependabot-commits
           - validate-pr-description
           - validate-secrets
           - validate-pr-governance
@@ -2669,6 +2710,7 @@ ${indentBlock(setupSteps(manifest), 10)}
               RESULTS: >-
                 changes=\${{ needs.changes.result }}
                 fast-checks=\${{ needs.fast-checks.result }}
+                verify-dependabot-commits=\${{ needs.verify-dependabot-commits.result }}
                 validate-pr-description=\${{ needs.validate-pr-description.result }}
                 validate-secrets=\${{ needs.validate-secrets.result }}
                 validate-pr-governance=\${{ needs.validate-pr-governance.result }}
@@ -2710,7 +2752,7 @@ function issueHygieneWorkflow(manifest: BootstrapManifest): string {
         runs-on: ${shellRunner}
         timeout-minutes: 10
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
             with:
               node-version: '${manifest.ci.nodeVersion}'
@@ -2775,7 +2817,7 @@ function extendedWorkflow(manifest: BootstrapManifest): string {
           ci: \${{ steps.preset.outputs.ci || steps.filter.outputs.ci || 'false' }}
           extended: \${{ steps.preset.outputs.extended || steps.filter.outputs.extended || 'false' }}
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             if: github.event_name == 'push'
             with:
               fetch-depth: 0
@@ -2809,7 +2851,7 @@ ${yamlList(paths.extended, 18)}
         needs: changes
         if: needs.changes.outputs.app == 'true' || needs.changes.outputs.ci == 'true'
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 ${indentBlock(setupSteps(manifest), 10)}
           - name: Run fast checks
             run: bash scripts/ci/run-fast-checks.sh
@@ -2821,7 +2863,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         needs: changes
         if: needs.changes.outputs.extended == 'true' || needs.changes.outputs.app == 'true'
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 ${indentBlock(setupSteps(manifest), 10)}
           - name: Run extended validation
             run: bash scripts/ci/run-extended-validation.sh
@@ -2831,7 +2873,7 @@ ${indentBlock(setupSteps(manifest), 10)}
         runs-on: ${shellRunner}
         timeout-minutes: 10
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - name: Scan repository for secret patterns
             run: bash scripts/check-detect-secrets.sh --all-files
 
@@ -3365,7 +3407,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
-          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - name: Run Claude Code
             uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
             with:

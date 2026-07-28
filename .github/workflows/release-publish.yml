@@ -28,7 +28,7 @@ on:
 
 jobs:
   publish:
-    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@05296606785553deb8f36e4f18313076dfc9646d
+    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@9a9e4e82e66fceeaa91aacf3325bad220b9693e5
     with:
       tag: ${{ inputs.tag }}
       channel: ${{ inputs.channel }}

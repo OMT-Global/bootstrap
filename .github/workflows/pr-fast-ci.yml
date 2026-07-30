@@ -83,26 +83,71 @@ jobs:
     env:
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       PR_COMMITS_URL: ${{ github.event.pull_request.commits_url }}
+      PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - id: verify
-        name: Require every PR commit to be Dependabot
+        name: Require Dependabot commits or verified main merges
         run: |
           set -euo pipefail
           page=1
           commits_seen=0
           bot_only=false
+          merge_tree_repo="$(mktemp -d)"
+          trap 'rm -rf "$merge_tree_repo"' EXIT
+          git -C "$merge_tree_repo" init -q
+          git -C "$merge_tree_repo" remote add origin "https://github.com/$PR_BASE_REPO.git"
+          git_auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git -C "$merge_tree_repo" config http.extraheader "Authorization: Basic $git_auth"
+          git -C "$merge_tree_repo" fetch --no-tags origin "$PR_BASE_SHA" >/dev/null 2>&1
+          base_first_parent_contains() {
+            git -C "$merge_tree_repo" rev-list --first-parent "$PR_BASE_SHA" | grep -F -x "$1" >/dev/null
+          }
+          verify_merge_tree() {
+            local merge_commit="$1"
+            local first_parent="$2"
+            local second_parent="$3"
+            git -C "$merge_tree_repo" fetch --no-tags origin "$merge_commit" "$first_parent" "$second_parent" >/dev/null 2>&1 || return 1
+            local actual_tree
+            local expected_tree
+            actual_tree="$(git -C "$merge_tree_repo" rev-parse "$merge_commit^{tree}")" || return 1
+            [[ -n "$actual_tree" ]] || return 1
+            expected_tree="$(git -C "$merge_tree_repo" merge-tree --write-tree "$first_parent" "$second_parent" 2>/dev/null)" || return 1
+            [[ -n "$expected_tree" ]] || return 1
+            [[ "$actual_tree" == "$expected_tree" ]]
+          }
           if [[ "$PR_AUTHOR" == "dependabot[bot]" ]]; then
             bot_only=true
+            previous_commit=""
             while :; do
               response="$(curl --fail-with-body --silent --show-error --location --header "Authorization: Bearer $GITHUB_TOKEN" --header "Accept: application/vnd.github+json" "$PR_COMMITS_URL?per_page=100&page=$page")"
               jq -e 'type == "array"' <<<"$response" >/dev/null
               count="$(jq 'length' <<<"$response")"
               [[ "$count" -gt 0 ]] || break
               commits_seen=$((commits_seen + count))
-              if ! jq -e 'all(.[]; .author != null and .author.login == "dependabot[bot]" and .committer != null and .committer.login == "web-flow" and .commit.verification.verified == true and .commit.verification.reason == "valid")' <<<"$response" >/dev/null; then
-                bot_only=false
-              fi
+              while IFS= read -r commit; do
+                commit_sha="$(jq -r '.sha' <<<"$commit")"
+                first_parent="$(jq -r '.parents[0].sha' <<<"$commit")"
+                if jq -e '(.committer != null and .committer.login == "web-flow" and .commit.verification.verified == true and .commit.verification.reason == "valid" and .author != null and .author.login == "dependabot[bot]")' <<<"$commit" >/dev/null; then
+                  valid_commit=false
+                  if [[ "$(jq '.parents | length' <<<"$commit")" == 1 ]] && { [[ -z "$previous_commit" ]] && base_first_parent_contains "$first_parent" || [[ "$first_parent" == "$previous_commit" ]]; }; then
+                    valid_commit=true
+                  fi
+                elif jq -e '(.committer != null and .committer.login == "web-flow" and .commit.verification.verified == true and .commit.verification.reason == "valid" and .author != null and .author.type == "User" and (.parents | length) == 2 and ((.commit.message // "") | test("^Merge branch.*main.*into dependabot/")))' <<<"$commit" >/dev/null; then
+                  second_parent="$(jq -r '.parents[1].sha' <<<"$commit")"
+                  valid_commit=false
+                  if { [[ -z "$previous_commit" ]] && base_first_parent_contains "$first_parent" || [[ "$first_parent" == "$previous_commit" ]]; } && base_first_parent_contains "$second_parent" && verify_merge_tree "$commit_sha" "$first_parent" "$second_parent"; then
+                    valid_commit=true
+                  fi
+                else
+                  valid_commit=false
+                fi
+                if [[ "$valid_commit" != true ]]; then
+                  bot_only=false
+                fi
+                previous_commit="$commit_sha"
+              done < <(jq -c '.[]' <<<"$response")
               [[ "$count" -lt 100 ]] && break
               page=$((page + 1))
             done

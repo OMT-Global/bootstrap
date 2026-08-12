@@ -14,6 +14,7 @@ import type {
   IssueLabelConfig,
   LicensePolicy,
   OrganizationConfig,
+  PackageManager,
   RepoClass
 } from "./types.js";
 
@@ -330,7 +331,7 @@ const exceptionSchema = z.object({
 });
 
 const dependabotEcosystemSchema = z.object({
-  packageEcosystem: z.enum(["npm", "github-actions", "docker"]),
+  packageEcosystem: z.enum(["npm", "github-actions", "docker", "gomod"]),
   directory: z.string().min(1).optional(),
   interval: z.enum(["daily", "weekly", "monthly"]).optional(),
   groupMinorAndPatch: z.boolean().optional(),
@@ -432,7 +433,7 @@ const manifestSchema = z.object({
     .optional(),
   archetype: z.object({
     kind: z.enum(["nextjs-web", "node-ts-service", "python-service", "generic-empty"]),
-    packageManager: z.enum(["npm", "pnpm", "yarn", "python"]).optional(),
+    packageManager: z.string().min(1).optional(),
     moduleName: z.string().optional()
   }),
   github: z
@@ -474,7 +475,7 @@ const manifestSchema = z.object({
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
-      codeqlLanguages: z.array(z.enum(["javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust"])).optional(),
+      codeqlLanguages: z.array(z.enum(["javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust", "go", "swift"])).optional(),
       prGovernance: z
         .object({
           enforceAfter: z.string().datetime({ offset: true })
@@ -841,6 +842,25 @@ function normalizeCustomScripts(
   };
 }
 
+function normalizePackageManager(
+  kind: z.input<typeof manifestSchema>["archetype"]["kind"],
+  value: string | undefined
+): PackageManager {
+  const candidate = value?.split("@", 1)[0];
+  if (candidate === "npm" || candidate === "pnpm" || candidate === "yarn" || candidate === "python") {
+    return candidate;
+  }
+  if (candidate === undefined) {
+    return kind === "python-service" ? "python" : "npm";
+  }
+  if (kind === "generic-empty" && candidate === "swift") {
+    return "npm";
+  }
+  throw new Error(
+    `Unsupported package manager "${value ?? "<missing>"}" for ${kind}; use npm, pnpm, yarn, or python.`
+  );
+}
+
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
   const unknownSettings = Object.keys(parsed).filter((key) => !KNOWN_MANIFEST_SETTINGS.has(key)).sort();
@@ -893,7 +913,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     repo: normalizeRepo(parsed.repo),
     archetype: {
       kind: parsed.archetype.kind,
-      packageManager: parsed.archetype.packageManager ?? "npm",
+      packageManager: normalizePackageManager(parsed.archetype.kind, parsed.archetype.packageManager),
       moduleName
     },
     github: {

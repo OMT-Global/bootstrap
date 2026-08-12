@@ -154,7 +154,7 @@ export interface AdditionalWorkflowConfig {
 }
 
 export interface DependabotEcosystemConfig {
-  packageEcosystem: "npm" | "github-actions" | "docker";
+  packageEcosystem: "npm" | "github-actions" | "docker" | "gomod";
   directory: string;
   interval: "daily" | "weekly" | "monthly";
   groupMinorAndPatch: boolean;
@@ -298,7 +298,7 @@ export interface BootstrapManifest {
     fastChecks: string[];
     extendedChecks: string[];
     nightlyCron: string;
-    codeqlLanguages: Array<"javascript-typescript" | "python" | "ruby" | "c-cpp" | "csharp" | "rust">;
+    codeqlLanguages: Array<"javascript-typescript" | "python" | "ruby" | "c-cpp" | "csharp" | "rust" | "go" | "swift">;
     prGovernance?: {
       enforceAfter: string;
     };

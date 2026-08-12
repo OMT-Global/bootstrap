@@ -1544,6 +1544,20 @@ function codeQlLanguages(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages.join(",");
 }
 
+function codeQlMatrix(manifest: BootstrapManifest): string {
+  return manifest.ci.codeqlLanguages
+    .map((language) => {
+      const autobuild = language === "go" || language === "swift";
+      const swift = language === "swift";
+      return [
+        `- language: ${language}`,
+        `  build-mode: ${autobuild ? "autobuild" : "none"}`,
+        `  runner: ${swift ? "macos-14" : "ubuntu-latest"}`
+      ].join("\n");
+    })
+    .join("\n");
+}
+
 function publicSecurityWorkflow(manifest: BootstrapManifest): string {
   return dedent`
     name: Public Security Baseline
@@ -1573,11 +1587,12 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
 
       codeql:
         if: github.event_name == 'push' || github.event_name == 'schedule'
-        runs-on: ubuntu-latest
+        runs-on: \${{ matrix.runner }}
         strategy:
           fail-fast: false
           matrix:
-            language: ${JSON.stringify(manifest.ci.codeqlLanguages)}
+            include:
+${indentBlock(codeQlMatrix(manifest), 12)}
         permissions:
           contents: read
           security-events: write
@@ -1586,7 +1601,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
           - uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4
             with:
               languages: \${{ matrix.language }}
-              build-mode: none
+              build-mode: \${{ matrix.build-mode }}
           - uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4
             with:
               category: "/language:\${{ matrix.language }}"

@@ -402,10 +402,7 @@ describe("runConformance", () => {
         .replace('    branches: ["main"]', '    branches: ["main", "!main"]\n    paths-ignore: ["**"]')
         .replace("    - cron: '23 6 * * 1'", "    - cron: '0 0 31 2 *'")
         .replace("  codeql:\n", "  codeql:\n    needs: dependency-review\n")
-        .replace(
-          '        language: ["javascript-typescript"]',
-          '        language: ["javascript-typescript"]\n        exclude:\n          - language: javascript-typescript'
-        )
+        .replace("language: javascript-typescript", "language: broken")
         .replace("  sbom:\n", "  sbom:\n    needs: dependency-review\n")
     );
 
@@ -420,6 +417,31 @@ describe("runConformance", () => {
     expect(evidence).toContain("CodeQL languages do not match ci.codeqlLanguages");
     expect(evidence).toContain("does not scan every trusted push to main");
     expect(evidence).toContain("has no runnable scheduled security scan");
+  });
+
+  it("rejects additional CodeQL matrix axes alongside the managed include rows", async () => {
+    const directory = await fixtureDirectory();
+    const manifest = normalizeManifest({
+      project: { name: "public-security", owner: "acme", visibility: "public", maturity: "stable" },
+      repo: { class: "service" },
+      archetype: { kind: "node-ts-service" },
+      release: { reusableWorkflowRef: "a".repeat(40) }
+    });
+    await applyRepo(manifest, directory);
+    const workflowPath = path.join(directory, ".github/workflows/security.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(workflowPath, workflow.replace(
+      /(matrix:\n)(\s+include:)/,
+      "$1            runner: [ubuntu-latest]\n$2"
+    ));
+
+    const report = await runConformance(manifest, directory);
+    const evidence = report.results
+      .filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001")
+      .flatMap((entry) => entry.evidence)
+      .join(" ");
+
+    expect(evidence).toContain("CodeQL languages do not match ci.codeqlLanguages");
   });
 
   it("rejects invalid or disabled GitHub Actions Dependabot updaters", async () => {

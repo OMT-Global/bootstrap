@@ -282,7 +282,8 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
       existingContents !== undefined &&
       isManagedContentHash(managedHash) &&
       sha256(existingContents) !== managedHash &&
-      existingContents !== file.contents
+      existingContents !== file.contents &&
+      !isManifestControlPlane
     ) {
       throw new Error(
         `Managed file ${file.path} was directly modified. Restore it, remove it from managed paths, or use an explicit migration before applying Bootstrap changes.`

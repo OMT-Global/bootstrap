@@ -291,8 +291,10 @@ describe("renderManagedFiles", () => {
     expect(workflow?.contents).toContain("if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'\n    runs-on: ubuntu-latest");
     expect(workflow?.contents).toContain("dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0");
     expect(workflow?.contents).toContain("codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4");
-    expect(workflow?.contents).toContain('language: ["javascript-typescript"]');
-    expect(workflow?.contents).toContain("languages: ${{ matrix.language }}\n          build-mode: none");
+    expect(workflow?.contents).toContain("language: javascript-typescript");
+    expect(workflow?.contents).toContain("build-mode: none");
+    expect(workflow?.contents).toContain("runner: ubuntu-latest");
+    expect(workflow?.contents).toContain("languages: ${{ matrix.language }}\n          build-mode: ${{ matrix.build-mode }}");
     expect(workflow?.contents).toContain('category: "/language:${{ matrix.language }}"');
     expect(workflow?.contents).toContain("anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0");
     expect(workflow?.contents).toContain("if: github.event_name == 'push' || github.event_name == 'schedule'");
@@ -307,6 +309,33 @@ describe("renderManagedFiles", () => {
     expect(model?.contents).toContain("private-vulnerability-reporting");
 
     expect(workflow?.contents).toContain("sbom:\n    if: github.event_name == 'push' || github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write");
+  });
+
+  it("routes Swift CodeQL analysis to macOS autobuild", () => {
+    const manifest = normalizeManifest({
+      project: { name: "swift-security", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" },
+      ci: { codeqlLanguages: ["swift"] }
+    });
+    const workflow = renderManagedFiles(manifest).find((file) => file.path === ".github/workflows/security.yml");
+
+    expect(workflow?.contents).toContain("runs-on: ${{ matrix.runner }}");
+    expect(workflow?.contents).toContain("language: swift");
+    expect(workflow?.contents).toContain("build-mode: autobuild");
+    expect(workflow?.contents).toContain("runner: macos-14");
+  });
+
+  it("routes Go CodeQL analysis to Ubuntu autobuild", () => {
+    const manifest = normalizeManifest({
+      project: { name: "go-security", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" },
+      ci: { codeqlLanguages: ["go"] }
+    });
+    const workflow = renderManagedFiles(manifest).find((file) => file.path === ".github/workflows/security.yml");
+
+    expect(workflow?.contents).toContain("language: go");
+    expect(workflow?.contents).toContain("build-mode: autobuild");
+    expect(workflow?.contents).toContain("runner: ubuntu-latest");
   });
 
   it("quotes the default branch in the public security workflow", () => {

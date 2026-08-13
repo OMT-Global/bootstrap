@@ -510,10 +510,40 @@ function hasUnfilteredEvent(events: Node | null | undefined, eventName: string, 
     (isMap(value) && value.items.length === 0);
 }
 
+function yamlMapHasOnlyKeys(map: Node | null | undefined, keys: string[], document: Document): boolean {
+  if (!isMap(map) || map.items.length !== keys.length) return false;
+  const expected = new Set(keys);
+  return map.items.every((pair) => {
+    const rawKey = asYamlNode(pair.key);
+    const resolvedKey = resolveYamlNode(rawKey, document);
+    return isScalar(resolvedKey) && typeof resolvedKey.value === "string" && expected.has(resolvedKey.value);
+  });
+}
+
 function jobRunsOnGitHubHosted(jobs: Node | null | undefined, jobName: string, document: Document): boolean {
   const runsOn = jobField(jobs, jobName, "runs-on", document);
-  return isScalar(runsOn) && typeof runsOn.value === "string" &&
-    new Set(["ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"]).has(runsOn.value);
+  if (!isScalar(runsOn) || typeof runsOn.value !== "string") return false;
+  if (new Set(["ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "macos-14", "macos-15"]).has(runsOn.value)) {
+    return true;
+  }
+  if (runsOn.value !== "${{ matrix.runner }}") return false;
+
+  const strategy = jobField(jobs, jobName, "strategy", document);
+  const matrix = isMap(strategy)
+    ? resolveYamlNode(yamlMappingEntry(strategy, "matrix", document)?.valueNode, document)
+    : undefined;
+  const include = isMap(matrix)
+    ? resolveYamlNode(yamlMappingEntry(matrix, "include", document)?.valueNode, document)
+    : undefined;
+  if (!isSeq(include) || include.items.length === 0 || !yamlMapHasOnlyKeys(matrix, ["include"], document)) return false;
+  return include.items.every((rawEntry) => {
+    const entry = resolveYamlNode(asYamlNode(rawEntry), document);
+    const runner = isMap(entry)
+      ? resolveYamlNode(yamlMappingEntry(entry, "runner", document)?.valueNode, document)
+      : undefined;
+    return isScalar(runner) && typeof runner.value === "string" &&
+      new Set(["ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "macos-14", "macos-15"]).has(runner.value);
+  });
 }
 
 function yamlStringSequenceValues(node: Node | null | undefined, document: Document): string[] | undefined {
@@ -697,21 +727,55 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
     const codeqlMatrixLanguages = isMap(codeqlMatrix)
       ? yamlStringSequenceValues(yamlMappingEntry(codeqlMatrix, "language", document)?.valueNode, document)
       : undefined;
-    const codeqlLanguagesMatch = codeqlMatrixLanguages !== undefined &&
-      codeqlMatrixLanguages.length === manifest.ci.codeqlLanguages.length &&
-      codeqlMatrixLanguages.every((language, index) => language === manifest.ci.codeqlLanguages[index]);
-    const codeqlMatrixHasOverrides = isMap(codeqlMatrix) &&
-      (yamlMappingEntry(codeqlMatrix, "exclude", document) !== undefined || yamlMappingEntry(codeqlMatrix, "include", document) !== undefined);
-    if (!codeqlLanguagesMatch || codeqlMatrixHasOverrides || jobActionField(jobs, "codeql", "github/codeql-action/init@", "languages", document) !== "${{ matrix.language }}") {
+    const codeqlMatrixInclude = isMap(codeqlMatrix)
+      ? resolveYamlNode(yamlMappingEntry(codeqlMatrix, "include", document)?.valueNode, document)
+      : undefined;
+    const expectedCodeqlMatrix = manifest.ci.codeqlLanguages.map((language) => ({
+      language,
+      buildMode: language === "go" || language === "swift" ? "autobuild" : "none",
+      runner: language === "swift" ? "macos-14" : "ubuntu-latest"
+    }));
+    const includedCodeqlMatrix = isSeq(codeqlMatrixInclude)
+      ? codeqlMatrixInclude.items.map((rawEntry) => {
+          const entry = resolveYamlNode(asYamlNode(rawEntry), document);
+          if (!isMap(entry)) return undefined;
+          const value = (key: string): string | undefined => {
+            const node = resolveYamlNode(yamlMappingEntry(entry, key, document)?.valueNode, document);
+            return isScalar(node) && typeof node.value === "string" ? node.value : undefined;
+          };
+          return { language: value("language"), buildMode: value("build-mode"), runner: value("runner") };
+        })
+      : undefined;
+    const codeqlLanguagesMatch = includedCodeqlMatrix
+      ? includedCodeqlMatrix.length === expectedCodeqlMatrix.length &&
+        includedCodeqlMatrix.every((entry, index) => {
+          if (entry === undefined) return false;
+          const expected = expectedCodeqlMatrix[index];
+          return expected !== undefined && entry.language === expected.language &&
+            entry.buildMode === expected.buildMode && entry.runner === expected.runner;
+        })
+      : codeqlMatrixLanguages !== undefined &&
+        expectedCodeqlMatrix.every((entry, index) => entry.buildMode === "none" && entry.runner === "ubuntu-latest" && entry.language === codeqlMatrixLanguages[index]) &&
+        codeqlMatrixLanguages.length === expectedCodeqlMatrix.length;
+    const codeqlMatrixHasUnexpectedAxes = isMap(codeqlMatrix) &&
+      (isSeq(codeqlMatrixInclude)
+        ? !yamlMapHasOnlyKeys(codeqlMatrix, ["include"], document)
+        : !yamlMapHasOnlyKeys(codeqlMatrix, ["language"], document));
+    const codeqlBuildMode = jobActionField(jobs, "codeql", "github/codeql-action/init@", "build-mode", document);
+    const codeqlBuildModeMatch = includedCodeqlMatrix
+      ? codeqlBuildMode === "${{ matrix.build-mode }}"
+      : codeqlBuildMode === "none";
+    if (!codeqlLanguagesMatch || codeqlMatrixHasUnexpectedAxes ||
+      jobActionField(jobs, "codeql", "github/codeql-action/init@", "languages", document) !== "${{ matrix.language }}") {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL languages do not match ci.codeqlLanguages`,
         remediation: "Configure the repository CodeQL languages explicitly and restore the managed per-language matrix and init step."
       });
     }
-    if (jobActionField(jobs, "codeql", "github/codeql-action/init@", "build-mode", document) !== "none") {
+    if (!codeqlBuildModeMatch) {
       baselineFailures.push({
-        evidence: `${workflowPath} CodeQL build mode is not the managed no-build contract`,
-        remediation: "Restore build-mode: none and use only supported ci.codeqlLanguages values."
+        evidence: `${workflowPath} CodeQL build modes do not match the managed per-language contract`,
+        remediation: "Restore build-mode: none for no-build languages and autobuild for Go or Swift."
       });
     }
     if (jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "category", document) !== "/language:${{ matrix.language }}") {

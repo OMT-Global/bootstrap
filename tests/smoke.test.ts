@@ -74,6 +74,21 @@ describe("repo smoke", () => {
     await expect(planRepo(manifest, targetDir)).rejects.toThrow("AGENTS.md was directly modified");
   });
 
+  it("allows operator edits to the manifest control plane", async () => {
+    const targetDir = await makeTempDir();
+    const manifest = normalizeManifest({
+      project: { name: "operator-edited-manifest", owner: "acme" },
+      archetype: { kind: "generic-empty" }
+    });
+
+    await applyRepo(manifest, targetDir);
+    const manifestPath = path.join(targetDir, "project.bootstrap.yaml");
+    const existingManifest = await readFile(manifestPath, "utf8");
+    await writeFile(manifestPath, `# operator note\n${existingManifest}`, "utf8");
+
+    await expect(planRepo(manifest, targetDir)).resolves.toBeDefined();
+  });
+
   it("blocks direct edits using the ownership sidecar when local state is unavailable", async () => {
     const targetDir = await makeTempDir();
     const manifest = normalizeManifest({

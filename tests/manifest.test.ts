@@ -882,12 +882,14 @@ describe("normalizeManifest", () => {
     });
   });
 
-  it("rejects CodeQL languages that require a compiled build contract", () => {
-    expect(() => normalizeManifest({
+  it("accepts Go CodeQL analysis with an explicit autobuild contract", () => {
+    const manifest = normalizeManifest({
       project: { name: "go-service", owner: "acme", visibility: "public" },
       archetype: { kind: "generic-empty" },
       ci: { codeqlLanguages: ["go"] }
-    } as never)).toThrow();
+    });
+
+    expect(manifest.ci.codeqlLanguages).toEqual(["go"]);
   });
 
   it("accepts compiled CodeQL languages supported by no-build analysis", () => {
@@ -898,5 +900,32 @@ describe("normalizeManifest", () => {
     });
 
     expect(manifest.ci.codeqlLanguages).toEqual(["c-cpp", "csharp", "rust"]);
+  });
+
+  it("accepts Swift CodeQL analysis for public generic repositories", () => {
+    const manifest = normalizeManifest({
+      project: { name: "swift-product", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty", packageManager: "swift" },
+      ci: { codeqlLanguages: ["swift"] }
+    });
+
+    expect(manifest.ci.codeqlLanguages).toEqual(["swift"]);
+    expect(manifest.archetype.packageManager).toBe("npm");
+  });
+
+  it("normalizes version-qualified package managers for generic repositories", () => {
+    const manifest = normalizeManifest({
+      project: { name: "versioned-package-manager", owner: "acme" },
+      archetype: { kind: "generic-empty", packageManager: "pnpm@9.15.4" }
+    });
+
+    expect(manifest.archetype.packageManager).toBe("pnpm");
+  });
+
+  it("rejects unsupported package managers for executable archetypes", () => {
+    expect(() => normalizeManifest({
+      project: { name: "swift-service", owner: "acme" },
+      archetype: { kind: "node-ts-service", packageManager: "swift" }
+    })).toThrow("Unsupported package manager");
   });
 });

@@ -158,7 +158,7 @@ github:
     hasWiki: false
     hasDiscussions: false
 ci:
-  runnerPolicy: hybrid-safe
+  runnerPolicy: github-hosted-first
   nodeVersion: "20"
   pythonVersion: "3.12"
   fastChecks:

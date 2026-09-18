@@ -25,7 +25,7 @@ defaults:
 jobs:
   changes:
     name: Detect Relevant Changes
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     outputs:
       app: ${{ steps.filter.outputs.app }}
       ci: ${{ steps.filter.outputs.ci }}
@@ -59,7 +59,7 @@ jobs:
 
   fast-checks:
     name: Fast Checks
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: changes
     if: >-
@@ -75,7 +75,7 @@ jobs:
 
   verify-dependabot-commits:
     name: Verify Dependabot-only Commits
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event.pull_request.draft == false
     outputs:
@@ -158,7 +158,7 @@ jobs:
 
   validate-pr-description:
     name: Validate PR Description
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event.pull_request.draft == false && needs.verify-dependabot-commits.outputs.bot_only != 'true'
     needs: verify-dependabot-commits
@@ -209,7 +209,7 @@ jobs:
 
   validate-secrets:
     name: Validate Secrets
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: github.event.pull_request.draft == false
     steps:
@@ -221,7 +221,7 @@ jobs:
 
   validate-pr-governance:
     name: Validate PR Governance
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event.pull_request.draft == false && needs.verify-dependabot-commits.outputs.bot_only != 'true'
     needs: verify-dependabot-commits
@@ -244,7 +244,7 @@ jobs:
 
   validate-action-pins:
     name: Validate Action Pins
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event.pull_request.draft == false
     steps:
@@ -256,7 +256,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    runs-on: ['self-hosted', 'linux', 'shell-only', 'public']
+    runs-on: ubuntu-24.04
     if: always()
     needs:
       - changes

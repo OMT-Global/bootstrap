@@ -534,6 +534,21 @@ describe("GitHub provisioning", () => {
     }));
   });
 
+  it("reports the gh private-repository code scanning 403 as unverified instead of aborting planning", async () => {
+    const client = publicPlanClient((endpoint) => {
+      if (endpoint.includes("/code-scanning/analyses?")) {
+        throw new Error("gh: Advanced Security must be enabled for this repository to use code scanning. (HTTP 403)");
+      }
+      return undefined;
+    });
+
+    const actions = await planGitHub(publicManifest(), client as never);
+    expect(actions).toContainEqual(expect.objectContaining({
+      id: "security-baseline-unverified",
+      description: expect.stringContaining("code scanning is unavailable on the current plan")
+    }));
+  });
+
   it("fails closed on ambiguous security planning authorization and validation errors", async () => {
     const inaccessible = publicPlanClient((endpoint) => {
       if (endpoint.includes("/code-scanning/analyses?")) {

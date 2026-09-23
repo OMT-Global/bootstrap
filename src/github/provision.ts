@@ -214,7 +214,7 @@ function isPrivateReportingPlanCapabilityLimit(error: unknown): boolean {
 
 function isCodeScanningPlanCapabilityLimit(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return isGitHubCapabilityLimit(error) || /GitHub Advanced Security (?:must be|is not) enabled|code scanning is not available (?:for|on) (?:this|the current) plan/i.test(message);
+  return isGitHubCapabilityLimit(error) || /(?:GitHub )?Advanced Security (?:must be|is not) enabled|code scanning is not available (?:for|on) (?:this|the current) plan/i.test(message);
 }
 
 async function planPublicSecurity(

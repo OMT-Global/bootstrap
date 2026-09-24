@@ -4,6 +4,7 @@ project:
   displayName: Bootstrap
   description: Manifest-first control plane for repo scaffolding, GitHub governance, and portable
     agent profiles.
+  maturity: beta
   visibility: public
   owner: OMT-Global
   defaultBranch: main

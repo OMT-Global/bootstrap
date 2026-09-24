@@ -33,6 +33,7 @@ export interface LicensePlanSummary {
   afterMode: string;
   transitionRequired: boolean;
   templateApproval: string;
+  classificationSource?: "ownership-sidecar";
 }
 
 export interface LicenseProjection {
@@ -40,6 +41,11 @@ export interface LicenseProjection {
   summary: LicensePlanSummary;
   state: NonNullable<RepoState["license"]>;
 }
+
+// License record trusted as the prior governed legal classification: either
+// the git-local RepoState entry or an ownership-sidecar claim that byte-matches
+// the on-disk LICENSE.
+export type GovernedLicenseRecord = NonNullable<RepoState["license"]>;
 
 interface LegalTextFile {
   bytes: Buffer;
@@ -255,9 +261,9 @@ function renderThirdPartyNotices(notices: ThirdPartyNotice[]): string {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-function classifyExistingLicense(contents: string | undefined, state: RepoState | undefined): string {
+function classifyExistingLicense(contents: string | undefined, governedLicense: GovernedLicenseRecord | undefined): string {
   if (contents === undefined) return "none";
-  if (state?.license) return modeLabelFromState(state.license);
+  if (governedLicense) return modeLabelFromState(governedLicense);
   const marker = contents.match(/^SPDX-License-Identifier:\s*([^\s]+)\s*$/m)?.[1];
   return marker && spdxLicenseIdentifiers.has(marker) ? `spdx:${marker} (unmanaged)` : "existing-unclassified";
 }
@@ -316,7 +322,8 @@ export async function projectLicensePolicy(
   manifest: BootstrapManifest,
   targetDir: string,
   state?: RepoState,
-  reservedOutputPaths: readonly string[] = []
+  reservedOutputPaths: readonly string[] = [],
+  sidecarLicense?: GovernedLicenseRecord
 ): Promise<LicenseProjection | undefined> {
   const policy = manifest.license;
   if (!policy) return undefined;
@@ -340,13 +347,26 @@ export async function projectLicensePolicy(
   );
   const existingNotices = existingNoticesFile?.contents;
   const afterMode = modeLabel(policy);
-  const beforeMode = classifyExistingLicense(existingLicense, state);
   const afterContentSha256 = sha256(licenseContents);
   const renderedLicenseBytes = Buffer.from(licenseContents, "utf8");
+  const existingLicenseSha256 = existingLicenseFile === undefined ? undefined : sha256(existingLicenseFile.bytes);
+  // Sidecar fallback: when the git-local state carries no license record and
+  // the ownership sidecar declares one whose contentSha256 matches the on-disk
+  // LICENSE bytes exactly, the projection is already governed by that recorded
+  // claim — this is not an ungoverned transition. Any mismatch stays fail-closed.
+  const sidecarGovernedLicense =
+    state?.license === undefined &&
+    sidecarLicense !== undefined &&
+    existingLicenseSha256 !== undefined &&
+    sidecarLicense.contentSha256 === existingLicenseSha256
+      ? sidecarLicense
+      : undefined;
+  const governedLicense = state?.license ?? sidecarGovernedLicense;
+  const beforeMode = classifyExistingLicense(existingLicense, governedLicense);
   const transitionRequired =
     (existingLicenseFile !== undefined &&
-      (state?.license === undefined || !existingLicenseFile.bytes.equals(renderedLicenseBytes))) ||
-    (state?.license !== undefined && modeLabelFromState(state.license) !== afterMode);
+      (governedLicense === undefined || !existingLicenseFile.bytes.equals(renderedLicenseBytes))) ||
+    (governedLicense !== undefined && modeLabelFromState(governedLicense) !== afterMode);
 
   const managedLicenseHash = state?.managedFiles[LICENSE_PATH];
   const recordedLicenseHashes = [managedLicenseHash, state?.license?.contentSha256].filter(
@@ -355,7 +375,6 @@ export async function projectLicensePolicy(
   if (existingLicense === undefined && recordedLicenseHashes.length > 0) {
     throw new Error("PRS-OWNERSHIP-001: managed LICENSE was deleted; restore it before planning a legal transition.");
   }
-  const existingLicenseSha256 = existingLicenseFile === undefined ? undefined : sha256(existingLicenseFile.bytes);
   if (
     existingLicenseSha256 !== undefined &&
     recordedLicenseHashes.some((recordedHash) => recordedHash !== existingLicenseSha256)
@@ -363,7 +382,7 @@ export async function projectLicensePolicy(
     throw new Error("PRS-OWNERSHIP-001: managed LICENSE was directly modified; restore it before planning a legal transition.");
   }
   if (transitionRequired) {
-    const beforeContentSha256 = existingLicenseSha256 ?? state?.license?.contentSha256;
+    const beforeContentSha256 = existingLicenseSha256 ?? governedLicense?.contentSha256;
     if (!beforeContentSha256) {
       throw new Error("PRS-LICENSE-TRANSITION-001: prior license content hash is unavailable; restore or classify the existing license before transition.");
     }
@@ -407,7 +426,8 @@ export async function projectLicensePolicy(
       beforeMode,
       afterMode,
       transitionRequired,
-      templateApproval: policy.template.approval
+      templateApproval: policy.template.approval,
+      ...(sidecarGovernedLicense !== undefined ? { classificationSource: "ownership-sidecar" as const } : {})
     },
     state: {
       mode: policy.mode as LicenseMode,

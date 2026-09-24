@@ -4,7 +4,7 @@ import { renderManagedFiles } from "./archetypes.js";
 import { sha256 } from "./lib/hash.js";
 import { readTextIfExists, removeFileIfExists, writeTextFile } from "./lib/fs.js";
 import { resolveLanguageProfiles, type LanguageProfileResolution } from "./language-profiles.js";
-import { LICENSE_PATH, projectLicensePolicy, type LicensePlanSummary } from "./licensing.js";
+import { LICENSE_PATH, projectLicensePolicy, type GovernedLicenseRecord, type LicensePlanSummary } from "./licensing.js";
 import {
   createOwnershipSidecar,
   createRepoState,
@@ -14,7 +14,7 @@ import {
   REPO_STATE_FILENAME,
   writeRepoState
 } from "./state.js";
-import type { BootstrapManifest, PlannedFileChange, RenderedFile, RepoState } from "./types.js";
+import type { BootstrapManifest, LicenseMode, PlannedFileChange, RenderedFile, RepoState } from "./types.js";
 
 export interface RepoPlan {
   changes: PlannedFileChange[];
@@ -78,6 +78,7 @@ interface OwnershipSidecar {
 interface OwnershipHashes {
   hashes: Record<string, string>;
   claimsLicense: boolean;
+  license?: GovernedLicenseRecord;
 }
 
 export async function loadEffectiveRepoState(
@@ -115,6 +116,7 @@ async function loadOwnershipHashes(targetDir: string, renderedFiles: RenderedFil
     if (renderedFiles.some((file) => hashes[file.path] === undefined)) {
       return invalidOwnershipSidecar();
     }
+    let licenseClaim: GovernedLicenseRecord | undefined;
     if (sidecar.license !== undefined) {
       const { mode, identifier, contentSha256 } = sidecar.license;
       if (
@@ -124,12 +126,20 @@ async function loadOwnershipHashes(targetDir: string, renderedFiles: RenderedFil
         (mode === "spdx" && typeof identifier !== "string") ||
         (mode === "proprietary" && identifier !== undefined)
       ) return invalidOwnershipSidecar();
+      licenseClaim = {
+        mode: mode as LicenseMode,
+        ...(mode === "spdx" ? { identifier: identifier as string } : {}),
+        contentSha256: contentSha256 as string
+      };
     }
     return {
       hashes,
-      // A mutable sidecar license entry is validated for internal consistency
-      // but never returned as authoritative prior legal classification.
-      claimsLicense: hashes[LICENSE_PATH] !== undefined
+      // Sidecar file-ownership claims never authorize updates or removals on
+      // their own. The validated license entry is only a classification
+      // fallback: licensing trusts it solely when the git-local state carries
+      // no license record and the on-disk LICENSE byte-matches its hash.
+      claimsLicense: hashes[LICENSE_PATH] !== undefined,
+      ...(licenseClaim ? { license: licenseClaim } : {})
     };
   } catch {
     return invalidOwnershipSidecar();
@@ -242,7 +252,8 @@ export async function planRepo(manifest: BootstrapManifest, targetDir: string): 
       ...selectedManagedFiles.map((file) => file.path),
       ...Object.keys(effectiveState?.managedFiles ?? {}),
       ...BOOTSTRAP_STATE_OUTPUT_PATHS
-    ]
+    ],
+    ownershipHashes.license
   );
   const renderedFiles = [
     ...selectedManagedFiles,

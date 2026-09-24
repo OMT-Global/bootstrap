@@ -53,7 +53,10 @@ function formatLicensePlan(license: Awaited<ReturnType<typeof planRepo>>["licens
     "**License**",
     `- Mode: ${license.beforeMode} -> ${license.afterMode}`,
     `- Template approval: ${license.templateApproval}`,
-    `- Legal transition evidence: ${license.transitionRequired ? "required and supplied" : "not required"}`
+    `- Legal transition evidence: ${license.transitionRequired ? "required and supplied" : "not required"}`,
+    ...(license.classificationSource === "ownership-sidecar"
+      ? ["- Prior-license classification: committed ownership sidecar byte-match fallback (git-local state absent)"]
+      : [])
   ].join("\n");
 }
 

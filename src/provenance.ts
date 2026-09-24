@@ -1,3 +1,12 @@
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  sign as cryptoSign,
+  verify as cryptoVerify,
+  type JsonWebKey
+} from "node:crypto";
 import { z } from "zod";
 
 export const PUBLIC_PROVENANCE_SCHEMA_VERSION = 2;
@@ -233,4 +242,178 @@ export function readLegacyPublicProvenance(value: unknown): LegacyPublicProvenan
 
 function countOccurrences(value: string, needle: string): number {
   return value.split(needle).length - 1;
+}
+
+export const SIGNED_PROVENANCE_ENVELOPE_VERSION = 1;
+export const PROVENANCE_SIGNATURE_ALGORITHM = "ed25519";
+export const PROVENANCE_CANONICALIZATION_ID = "sorted-json-v1";
+const SIGNING_DOMAIN = "bootstrap-signed-provenance";
+
+const ed25519PublicKeySchema = z
+  .object({
+    kty: z.literal("OKP"),
+    crv: z.literal("Ed25519"),
+    x: z.string().regex(/^[A-Za-z0-9_-]+$/)
+  })
+  .strict();
+
+export const signedPublicProvenanceSchema = z
+  .object({
+    envelopeVersion: z.literal(SIGNED_PROVENANCE_ENVELOPE_VERSION),
+    manifest: publicProvenanceSchema,
+    signature: z
+      .object({
+        algorithm: z.literal(PROVENANCE_SIGNATURE_ALGORITHM),
+        canonicalization: z.literal(PROVENANCE_CANONICALIZATION_ID),
+        publicKey: ed25519PublicKeySchema,
+        fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+        signedAt: z.string().datetime({ offset: true }),
+        value: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/)
+      })
+      .strict()
+  })
+  .strict()
+  .superRefine((envelope, context) => {
+    if (envelope.manifest.reviewers.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["manifest", "reviewers"],
+        message: "Signed public provenance requires at least one reviewer."
+      });
+    }
+    if (!envelope.manifest.reviewers.some((reviewer) => reviewer.state === "approved")) {
+      context.addIssue({
+        code: "custom",
+        path: ["manifest", "reviewers"],
+        message: "Signed public provenance requires at least one approved reviewer."
+      });
+    }
+  });
+
+export type SignedPublicProvenance = z.infer<typeof signedPublicProvenanceSchema>;
+export type ProvenanceSigningPublicKey = z.infer<typeof ed25519PublicKeySchema>;
+
+export interface ProvenanceSigningKeyPair {
+  publicKey: ProvenanceSigningPublicKey;
+  privateKey: JsonWebKey;
+}
+
+export interface ProvenanceSigningOptions {
+  privateKey: JsonWebKey;
+  signedAt?: string;
+}
+
+export interface VerifySignedPublicProvenanceOptions {
+  trustedPublicKeys: ReadonlyArray<ProvenanceSigningPublicKey>;
+  expectedSubject?: { repository: string; commitSha: string };
+}
+
+export function canonicalizeProvenanceJson(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalizeProvenanceJson(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalizeProvenanceJson(item)}`);
+    return `{${entries.join(",")}}`;
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  throw new Error("Cannot canonicalize a non-JSON value.");
+}
+
+export function signedProvenanceSigningPayload(manifest: unknown, signedAt: string): string {
+  return signingPayload(publicProvenanceSchema.parse(manifest), signedAt);
+}
+
+export function provenanceSigningKeyFingerprint(publicKey: ProvenanceSigningPublicKey): string {
+  const parsed = ed25519PublicKeySchema.parse(publicKey);
+  return createHash("sha256").update(canonicalizeProvenanceJson(parsed), "utf8").digest("hex");
+}
+
+export function generateProvenanceSigningKeyPair(): ProvenanceSigningKeyPair {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  return {
+    publicKey: ed25519PublicKeySchema.parse(publicKey.export({ format: "jwk" })),
+    privateKey: privateKey.export({ format: "jwk" })
+  };
+}
+
+export function signPublicProvenance(manifest: unknown, options: ProvenanceSigningOptions): SignedPublicProvenance {
+  const parsedManifest = publicProvenanceSchema.parse(manifest);
+  assertApprovedReviewerLineage(parsedManifest);
+  const privateKeyObject = createPrivateKey({ key: options.privateKey, format: "jwk" });
+  if (privateKeyObject.asymmetricKeyType !== "ed25519") {
+    throw new Error("Provenance signing requires an Ed25519 private JWK.");
+  }
+  const publicKey = ed25519PublicKeySchema.parse(createPublicKey(privateKeyObject).export({ format: "jwk" }));
+  const signedAt = options.signedAt ?? new Date().toISOString();
+  const payload = Buffer.from(signingPayload(parsedManifest, signedAt), "utf8");
+  const value = cryptoSign(null, payload, privateKeyObject).toString("base64");
+
+  return signedPublicProvenanceSchema.parse({
+    envelopeVersion: SIGNED_PROVENANCE_ENVELOPE_VERSION,
+    manifest: parsedManifest,
+    signature: {
+      algorithm: PROVENANCE_SIGNATURE_ALGORITHM,
+      canonicalization: PROVENANCE_CANONICALIZATION_ID,
+      publicKey,
+      fingerprint: provenanceSigningKeyFingerprint(publicKey),
+      signedAt,
+      value
+    }
+  });
+}
+
+export function verifySignedPublicProvenance(
+  envelope: unknown,
+  options: VerifySignedPublicProvenanceOptions
+): PublicProvenance {
+  const parsed = signedPublicProvenanceSchema.parse(envelope);
+  const embeddedFingerprint = provenanceSigningKeyFingerprint(parsed.signature.publicKey);
+  if (embeddedFingerprint !== parsed.signature.fingerprint) {
+    throw new Error("Signed public provenance verification failed: embedded public key does not match its fingerprint.");
+  }
+  const trustedKey = options.trustedPublicKeys.find(
+    (key) => provenanceSigningKeyFingerprint(key) === embeddedFingerprint
+  );
+  if (!trustedKey) {
+    throw new Error("Signed public provenance verification failed: signing key is not trusted.");
+  }
+  const payload = Buffer.from(signingPayload(parsed.manifest, parsed.signature.signedAt), "utf8");
+  const signatureBytes = Buffer.from(parsed.signature.value, "base64");
+  const publicKeyObject = createPublicKey({ key: trustedKey, format: "jwk" });
+  if (!cryptoVerify(null, payload, publicKeyObject, signatureBytes)) {
+    throw new Error("Signed public provenance verification failed: signature does not match the canonical signing payload.");
+  }
+  const expectedSubject = options.expectedSubject;
+  if (
+    expectedSubject &&
+    (parsed.manifest.subject.repository !== expectedSubject.repository ||
+      parsed.manifest.subject.commitSha !== expectedSubject.commitSha)
+  ) {
+    throw new Error("Signed public provenance verification failed: manifest subject does not match the expected subject.");
+  }
+  return parsed.manifest;
+}
+
+function signingPayload(manifest: PublicProvenance, signedAt: string): string {
+  return canonicalizeProvenanceJson({
+    algorithm: PROVENANCE_SIGNATURE_ALGORITHM,
+    canonicalization: PROVENANCE_CANONICALIZATION_ID,
+    domain: SIGNING_DOMAIN,
+    envelopeVersion: SIGNED_PROVENANCE_ENVELOPE_VERSION,
+    manifest,
+    signedAt
+  });
+}
+
+function assertApprovedReviewerLineage(manifest: PublicProvenance): void {
+  if (manifest.reviewers.length === 0 || !manifest.reviewers.some((reviewer) => reviewer.state === "approved")) {
+    throw new Error("Signed public provenance requires at least one approved reviewer.");
+  }
 }

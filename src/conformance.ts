@@ -1147,7 +1147,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     }
   } else {
     try {
-      const { state: effectiveState } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
+      const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
       for (const [managedPath, managedHash] of Object.entries(effectiveState?.managedFiles ?? {})) {
         const existing = managedPath === LICENSE_PATH || managedPath === THIRD_PARTY_NOTICES_PATH
           ? await readManagedLegalOutputTextIfExists(targetDir, managedPath)
@@ -1172,7 +1172,8 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
           ...selectedManagedFiles.map((file) => file.path),
           ...Object.keys(effectiveState?.managedFiles ?? {}),
           ...BOOTSTRAP_STATE_OUTPUT_PATHS
-        ]
+        ],
+        ownershipHashes.license
       );
       const expectedLicense = projection?.files.find((file) => file.path === LICENSE_PATH)?.contents;
       const expectedNotices = projection?.files.find((file) => file.path === THIRD_PARTY_NOTICES_PATH)?.contents;

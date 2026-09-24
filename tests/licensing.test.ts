@@ -170,7 +170,7 @@ describe("license policy projection", () => {
     });
   });
 
-  it("recovers managed license ownership without trusting sidecar legal classification", async () => {
+  it("recovers governed license classification from the byte-matching ownership sidecar when local state is absent", async () => {
     const directory = await fixture("clone-durable-state");
     const configured = manifest(proprietary());
     await applyRepo(configured, directory);
@@ -193,26 +193,109 @@ describe("license policy projection", () => {
     await execFileAsync("git", ["add", "-A"], { cwd: directory });
     await execFileAsync("git", ["-c", "commit.gpgsign=false", "commit", "-qm", "test: track generated projection"], { cwd: directory });
 
-    await expect(planRepo(configured, directory)).rejects.toThrow("PRS-LICENSE-TRANSITION-001");
-    const renderedLicense = renderedTemplate(proprietaryTemplate);
-    const cloneApproved = manifest(proprietary({
-      transition: transitionEvidence("existing-unclassified", renderedLicense, "proprietary", renderedLicense)
-    }));
-    const plan = await planRepo(cloneApproved, directory);
+    // The committed sidecar's license entry byte-matches the on-disk LICENSE,
+    // so the projection stays governed without the git-local state: plan and
+    // re-apply pass with an explicit audit line instead of demanding adoption
+    // evidence for a transition that never happened.
+    const plan = await planRepo(configured, directory);
     expect(plan.changes.find((change) => change.path === "LICENSE")?.type).toBe("unchanged");
-    expect(plan.license).toMatchObject({
-      beforeMode: "existing-unclassified",
+    expect(plan.license).toEqual({
+      beforeMode: "proprietary",
       afterMode: "proprietary",
-      transitionRequired: true
+      transitionRequired: false,
+      templateApproval: "legal-template:P-1",
+      classificationSource: "ownership-sidecar"
     });
+
     const changedNotices = manifest(proprietary({
-      transition: transitionEvidence("existing-unclassified", renderedLicense, "proprietary", renderedLicense),
       thirdPartyNotices: [
         { name: "New SDK", kind: "dependency", license: "MIT", source: "https://example.invalid/sdk" }
       ]
     }));
     await expect(planRepo(changedNotices, directory)).rejects.toThrow("existing third-party notices are unmanaged");
     await expect(planRepo(manifest(), directory)).rejects.toThrow("removing an existing managed license policy is forbidden");
+  });
+
+  it("classifies a byte-matching sidecar license claim as governed in stateless SPDX mode", async () => {
+    const directory = await fixture("sidecar-governed-spdx");
+    const configured = manifest({
+      mode: "spdx",
+      identifier: "MIT",
+      holder: "OMT Global LLC",
+      holderVerification: "legal-entity:OMT-Global-LLC",
+      years: "2026",
+      template: { path: "mit.txt", sha256: sha256(mitTemplate), approval: "SPDX:MIT", spdxIdentifier: "MIT" },
+      thirdPartyNotices: []
+    });
+    await applyRepo(configured, directory);
+    await unlink(path.join(directory, ".bootstrap", "bootstrap-state.json"));
+
+    const plan = await planRepo(configured, directory);
+    expect(plan.license).toEqual({
+      beforeMode: "spdx:MIT",
+      afterMode: "spdx:MIT",
+      transitionRequired: false,
+      templateApproval: "SPDX:MIT",
+      classificationSource: "ownership-sidecar"
+    });
+    expect(plan.changes.every((change) => change.type === "unchanged")).toBe(true);
+  });
+
+  it("hard-stops when the on-disk LICENSE no longer byte-matches the sidecar license claim", async () => {
+    const directory = await fixture("sidecar-license-mismatch");
+    const configured = manifest(proprietary());
+    await applyRepo(configured, directory);
+    await unlink(path.join(directory, ".bootstrap", "bootstrap-state.json"));
+    await writeFile(path.join(directory, "LICENSE"), "unrelated prior license text\n");
+
+    await expect(planRepo(configured, directory)).rejects.toThrow("PRS-LICENSE-TRANSITION-001");
+  });
+
+  it("still hard-stops ungoverned adoption when the sidecar declares no license entry", async () => {
+    const directory = await fixture("sidecar-without-license-claim");
+    const configured = manifest(proprietary());
+    await applyRepo(configured, directory);
+    await unlink(path.join(directory, ".bootstrap", "bootstrap-state.json"));
+    const sidecarPath = path.join(directory, ".bootstrap", "managed-files.json");
+    const sidecar = JSON.parse(await readFile(sidecarPath, "utf8")) as { license?: unknown };
+    delete sidecar.license;
+    await writeFile(sidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`);
+
+    await expect(planRepo(configured, directory)).rejects.toThrow("PRS-LICENSE-TRANSITION-001");
+  });
+
+  it("requires transition evidence to change the mode of a sidecar-governed license statelessly", async () => {
+    const directory = await fixture("sidecar-governed-mode-change");
+    await applyRepo(manifest(proprietary()), directory);
+    await unlink(path.join(directory, ".bootstrap", "bootstrap-state.json"));
+    const spdxPolicy: LicensePolicy = {
+      mode: "spdx",
+      identifier: "MIT",
+      holder: "OMT Global LLC",
+      holderVerification: "legal-entity:OMT-Global-LLC",
+      years: "2026",
+      template: { path: "mit.txt", sha256: sha256(mitTemplate), approval: "SPDX:MIT", spdxIdentifier: "MIT" },
+      thirdPartyNotices: []
+    };
+    await expect(planRepo(manifest(spdxPolicy), directory)).rejects.toThrow("PRS-LICENSE-TRANSITION-001");
+
+    const approved = manifest({
+      ...spdxPolicy,
+      transition: transitionEvidence(
+        "proprietary",
+        renderedTemplate(proprietaryTemplate),
+        "spdx:MIT",
+        renderedTemplate(mitTemplate, "OMT Global LLC", "2026", "MIT")
+      )
+    });
+    const plan = await planRepo(approved, directory);
+    expect(plan.license).toMatchObject({
+      beforeMode: "proprietary",
+      afterMode: "spdx:MIT",
+      transitionRequired: true,
+      classificationSource: "ownership-sidecar"
+    });
+    expect(plan.changes.find((change) => change.path === "LICENSE")?.type).toBe("update");
   });
 
   it("does not trust an untracked ownership sidecar when local state is absent", async () => {

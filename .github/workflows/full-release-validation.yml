@@ -16,7 +16,7 @@ on:
 
 jobs:
   validate:
-    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@621a406819582a0557eec47f7b7fe42c1a3ee3d6
+    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@3dbb7d288edc9d03d6246deeffbb0ad3aa50566d
     with:
       target_ref: ${{ inputs.target_ref }}
       release_profile: ${{ inputs.release_profile }}

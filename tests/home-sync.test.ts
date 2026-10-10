@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 import { applyHome, planHome } from "../src/home/sync.js";
 import { normalizeManifest } from "../src/manifest.js";
@@ -43,6 +44,16 @@ describe("home sync", () => {
     expect(codexAgents).toContain("request autoreview network access before implementation");
     expect(codexAgents).toContain("Codex Home Profile");
     await expect(access(path.join(homeDir, ".bootstrap/home-state.json"))).resolves.toBeUndefined();
+
+    const checklist = await readFile(
+      path.join(homeDir, ".codex/skills/bootstrap-checklist/SKILL.md"), "utf8"
+    );
+    const frontmatter = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(checklist);
+    expect(frontmatter, "synced skill must expose discovery metadata").not.toBeNull();
+    const metadata = parse(frontmatter![1]);
+    expect(metadata.name).toBe("bootstrap-checklist");
+    expect(typeof metadata.description).toBe("string");
+    expect(metadata.description.trim().length).toBeGreaterThan(0);
 
     const secondPlan = await planHome(manifest, homeDir);
     expect(secondPlan.actions.every((action) => action.type === "unchanged")).toBe(true);

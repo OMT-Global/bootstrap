@@ -33,4 +33,24 @@ describe("fleet policy upgrades", () => {
 
     expect(plan.map((entry) => entry.status)).toEqual(["review-required", "review-required", "review-required"]);
   });
+
+  it.each([undefined, "pending"] as const)("blocks the class batch while its pilot outcome is %s", (pilotOutcome) => {
+    const plan = planFleetPolicyUpgrades([
+      { repo: "acme/service-patch", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "1.0.1", pilotOutcome: "passed" },
+      { repo: "acme/service-a", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "1.0.1", pilotOutcome },
+      { repo: "acme/service-minor", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "1.1.0" },
+      { repo: "acme/service-major", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "2.0.0" },
+      { repo: "acme/service-exception", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "1.0.1", exceptionId: "EX-1" },
+      { repo: "acme/cli-a", repoClass: "cli", currentPolicy: "1.0.0", targetPolicy: "1.0.1", pilotOutcome: "passed" },
+      { repo: "acme/cli-b", repoClass: "cli", currentPolicy: "1.0.0", targetPolicy: "1.0.1" }
+    ]);
+
+    expect(plan.find((entry) => entry.repo === "acme/service-a")).toMatchObject({ role: "pilot", status: "review-required" });
+    const serviceBatch = plan.filter((entry) => entry.repoClass === "service" && entry.role === "batch");
+    expect(serviceBatch).toHaveLength(4);
+    for (const entry of serviceBatch) {
+      expect(entry).toMatchObject({ status: "blocked", reason: "The service pilot has not passed; record a passing representative pilot before rolling this class forward." });
+    }
+    expect(plan.find((entry) => entry.repo === "acme/cli-b")).toMatchObject({ role: "batch", status: "eligible" });
+  });
 });

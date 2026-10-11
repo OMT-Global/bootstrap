@@ -171,7 +171,7 @@ async function applyRepoThroughPullRequest(
   branch: string,
   runner: CommandRunner
 ): Promise<{ branch: string; pullRequestUrl?: string }> {
-  await gitOutput(runner, repo.path, ["checkout", "-B", branch]);
+  await gitOutput(runner, repo.path, ["checkout", "-b", branch]);
   await applyRepo(await loadManifest(manifestPath), repo.path);
   await gitOutput(runner, repo.path, ["add", "."]);
   await gitOutput(runner, repo.path, [
@@ -249,6 +249,17 @@ async function reconcileOneRepo(
   const repoDrift = hasRepoDrift(plannedRepo.changes);
   let githubActions: PlannedGitHubAction[] = [];
 
+  if (options.applyRepo && !(await isCleanWorktree(options.runner, repo.path))) {
+    return {
+      repo: `${manifest.project.owner}/${manifest.project.name}`,
+      path: repo.path,
+      status: "blocked",
+      reason: "Target worktree is dirty; refusing to apply bootstrap changes.",
+      repoChanges: plannedRepo.changes,
+      githubActions
+    };
+  }
+
   if (!repoDrift && !options.applyGitHub) {
     return {
       repo: `${manifest.project.owner}/${manifest.project.name}`,
@@ -281,17 +292,6 @@ async function reconcileOneRepo(
     };
   }
 
-  if (!(await isCleanWorktree(options.runner, repo.path))) {
-    return {
-      repo: `${manifest.project.owner}/${manifest.project.name}`,
-      path: repo.path,
-      status: "blocked",
-      reason: "Target worktree is dirty; refusing to apply bootstrap changes.",
-      repoChanges: plannedRepo.changes,
-      githubActions
-    };
-  }
-
   if (!repoDrift && options.applyGitHub) {
     githubActions = await applyGitHub(manifest);
     return {
@@ -306,39 +306,45 @@ async function reconcileOneRepo(
 
   const startingBranch = await currentBranch(options.runner, repo.path);
   const branch = branchName(repo.path, options.branchPrefix);
+  const result: FleetRepoResult = {
+    repo: `${manifest.project.owner}/${manifest.project.name}`,
+    path: repo.path,
+    status: "failed",
+    ...(options.createPr ? { branch } : {}),
+    repoChanges: plannedRepo.changes,
+    githubActions
+  };
   try {
     if (options.createPr) {
       const pr = await applyRepoThroughPullRequest(repo, manifestPath, branch, options.runner);
-      if (options.applyGitHub) {
-        githubActions = await applyGitHub(manifest);
-      }
-      return {
-        repo: `${manifest.project.owner}/${manifest.project.name}`,
-        path: repo.path,
-        status: "pr-opened",
-        branch: pr.branch,
-        ...(pr.pullRequestUrl ? { pullRequestUrl: pr.pullRequestUrl } : {}),
-        repoChanges: plannedRepo.changes,
-        githubActions
-      };
+      if (pr.pullRequestUrl) result.pullRequestUrl = pr.pullRequestUrl;
+      result.status = "pr-opened";
+    } else {
+      await applyRepo(manifest, repo.path);
+      result.status = "applied";
     }
-
-    await applyRepo(manifest, repo.path);
     if (options.applyGitHub) {
-      githubActions = await applyGitHub(manifest);
+      result.githubActions = await applyGitHub(manifest);
     }
-    return {
-      repo: `${manifest.project.owner}/${manifest.project.name}`,
-      path: repo.path,
-      status: "applied",
-      repoChanges: plannedRepo.changes,
-      githubActions
-    };
+  } catch (error) {
+    result.status = "failed";
+    result.reason = error instanceof Error ? error.message : String(error);
   } finally {
     if (options.createPr && startingBranch !== branch) {
-      await options.runner("git", ["checkout", startingBranch], { cwd: repo.path });
+      try {
+        // Failed apply/commit output belongs to the recovery branch, not the starting branch.
+        if (!(await isCleanWorktree(options.runner, repo.path))) {
+          throw new Error("Worktree is dirty; leaving generated changes in place for manual recovery.");
+        }
+        await gitOutput(options.runner, repo.path, ["checkout", startingBranch]);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        result.status = "failed";
+        result.reason = [result.reason, `Could not restore ${startingBranch}: ${reason}`].filter(Boolean).join(" ");
+      }
     }
   }
+  return result;
 }
 
 export async function reconcileFleet(options: ReconcileFleetOptions): Promise<FleetReport> {

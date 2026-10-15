@@ -116,7 +116,7 @@ describe("reconcileFleet", () => {
       status: "pr-opened",
       pullRequestUrl: "https://github.com/acme/needs-sync/pull/42"
     });
-    expect(calls.some((call) => call.startsWith("git checkout -B codex/bootstrap-reconcile/needs-sync-"))).toBe(
+    expect(calls.some((call) => call.startsWith("git checkout -b codex/bootstrap-reconcile/needs-sync-"))).toBe(
       true
     );
     expect(calls).toContain("git commit -m chore: reconcile bootstrap-managed files");
@@ -178,7 +178,7 @@ describe("reconcileFleet", () => {
       reason: "No repo drift; applied GitHub reconciliation without opening a PR."
     });
     expect(calls).toContain("git status --porcelain");
-    expect(calls.some((call) => call.startsWith("git checkout -B "))).toBe(false);
+    expect(calls.some((call) => call.startsWith("git checkout -b "))).toBe(false);
     expect(calls).not.toContain("git commit -m chore: reconcile bootstrap-managed files");
     expect(calls.some((call) => call.startsWith("gh pr create"))).toBe(false);
   });

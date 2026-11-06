@@ -49,6 +49,7 @@ export function planFleetPolicyUpgrades(candidates: FleetUpgradeCandidate[]): Fl
 
       if (risk === "invalid") return { ...candidate, risk, role, status: "blocked", reason: "Policy versions must be increasing exact SemVer values." };
       if (knownPilot === "failed") return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot failed; stop this batch until remediation is recorded.` };
+      if (role === "batch" && knownPilot !== "passed") return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot has not passed; record a passing representative pilot before rolling this class forward.` };
       if (candidate.exceptionId) return { ...candidate, risk, role, status: "review-required", reason: `Exception ${candidate.exceptionId} requires human review before a fleet upgrade PR.` };
       if (risk === "major") return { ...candidate, risk, role, status: "review-required", reason: "Major upgrades require notification and an accepted ADR before opening a PR." };
       if (risk === "minor") return { ...candidate, risk, role, status: "review-required", reason: "Minor upgrades require independent review before merge." };

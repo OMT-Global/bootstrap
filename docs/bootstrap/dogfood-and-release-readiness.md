@@ -76,6 +76,8 @@ Separately compare repository features, merge methods, branch protection/ruleset
 
 The inspected repository uses restricted default workflow permissions. All four governed callers now explicitly delegate the permissions required by their pinned reusable workflows at the calling job, so dispatch does not depend on permissive repository defaults. Generated public preflight/validation callers request 90 days of evidence retention; private callers retain their 365-day request, subject to the configured repository limit. The old public 365-day request was misleading: the pinned `actions/upload-artifact` implementation warns and clamps excessive retention to `GITHUB_RETENTION_DAYS`; it is not by itself proof that upload would fail. These repairs still need a successful remote non-publishing preflight and validation before release pilot completion.
 
+Required postpublish hooks are now checked for executability before any publish hook or release/tag mutation. Postpublish verification runs after release publication and before floating-tag promotion; a verification failure leaves aliases unchanged but does not roll back an already published release.
+
 ## Release pilot acceptance matrix
 
 | #27 acceptance | Observed status | Required evidence to finish |

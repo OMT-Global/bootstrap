@@ -65,6 +65,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
+          if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" && ! -x "$POSTPUBLISH_SCRIPT" ]]; then
+            echo "Postpublish verification script is required but missing or not executable." >&2
+            exit 1
+          fi
           tag_sha="$(git rev-parse "$TAG^{commit}")"
           if [[ "$REQUIRE_SIGNED_TAG" == "true" ]]; then
             git tag -v "$TAG" >/dev/null
@@ -138,18 +142,18 @@ jobs:
             [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1                   && gh release upload "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber                   || gh release create "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "${release_args[@]}"
           fi
+          if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
+            "$POSTPUBLISH_SCRIPT" "$TAG"
+          elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
+            echo "Postpublish verification script is required but missing or not executable." >&2
+            exit 1
+          fi
           if [[ "$TAG" != *"-rc."* && "$TAG" != *"-beta."* ]]; then
             version="${TAG#"$TAG_PREFIX"}"; IFS=. read -r major minor patch <<<"$version"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             [[ "$UPDATE_MINOR_TAG" == "true" ]] && git tag -f "${TAG_PREFIX}${major}.${minor}" "$tag_sha" && git push -f origin "refs/tags/${TAG_PREFIX}${major}.${minor}"
             [[ "$UPDATE_MAJOR_TAG" == "true" ]] && git tag -f "${TAG_PREFIX}${major}" "$tag_sha" && git push -f origin "refs/tags/${TAG_PREFIX}${major}"
-          fi
-          if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
-            "$POSTPUBLISH_SCRIPT" "$TAG"
-          elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
-            echo "Postpublish verification script is required but missing or not executable." >&2
-            exit 1
           fi
           printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

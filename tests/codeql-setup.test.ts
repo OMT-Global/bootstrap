@@ -10,6 +10,7 @@ import { githubCapabilitySnapshotSchema, runConformance } from "../src/conforman
 import { sha256 } from "../src/lib/hash.js";
 import { normalizeManifest, stringifyManifest } from "../src/manifest.js";
 import { applyRepo } from "../src/render.js";
+import type { PolicyException } from "../src/types.js";
 
 const directories: string[] = [];
 const controls = [
@@ -17,6 +18,11 @@ const controls = [
   "private-vulnerability-reporting", "push-protection", "secret-scanning"
 ];
 const validDefaultSetup = { state: "configured", languages: ["actions", "python"], githubHosted: true };
+const scanningAvailabilityWaiver: PolicyException = {
+  id: "synthetic-scanning-availability", policy: "github-capability", scope: "github.code-scanning",
+  rationale: "Synthetic temporary provider-availability fixture.", approvedBy: "synthetic-independent-reviewer",
+  issue: "#63", permanent: false, expiresAt: "2099-01-01"
+};
 // Captured from parent 161d18e; only the SBOM contents permission changes from write to read.
 const legacySecurityWithReadOnlySbomSha256 = "6c0a34c8b76d73249efe85de18e983c9f23e1598e6c14f21a8e79ec133ee05ae";
 
@@ -43,10 +49,10 @@ function capabilities(defaultSetup: unknown = validDefaultSetup, status = "suppo
   };
 }
 
-async function fixture(ci: Record<string, unknown> = { codeqlSetup: "default", codeqlLanguages: ["actions", "python"] }) {
+async function fixture(ci: Record<string, unknown> = { codeqlSetup: "default", codeqlLanguages: ["actions", "python"] }, exceptions: PolicyException[] = []) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-codeql-mode-"));
   directories.push(directory);
-  const manifest = normalizeManifest(input(ci));
+  const manifest = normalizeManifest({ ...input(ci), exceptions });
   await applyRepo(manifest, directory);
   const workflowPath = path.join(directory, ".github/workflows/security.yml");
   return { directory, manifest, workflowPath };
@@ -115,6 +121,7 @@ describe("explicit CodeQL setup mode", () => {
     const f = await fixture();
     const report = await runConformance(f.manifest, f.directory, { githubCapabilities: capabilities() });
     expect(securityFailures(report)).toEqual([]);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-CODEQL-SETUP-001", severity: "pass" }));
     expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
     expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-FORK-SAFETY-001", severity: "pass" }));
   });
@@ -156,6 +163,34 @@ describe("explicit CodeQL setup mode", () => {
     const f = await fixture({ codeqlSetup: "advanced" });
     const report = await runConformance(f.manifest, f.directory, { githubCapabilities: capabilities() });
     expect(securityFailures(report)).toContainEqual(expect.objectContaining({ severity: "blocking", classification: "misconfigured" }));
+  });
+
+  it.each([
+    ["missing default replacement proof", { codeqlSetup: "default", codeqlLanguages: ["actions", "python"] }, false, "unverified"],
+    ["configured default and advanced conflict", { codeqlSetup: "advanced" }, true, "misconfigured"]
+  ] as const)("keeps %s blocking despite a valid capability-availability waiver", async (_name, ci, hasProof, classification) => {
+    const f = await fixture(ci, [scanningAvailabilityWaiver]);
+    const snapshot = capabilities();
+    if (!hasProof) delete snapshot.observations.find((entry) => entry.control === "code-scanning")!.defaultSetup;
+    const report = await runConformance(f.manifest, f.directory, { githubCapabilities: snapshot });
+    const setupResult = report.results.find((entry) => entry.evidence.some((line) => line.startsWith("CodeQL")));
+    expect(setupResult).toMatchObject({ ruleId: "PRS-CODEQL-SETUP-001", severity: "blocking", classification });
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-EXCEPTION-001")).toEqual([
+      expect.objectContaining({ severity: "pass", classification: "conformant" })
+    ]);
+  });
+
+  it("preserves legacy advanced scanning-availability waivers for unsupported providers", async () => {
+    const f = await fixture({}, [scanningAvailabilityWaiver]);
+    const snapshot = capabilities(validDefaultSetup, "unsupported");
+    delete snapshot.observations.find((entry) => entry.control === "code-scanning")!.defaultSetup;
+    const report = await runConformance(f.manifest, f.directory, { githubCapabilities: snapshot });
+    expect(report.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-GITHUB-CAPABILITY-001", severity: "pass", classification: "waived",
+      evidence: expect.arrayContaining(["approved exception synthetic-scanning-availability"])
+    }));
+    expect(securityFailures(report)).toEqual([]);
+    expect(report.results.filter((entry) => entry.evidence.some((line) => line.startsWith("CodeQL")))).toEqual([]);
   });
 
   it("keeps legacy advanced conformance compatible with snapshots predating the new proof object", async () => {

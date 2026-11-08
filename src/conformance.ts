@@ -1073,7 +1073,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
         setup?.state === "configured" && setup.githubHosted && manifest.ci.codeqlLanguages.length > 0 &&
         manifest.ci.codeqlLanguages.every((language) => setup.languages.includes(language));
       const setupResult = result(
-        "PRS-GITHUB-CAPABILITY-001",
+        "PRS-CODEQL-SETUP-001",
         validDefaultSetup ? "pass" : "blocking",
         [validDefaultSetup
           ? `CodeQL default setup: authorized GitHub-hosted analyzed coverage for ${manifest.ci.codeqlLanguages.join(", ")}`
@@ -1085,9 +1085,8 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
         "Verify configured default setup, successful analysis for every declared language, and actual GitHub-hosted execution; record that authorized observation without changing modes implicitly.",
         validDefaultSetup ? "conformant" : missingProof ? "unverified" : "misconfigured"
       );
-      results.push(applyWaiver(setupResult, findWaiver(manifest, validExceptionIds, {
-        policy: "github-capability", scope: "github.code-scanning"
-      })));
+      // Replacement proof and mode consistency are separate from capability availability exceptions.
+      results.push(setupResult);
     }
   }
   if (manifest.project.visibility === "public") {

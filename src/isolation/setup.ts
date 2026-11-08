@@ -64,7 +64,7 @@ try {
       // Fixed no-editor/all-staged commit context; never inherit operator Git identity or environment.
       const env = { ...process.env, GIT_INDEX_FILE: '.git/index', GIT_PREFIX: '', GIT_EDITOR: ':', GIT_EXEC_PATH: run('git', ['--exec-path']).trim() };
       for (const kind of ['author', 'committer']) for (const field of ['name', 'email', 'date']) env['GIT_' + kind.toUpperCase() + '_' + field.toUpperCase()] = (field === 'date' ? '@' : '') + manifest[kind][field];
-      cp.execFileSync('/repo/project/.githooks/pre-commit', [], { cwd: '/repo/project', env, stdio: 'inherit' });
+      cp.execFileSync('git', ['--git-dir=.git', '-c', 'core.hooksPath=.githooks', 'hook', 'run', 'pre-commit'], { cwd: '/repo/project', env, stdio: 'inherit' });
     } else throw Error();
   }
 } catch { console.error('Isolated phase failed.'); process.exitCode = 1; }

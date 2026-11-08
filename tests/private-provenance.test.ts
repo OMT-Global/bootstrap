@@ -21,15 +21,17 @@ const syntheticFailure = () => { throw new Error(marker); };
 function fixture() {
   const publicSigner = generateProvenanceSigningKeyPair();
   const receiptSigner = generateProvenanceSigningKeyPair();
+  const publicJwk = publicSigner.privateKey;
+  const receiptJwk = receiptSigner.privateKey;
   const expected = { repository: "synthetic/example", commitSha: "a".repeat(40), runId: "fixture-1" };
   const signedPublicEnvelope = wire(signPublicProvenance(createPublicProvenance({
     runId: expected.runId, subject: { repository: expected.repository, commitSha: expected.commitSha, ref: "refs/heads/synthetic" },
     execution: { workflow: "Synthetic test", createdAt: captureTime }, reviewers: [{ login: "reviewer", state: "approved" }]
-  }), { privateKey: publicSigner.privateKey, signedAt: captureTime }));
+  }), { privateKey: publicJwk, signedAt: captureTime }));
   const options: SyntheticCaptureOptions = {
     syntheticOnly: true, signedPublicEnvelope, expected, trustedPublicKeys: [publicSigner.publicKey],
     kmsKeyArn: "synthetic-key-1", input: wire(fabricated), capturedAt: captureTime,
-    retentionPolicyId: "synthetic-90days", receiptPrivateKey: receiptSigner.privateKey
+    retentionPolicyId: "synthetic-90days", receiptPrivateKey: receiptJwk
   };
   const storage: SyntheticPrivateStorage = { region: "us-east-2", bucket: "synthetic-bucket", key: "fixture", versionId: "version-1" };
   const state: { bytes?: Buffer; retention?: { mode: "GOVERNANCE"; retainUntil: string }; events: string[]; ownedKeys: Buffer[] } = { events: [], ownedKeys: [] };

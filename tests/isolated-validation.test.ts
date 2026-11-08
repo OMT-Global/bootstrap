@@ -36,6 +36,8 @@ const originalPath = process.env.PATH;
 function fixture(hook = false, phase: "prepared-hook" | "final-check" = "final-check"): NodeValidationInput {
   const file = (name: string, text: string, executable = false) => ({ path: name, bytes: Buffer.from(text), mode: executable ? "100755" as const : "100644" as const });
   return { ...(phase === "final-check" ? { phase, candidateCommit: "c".repeat(40) } : { phase }), profile: "node-npm-linux-v1", baseBundle: Buffer.from("synthetic bundle, validated by real Docker tests"), baseCommit: "a".repeat(40),
+    author: { name: "Synthetic Author", email: "author@example.invalid", date: "1767225600 +0000" },
+    committer: { name: "Synthetic Committer", email: "committer@example.invalid", date: "1767225601 +0000" },
     branch: "codex/isolated-test", commitMessage: "test: isolated validation\n\nSigned-off-by: Synthetic Tester <fixture@example.invalid>\n",
     hook: hook ? ".githooks/pre-commit" : "none", files: [file("package.json", '{"name":"fixture","version":"1.0.0"}'),
       file("package-lock.json", '{"lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}'),

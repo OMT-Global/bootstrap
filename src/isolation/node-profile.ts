@@ -5,20 +5,21 @@ import { z } from "zod";
 
 export const NODE_ISOLATION_PROFILE = "node-npm-linux-v1";
 export const NODE_ISOLATION_IMAGE = "docker.io/library/node@sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0";
-export const ISOLATION_LIMITS = Object.freeze({ files: 10_000, sourceBytes: 512 * 1024 ** 2, bundleBytes: 64 * 1024 ** 2,
+export const ISOLATION_LIMITS = Object.freeze({ files: 10_000, entries: 10_000, pathDepth: 32, sourceBytes: 512 * 1024 ** 2, bundleBytes: 64 * 1024 ** 2,
   archiveBytes: 64 * 1024 ** 2, downloadBytes: 512 * 1024 ** 2, archives: 1000, outputBytes: 8 * 1024 ** 2,
   phaseMs: 15 * 60_000, downloadMs: 30_000, manifestBytes: 1024 ** 2, lockBytes: 16 * 1024 ** 2 });
+export interface PlannedGitIdentity { name: string; email: string; date: string }
 export interface IsolatedSourceFile { path: string; mode: "100644" | "100755"; bytes: Uint8Array }
 interface NodeValidationCommon {
   profile: typeof NODE_ISOLATION_PROFILE; files: readonly IsolatedSourceFile[]; baseBundle: Uint8Array;
-  baseCommit: string; branch: string; commitMessage: string; hook: "none" | ".githooks/pre-commit";
+  baseCommit: string; branch: string; commitMessage: string; author: PlannedGitIdentity; committer: PlannedGitIdentity; hook: "none" | ".githooks/pre-commit";
 }
 type ValidationPhase = { phase: "prepared-hook" } | { phase: "final-check"; candidateCommit: string };
 export type NodeValidationInput = NodeValidationCommon & ValidationPhase;
 export interface ArchiveRequest { url: string; integrity: string }
 export type FrozenNodeInput = Omit<NodeValidationCommon, "files" | "baseBundle"> & ValidationPhase & {
   files: Array<{ path: string; mode: "100644" | "100755"; bytes: Buffer; sha256: string }>;
-  baseBundle: Buffer; sourceSha256: string; archives: ArchiveRequest[];
+  baseBundle: Buffer; sourceSha256: string; commitPlanSha256: string; archives: ArchiveRequest[];
 }
 const knownHooks = new Set(["applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
   "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push",
@@ -34,16 +35,19 @@ function safePath(value: string): boolean {
 }
 function json(bytes: Uint8Array): unknown { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
 export function freezeNodeValidation(input: NodeValidationInput): FrozenNodeInput {
+  const text = (maximum: number, forbidden: RegExp) => z.string().min(1).refine((value) => value.trim() === value && Buffer.byteLength(value) <= maximum && Buffer.from(value).toString() === value && !forbidden.test(value));
+  const identity = z.object({ name: text(256, /[\x00-\x1f\x7f-\x9f<>]/), email: text(254, /[\s\x00-\x1f\x7f-\x9f<>]/),
+    date: z.string().regex(/^(?:0|[1-9][0-9]{0,10}) [+-](?:0[0-9]|1[0-9]|2[0-3])[0-5][0-9]$/) }).strict();
   const common = z.object({ profile: z.literal(NODE_ISOLATION_PROFILE), files: z.array(z.object({ path: z.string(),
     mode: z.enum(["100644", "100755"]), bytes: z.instanceof(Uint8Array) }).strict()).min(1).max(ISOLATION_LIMITS.files),
     baseBundle: z.instanceof(Uint8Array), baseCommit: z.string().regex(/^[a-f0-9]{40}$/), branch: z.string().regex(/^codex\/[A-Za-z0-9][A-Za-z0-9._/-]*$/),
     commitMessage: z.string().min(1).refine((value) => Buffer.byteLength(value) <= 16_384 && Buffer.from(value).toString() === value && !value.includes("\0") && /^Signed-off-by: .+ <[^>]+>$/im.test(value)),
-    hook: z.enum(["none", ".githooks/pre-commit"]) }).strict();
+    author: identity, committer: identity, hook: z.enum(["none", ".githooks/pre-commit"]) }).strict();
   const parsed = z.discriminatedUnion("phase", [common.extend({ phase: z.literal("prepared-hook") }),
     common.extend({ phase: z.literal("final-check"), candidateCommit: z.string().regex(/^[a-f0-9]{40}$/) })]).parse(input);
   demand(parsed.baseBundle.byteLength > 0 && parsed.baseBundle.byteLength <= ISOLATION_LIMITS.bundleBytes, "Unsupported public base bundle size.");
   demand(!parsed.branch.includes("..") && !parsed.branch.includes("//") && parsed.branch.split("/").every((part) => !part.endsWith(".") && !part.endsWith(".lock")), "Unsupported candidate branch.");
-  const seen = new Set<string>(); let size = 0;
+  const seen = new Set<string>(); const directories = new Set<string>(); let size = 0;
   const files = parsed.files.map((file) => {
     demand(safePath(file.path) && !seen.has(file.path), "Unsupported or duplicate prepared source path."); seen.add(file.path);
     size += file.bytes.byteLength; demand(size <= ISOLATION_LIMITS.sourceBytes, "Prepared source exceeds the profile limit.");
@@ -54,7 +58,12 @@ export function freezeNodeValidation(input: NodeValidationInput): FrozenNodeInpu
   }).sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
   for (const file of files) {
     const parts = file.path.split("/");
-    for (let end = 1; end < parts.length; end++) demand(!seen.has(parts.slice(0, end).join("/")), "Prepared file/directory collision.");
+    demand(parts.length <= ISOLATION_LIMITS.pathDepth, "Prepared source path exceeds the depth limit.");
+    for (let end = 1; end < parts.length; end++) {
+      const directory = parts.slice(0, end).join("/");
+      demand(!seen.has(directory), "Prepared file/directory collision."); directories.add(directory);
+      demand(files.length + directories.size <= ISOLATION_LIMITS.entries, "Prepared source exceeds the materialized entry limit.");
+    }
   }
   const get = (name: string) => files.find((file) => file.path === name);
   demand(get("scripts/ci/run-fast-checks.sh"), "The fixed validation entry point is missing.");
@@ -78,7 +87,9 @@ export function freezeNodeValidation(input: NodeValidationInput): FrozenNodeInpu
   }
   demand(requests.size <= ISOLATION_LIMITS.archives, "Too many dependency archives.");
   const sourceSha256 = sha256(Buffer.from(JSON.stringify(files.map(({ path, mode, sha256 }) => ({ path, mode, sha256 })))));
-  return { ...parsed, files, baseBundle: Buffer.from(parsed.baseBundle), sourceSha256,
+  const { author, committer, baseCommit, branch, commitMessage, hook } = parsed;
+  const commitPlanSha256 = sha256(Buffer.from(JSON.stringify({ author, committer, baseCommit, branch, commitMessage, hook })));
+  return { ...parsed, files, baseBundle: Buffer.from(parsed.baseBundle), sourceSha256, commitPlanSha256,
     archives: [...requests].map(([url, integrity]) => ({ url, integrity })) };
 }
 export function verifyArchive(bytes: Uint8Array, integrity: string): void {

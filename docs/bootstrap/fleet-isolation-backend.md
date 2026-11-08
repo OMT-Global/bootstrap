@@ -16,7 +16,7 @@ The code-owned limits are explicit:
 
 | Surface | Limit |
 |---|---|
-| Source | 10,000 files, 512 MiB total |
+| Source | 10,000 total file/directory entries, path depth 32, 512 MiB total |
 | Public Git bundle | 64 MiB |
 | Package / lock JSON | 1 MiB / 16 MiB |
 | Dependency archives | 1,000 archives, 64 MiB each, 512 MiB total |
@@ -26,12 +26,14 @@ The code-owned limits are explicit:
 
 The cache, input, source, temporary, dependency, and build filesystems also have fixed bounds in the profile. An unsupported write location or exhausted bound fails rather than widening access.
 
+The trusted supervisor must supply explicit planned public author and committer identities, including raw Git dates (`epoch timezone`). There is no default identity, ambient configuration fallback, or inference from the DCO. The supported hook context is root-directory, no-editor, all-staged, and single-parent only; partial commits, amendments, merges, editor sessions, and subdirectory-prefix contexts need a later reviewed profile. Hook replay exports `.git/index`, empty `GIT_PREFIX`, `GIT_EDITOR=:`, both planned identities/date values, and a sanitized local Git user matching the planned committer.
+
 The expected pipeline is:
 
 1. Validate the supported source, package/lock, hook, and profile inputs and freeze their exact bytes/modes.
 2. Download bounded public registry tarballs as inert data, reject redirects or credentials, and verify SHA-512 integrity.
 3. Populate a disposable cache and install the exact lock offline with lifecycle scripts disabled.
-4. Run the explicit `prepared-hook` phase against the base HEAD and prepared read-only index. After the future supervisor independently constructs/signs the exact public candidate, run the separate `final-check` phase with that candidate object as clean HEAD. Each phase uses a fresh, independent network-disabled container. Prepared source and sanitized Git/index data remain read-only; only bounded temporary, cache, dependency, and build locations are writable.
+4. Run the explicit `prepared-hook` phase against the base HEAD and prepared read-only index. After the future supervisor independently constructs/signs the exact public candidate, run the separate `final-check` phase with that candidate object as clean HEAD, verifying its exact raw author/committer identities/dates, parent, message, and prepared tree. Each phase uses a fresh, independent network-disabled container. Prepared source and sanitized Git/index data remain read-only; only bounded temporary, cache, dependency, and build locations are writable.
 5. Remove each container and its ephemeral storage after success, failure, timeout, cancellation, or partial startup. Cleanup errors remain visible and cannot establish successful validation.
 
 No host path is bind-mounted. Target code receives a fixed minimal environment, no fleet credentials or host agent sockets, no Linux capabilities, and no external network route. The first hook contract permits only no hook or the regular in-repository `.githooks/pre-commit`; do not silently skip other required hooks. The future trusted supervisor must independently reconstruct and sign its own exact tree rather than accepting sandbox-produced Git objects as publication authority.

@@ -10,7 +10,7 @@ import { downloadArchive, freezeNodeValidation, ISOLATION_LIMITS, NODE_ISOLATION
   type NodeValidationInput } from "./node-profile.js";
 
 interface NodeValidationEvidence {
-  profile: typeof NODE_ISOLATION_PROFILE; image: string; sourceSha256: string; baseCommit: string;
+  profile: typeof NODE_ISOLATION_PROFILE; image: string; sourceSha256: string; commitPlanSha256: string; baseCommit: string;
   preparedTree: string; hook: "none" | ".githooks/pre-commit"; tools: Record<string, string>;
 }
 export type NodeValidationReport = NodeValidationEvidence & (
@@ -144,7 +144,7 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
       await run(["rm", "--force", name]); containers.splice(containers.indexOf(name), 1);
       return redactPublicText(output).value;
     };
-    const evidence: NodeValidationEvidence = { profile: NODE_ISOLATION_PROFILE, image: NODE_ISOLATION_IMAGE, sourceSha256: frozen.sourceSha256,
+    const evidence: NodeValidationEvidence = { profile: NODE_ISOLATION_PROFILE, image: NODE_ISOLATION_IMAGE, sourceSha256: frozen.sourceSha256, commitPlanSha256: frozen.commitPlanSha256,
       baseCommit: frozen.baseCommit, preparedTree: prepared.tree, hook: frozen.hook, tools: prepared.tools };
     report = frozen.phase === "prepared-hook"
       ? { ...evidence, phase: "prepared-hook", hookOutput: frozen.hook === "none" ? "" : await phase("hook") }

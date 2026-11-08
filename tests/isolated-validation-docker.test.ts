@@ -31,8 +31,8 @@ function environment(home: string): NodeJS.ProcessEnv {
     GIT_AUTHOR_EMAIL: "isolation-fixture@example.invalid", GIT_COMMITTER_NAME: "Isolation Fixture",
     GIT_COMMITTER_EMAIL: "isolation-fixture@example.invalid" };
 }
-async function command(binary: string, args: string[], cwd = toolsHome, input?: string | Buffer): Promise<string> {
-  const child = execFile(binary, args, { cwd, env: environment(toolsHome), encoding: "utf8", maxBuffer: maxOutput,
+async function command(binary: string, args: string[], cwd = toolsHome, input?: string | Buffer, extraEnvironment?: Record<string, string>): Promise<string> {
+  const child = execFile(binary, args, { cwd, env: { ...environment(toolsHome), ...extraEnvironment }, encoding: "utf8", maxBuffer: maxOutput,
     timeout: 60_000 });
   const result = new Promise<string>((resolve, reject) => {
     let text = ""; let error = "";
@@ -44,8 +44,14 @@ async function command(binary: string, args: string[], cwd = toolsHome, input?: 
   if (input !== undefined) child.stdin!.end(input); else child.stdin!.end();
   return result;
 }
-const git = (cwd: string, args: string[], input?: string | Buffer) => command("/usr/bin/git", ["-c", "core.hooksPath=/dev/null",
-  "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", ...args], cwd, input);
+const git = (cwd: string, args: string[], input?: string | Buffer, plan?: Pick<NodeValidationInput, "author" | "committer">) => command("/usr/bin/git", ["-c", "core.hooksPath=/dev/null",
+  "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", ...args], cwd, input,
+  plan ? { GIT_AUTHOR_NAME: plan.author.name, GIT_AUTHOR_EMAIL: plan.author.email, GIT_AUTHOR_DATE: `@${plan.author.date}`,
+    GIT_COMMITTER_NAME: plan.committer.name, GIT_COMMITTER_EMAIL: plan.committer.email, GIT_COMMITTER_DATE: `@${plan.committer.date}` } : undefined);
+function identities(): Pick<NodeValidationInput, "author" | "committer"> {
+  return { author: { name: "Isolation Fixture", email: "isolation-fixture@example.invalid", date: "1767225600 +0000" },
+    committer: { name: "Isolation Fixture Committer", email: "isolation-committer@example.invalid", date: "1767225660 +0000" } };
+}
 const dockerCommand = (args: string[]) => command(docker, ["--host", "unix:///var/run/docker.sock", "--config", path.join(toolsHome, "docker"), ...args]);
 const lines = (value: string) => value.trim().split("\n").filter(Boolean).sort();
 async function resources() {
@@ -86,7 +92,7 @@ async function fixture(): Promise<{ input: NodeValidationInput; original: string
   });
   const files: IsolatedSourceFile[] = baseFiles.map((entry) => ({ ...entry, bytes: Buffer.from(entry.bytes) }));
   files[0] = file("README.md", "prepared public source\n");
-  return { original, input: { profile: NODE_ISOLATION_PROFILE, phase: "prepared-hook", files, baseBundle: await readFile(bundle), baseCommit,
+  return { original, input: { profile: NODE_ISOLATION_PROFILE, phase: "prepared-hook", ...identities(), files, baseBundle: await readFile(bundle), baseCommit,
     branch: "codex/isolation-fixture", commitMessage: "test: validate prepared source\n\nSigned-off-by: Isolation Fixture <isolation-fixture@example.invalid>\n", hook: "none" } };
 }
 function replace(input: NodeValidationInput, entry: IsolatedSourceFile): void {
@@ -106,7 +112,7 @@ async function finalCandidate(input: NodeValidationInput): Promise<NodeValidatio
   }
   await git(target, ["update-index", "-z", "--index-info"], index);
   const tree = (await git(target, ["write-tree"])).trim();
-  const candidateCommit = (await git(target, ["commit-tree", tree, "-p", input.baseCommit], input.commitMessage)).trim();
+  const candidateCommit = (await git(target, ["commit-tree", tree, "-p", input.baseCommit], input.commitMessage, input)).trim();
   candidateTrees.set(candidateCommit, tree);
   await git(target, ["update-ref", "refs/heads/isolated-candidate", candidateCommit]);
   const bundle = path.join(target, "candidate.bundle"); await git(target, ["bundle", "create", bundle, "refs/heads/isolated-candidate"]);
@@ -179,6 +185,20 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
   assert.equal(capabilities.split(':')[1].trim(), '0000000000000000');
   assert.equal(cp.execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], {encoding:'utf8'}).trim(), 'codex/isolation-fixture');
   if (process.argv[2] === 'hook') {
+    const planned = ${JSON.stringify({author: input.author, committer: input.committer})};
+    assert.equal(process.env.GIT_INDEX_FILE, '.git/index');
+    assert.equal(process.env.GIT_PREFIX, '');
+    assert.equal(process.env.GIT_EDITOR, ':');
+    for (const kind of ['author', 'committer']) {
+      for (const field of ['name', 'email', 'date']) {
+        const variableName = 'GIT_' + kind.toUpperCase() + '_' + field.toUpperCase();
+        assert.equal(process.env[variableName], (field === 'date' ? '@' : '') + planned[kind][field]);
+      }
+      assert.equal(cp.execFileSync('git', ['var', 'GIT_' + kind.toUpperCase() + '_IDENT'], {encoding:'utf8'}).trim(), planned[kind].name + ' <' + planned[kind].email + '> ' + planned[kind].date);
+    }
+    assert.equal(cp.execFileSync('git', ['config', '--local', '--get', 'user.name'], {encoding:'utf8'}).trim(), planned.committer.name);
+    assert.equal(cp.execFileSync('git', ['config', '--local', '--get', 'user.email'], {encoding:'utf8'}).trim(), planned.committer.email);
+    console.log('ISOLATED-HOOK-CONTEXT-PASSED');
     assert.equal(cp.execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim(), ${JSON.stringify(input.baseCommit)});
     assert(cp.execFileSync('git', ['diff', '--cached', '--name-only', '-z', 'HEAD'], {encoding:'utf8'}).split(String.fromCharCode(0)).includes('README.md'));
   } else {
@@ -214,9 +234,11 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(report.sourceSha256).toBe(frozen.sourceSha256); expect(report.preparedTree).toBe(candidateTrees.get(candidate.candidateCommit)); expect(report.baseCommit).toBe(input.baseCommit);
     expect(hook.phase).toBe("prepared-hook"); expect(report.phase).toBe("final-check"); expect(report.candidateCommit).toBe(candidate.candidateCommit);
     expect(hook.preparedTree).toBe(report.preparedTree);
+    expect(hook.commitPlanSha256).toBe(frozen.commitPlanSha256); expect(report.commitPlanSha256).toBe(frozen.commitPlanSha256);
     expect(Object.keys(report.tools).sort()).toEqual(["bash", "git", "node", "npm", "python"]);
     expect(report.tools.node).toMatch(/^v24\./); for (const value of Object.values(report.tools)) expect(value.length).toBeGreaterThan(0);
     expect(report.checkOutput).toContain("ISOLATED-PROBE-PASSED:checks"); expect(hook.hookOutput).toContain("ISOLATED-PROBE-PASSED:hook");
+    expect(hook.hookOutput).toContain("ISOLATED-HOOK-CONTEXT-PASSED");
     expect(report.checkOutput).toContain(`ISOLATED-CHECK-COMMIT:${candidate.candidateCommit}`); expect("hookOutput" in report).toBe(false);
     expect(await readFile(canary, "utf8")).toBe("unchanged host fixture\n"); expect(connections).toBe(0);
     await expect(access(marker)).rejects.toThrow(); expect(freezeNodeValidation(input).sourceSha256).toBe(frozen.sourceSha256);
@@ -230,10 +252,12 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(await resources()).toEqual(beforeResources);
   }, timeout);
 
-  it.each(["base parent", "message", "prepared tree"])("rejects a wrong final candidate %s before starting target checks", async (kind) => {
+  it.each(["base parent", "message", "prepared tree", "author", "committer"])("rejects a wrong final candidate %s before starting target checks", async (kind) => {
     const { input } = await fixture(); const candidate = await finalCandidate(input);
     if (kind === "base parent") candidate.baseCommit = candidate.candidateCommit;
     else if (kind === "message") candidate.commitMessage += "Different signed message body.\n";
+    else if (kind === "author") candidate.author = { ...candidate.author, name: "Different Public Author" };
+    else if (kind === "committer") candidate.committer = { ...candidate.committer, date: "1767225720 +0000" };
     else replace(candidate, file("README.md", "Different prepared source bytes.\n"));
     const since = new Date().toISOString();
     await expect(validateIsolatedNode(candidate)).rejects.toThrow(/Isolated/);
@@ -282,7 +306,7 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     }
     // These are explicit new public source files during local preparation, never a glob of ignored or machine-local files.
     for (const name of ["src/isolation/node-profile.ts", "src/isolation/node-validation.ts", "src/isolation/setup.ts",
-      "tests/isolation-profile.test.ts", "tests/isolated-validation.test.ts", "tests/isolated-validation-docker.test.ts",
+      "tests/isolation-profile.test.ts", "tests/isolated-validation.test.ts", "tests/isolation-hook-context.test.ts", "tests/isolated-validation-docker.test.ts",
       ".github/workflows/fleet-isolation-validation.yml", "docs/security/fleet-isolation-design.md",
       "docs/decisions/ADR-0013-isolated-node-validation-backend.md", "docs/bootstrap/fleet-isolation-backend.md"]) {
       try { await access(path.join(checkout, name)); if (!modes.has(name)) modes.set(name, "100644"); } catch { /* Only already-created explicit sources are included. */ }
@@ -294,7 +318,7 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
       if (!info.isFile() || info.nlink !== 1) throw new Error("Bootstrap source snapshot requires regular singly linked files.");
       files.push({ path: name, mode, bytes: await readFile(path.join(checkout, name)) });
     }
-    const input: NodeValidationInput = { profile: NODE_ISOLATION_PROFILE, phase: "prepared-hook", files, baseBundle: await readFile(bundle), baseCommit,
+    const input: NodeValidationInput = { profile: NODE_ISOLATION_PROFILE, phase: "prepared-hook", ...identities(), files, baseBundle: await readFile(bundle), baseCommit,
       branch: "codex/isolation-bootstrap", commitMessage: "test: validate public Bootstrap snapshot\n\nSigned-off-by: Isolation Fixture <isolation-fixture@example.invalid>\n", hook: ".githooks/pre-commit" };
     const before = freezeNodeValidation(input).sourceSha256;
     const hook = await validateIsolatedNode(input); expect(hook.phase).toBe("prepared-hook");

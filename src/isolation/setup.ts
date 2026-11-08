@@ -25,6 +25,7 @@ try {
     }
     git(['init', '-q', '--template=/input/empty-template']);
     git(['config', 'core.hooksPath', '/disabled-hooks']); git(['config', 'core.fsmonitor', 'false']);
+    git(['config', 'user.name', manifest.committer.name]); git(['config', 'user.email', manifest.committer.email]);
     const selected = manifest.phase === 'final-check' ? manifest.candidateCommit : manifest.baseCommit;
     git(['fetch', '-q', '--no-tags', '--no-write-fetch-head', '/input/base.bundle', selected]);
     if (git(['rev-parse', manifest.baseCommit + '^{commit}']).trim() !== manifest.baseCommit) throw Error();
@@ -40,7 +41,11 @@ try {
     const tree = git(['write-tree']).trim();
     if (manifest.phase === 'final-check') {
       const raw = cp.execFileSync('git', ['cat-file', 'commit', selected], { cwd: '/repo/project', maxBuffer: 8 * 1024 * 1024 }), split = raw.indexOf(Buffer.from('\n\n'));
-      const parents = raw.subarray(0, split).toString('utf8').split('\n').filter(line => line.startsWith('parent '));
+      const headers = new TextDecoder('utf-8', { fatal: true }).decode(raw.subarray(0, split)).split('\n'), parents = headers.filter(line => line.startsWith('parent '));
+      for (const kind of ['author', 'committer']) {
+        const expected = kind + ' ' + manifest[kind].name + ' <' + manifest[kind].email + '> ' + manifest[kind].date;
+        const actual = headers.filter(line => line.startsWith(kind + ' ')); if (actual.length !== 1 || actual[0] !== expected) throw Error();
+      }
       if (split < 0 || parents.length !== 1 || parents[0] !== 'parent ' + manifest.baseCommit || !raw.subarray(split + 2).equals(Buffer.from(manifest.commitMessage, 'utf8')) || git(['rev-parse', selected + '^{tree}']).trim() !== tree || git(['rev-parse', 'HEAD']).trim() !== selected) throw Error();
       git(['diff', '--cached', '--exit-code', '--quiet']);
     }
@@ -51,7 +56,10 @@ try {
     if (mode === 'check') {
       cp.execFileSync('bash', ['scripts/ci/run-fast-checks.sh'], { cwd: '/repo/project', stdio: 'inherit' });
     } else if (mode === 'hook' && manifest.hook !== 'none') {
-      cp.execFileSync('/repo/project/.githooks/pre-commit', [], { cwd: '/repo/project', stdio: 'inherit' });
+      // Fixed no-editor/all-staged commit context; never inherit operator Git identity or environment.
+      const env = { ...process.env, GIT_INDEX_FILE: '.git/index', GIT_PREFIX: '', GIT_EDITOR: ':', GIT_EXEC_PATH: run('git', ['--exec-path']).trim() };
+      for (const kind of ['author', 'committer']) for (const field of ['name', 'email', 'date']) env['GIT_' + kind.toUpperCase() + '_' + field.toUpperCase()] = (field === 'date' ? '@' : '') + manifest[kind][field];
+      cp.execFileSync('/repo/project/.githooks/pre-commit', [], { cwd: '/repo/project', env, stdio: 'inherit' });
     } else throw Error();
   }
 } catch { console.error('Isolated phase failed.'); process.exitCode = 1; }

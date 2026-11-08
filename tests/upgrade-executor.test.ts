@@ -178,7 +178,7 @@ describe("guarded Flow policy upgrade execution", () => {
     const report = await f.run(true);
     expect(report.results.map(({ status }) => status)).toEqual(["blocked", "blocked"]);
     expect(report.results[0]!.reason).toContain("Dirty");
-    expect(report.results[1]!.reason).toContain("has not passed");
+    expect(report.results[1]!.reason).toContain("Earlier class execution failed");
     expect(await readFile(path.join(a, "operator-work"), "utf8")).toBe("preserve");
   });
 
@@ -312,6 +312,39 @@ describe("guarded Flow policy upgrade execution", () => {
     f.faults.push = false;
     expect((await f.run(true)).results[0]!.reason).toContain("Recovery branch exists");
     expect(await git(a, ["rev-parse", first.branch!])).toBe(recovery);
+  });
+
+  it("stops later class mutations after a verified member fails preflight despite a passing pilot", async () => {
+    const f = await fixture();
+    await f.add("acme/a", { version: "1.0.1" });
+    const b = await f.add("acme/b");
+    const c = await f.add("acme/c");
+    await f.add("acme/z", { repoClass: "service" });
+    f.pilot("acme/a");
+    const branch = `codex/flow-policy-1.0.1-${f.repos.get("acme/b")!.head.slice(0, 12)}`;
+    await git(b, ["branch", branch]);
+    const recovery = await git(b, ["rev-parse", branch]);
+    const report = await f.run(true, 3);
+    expect(report.results.map(({ status }) => status)).toEqual(["unchanged", "blocked", "blocked", "pr-opened"]);
+    expect(report.results[1]!.reason).toContain("Recovery branch exists");
+    expect(report.results[2]!.reason).toContain("Earlier class execution failed");
+    expect(await git(b, ["rev-parse", branch])).toBe(recovery);
+    expect(await git(c, ["rev-parse", "HEAD"])).toBe(f.repos.get("acme/c")!.head);
+    expect(await git(c, ["status", "--porcelain"])).toBe("");
+    expect(f.calls.some(({ command, args, cwd }) => command === "git" && cwd === c && ["checkout", "commit", "push"].includes(args[0] ?? ""))).toBe(false);
+  });
+
+  it("keeps dry-run preflight failures local while reporting later independently eligible plans", async () => {
+    const f = await fixture();
+    await f.add("acme/a", { version: "1.0.1" });
+    const b = await f.add("acme/b");
+    await f.add("acme/c");
+    f.pilot("acme/a");
+    await writeFile(path.join(b, "operator-work"), "preserve");
+    const report = await f.run();
+    expect(report.results.map(({ status }) => status)).toEqual(["unchanged", "blocked", "planned"]);
+    expect(report.results[1]!.reason).toContain("Dirty");
+    expect(f.calls.some(({ command, args }) => command === "git" && ["checkout", "commit", "push"].includes(args[0] ?? ""))).toBe(false);
   });
 
   it("retains a known PR URL and reports restoration failure", async () => {

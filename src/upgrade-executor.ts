@@ -365,6 +365,7 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
       }
     } catch (error) {
       if (result.repo !== "[unverified]") {
+        if (options.apply && result.repoClass) failedClasses.add(result.repoClass);
         result.status = "blocked";
         result.reason = redactPublicText(error instanceof UpgradeGuardError ? error.message : "Upgrade preflight failed; inspect the local checkout without publishing its contents.").value;
       }

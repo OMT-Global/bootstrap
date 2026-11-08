@@ -340,6 +340,7 @@ export interface BootstrapManifest {
     updateMinorTag: boolean;
     reusableWorkflowRepo: string;
     reusableWorkflowRef: string;
+    postpublishRequiresPreflight?: boolean;
     changelog: ReleaseChangelogConfig;
     versions: ReleaseVersionSurface[];
     artifacts: ReleaseArtifactConfig;

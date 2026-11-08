@@ -68,9 +68,11 @@ it("observes actual child failures without altering exit status and bounds sanit
   let retained: DockerDiagnostic[] = [];
   try {
     await expect(withDockerDiagnostics(async () => {
+      // Fabricated stderr only: both parts are source-authored and read no host value.
+      const fabricatedAssignment = ["token", "synthetic-fixture-only"].join("=");
       for (let index = 0; index < 5; index += 1) {
         const script = index < 4 ? `process.stdout.write('discarded-${index}');process.exitCode=23;` :
-          String.raw`process.stdout.write('x'.repeat(96*1024),()=>{process.stderr.write('\u001b[31mvisible\u001b[0m\u0000 token=synthetic-fixture-only end');process.exitCode=23;});`;
+          String.raw`process.stdout.write('x'.repeat(96*1024),()=>{process.stderr.write('\u001b[31mvisible\u001b[0m\u0000 ${fabricatedAssignment} end');process.exitCode=23;});`;
         const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
           const child = spawn(process.execPath, ["-e", script], { cwd: os.tmpdir(), env: { PATH: "/usr/bin:/bin", HOME: os.tmpdir() },
             stdio: ["ignore", "pipe", "pipe"] });

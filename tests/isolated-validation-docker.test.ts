@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -6,12 +6,102 @@ import { createServer, type Server } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { redactPublicText } from "../src/provenance.js";
 import { validateIsolatedNode } from "../src/isolation/node-validation.js";
 import { freezeNodeValidation, NODE_ISOLATION_IMAGE, NODE_ISOLATION_PROFILE, type IsolatedSourceFile,
   type NodeValidationInput } from "../src/isolation/node-profile.js";
+
+interface DockerDiagnostic {
+  operation: string; phase: string; code: number | null; signal: NodeJS.Signals | null; tail: Buffer;
+}
+const diagnostics = vi.hoisted(() => ({ active: false, session: 0, records: [] as DockerDiagnostic[] }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: (executable: string, args: readonly string[], options: import("node:child_process").SpawnOptions) => {
+    const child = actual.spawn(executable, args, options);
+    if (!diagnostics.active) return child;
+    const session = diagnostics.session;
+    const verb = args[0] === "--host" && args[2] === "--config" ? args[4] : undefined;
+    const operation = ["version", "image", "volume", "create", "inspect", "cp", "start", "rm"].includes(verb ?? "") ? verb! : "process";
+    const name = args.find((value) => /^bootstrap-isolation-[a-f0-9-]+-(prepare|hook|check|storage)$/.test(value));
+    const phase = name?.match(/-(prepare|hook|check|storage)$/)?.[1] ?? "none";
+    const attached = operation === "start" && args[5] === "--attach";
+    let tail = Buffer.alloc(0);
+    const take = (chunk: Buffer) => { tail = Buffer.from(Buffer.concat([tail, chunk]).subarray(-64 * 1024)); };
+    child.stdout?.on("data", take); child.stderr?.on("data", take);
+    child.once("close", (code, signal) => {
+      if (!diagnostics.active || diagnostics.session !== session || (!attached && code === 0 && signal === null)) return;
+      diagnostics.records.push({ operation, phase, code, signal, tail });
+      if (diagnostics.records.length > 4) diagnostics.records.shift();
+    });
+    return child;
+  } };
+});
+function diagnosticLine(record: DockerDiagnostic): string {
+  const cleaned = stripVTControlCharacters(record.tail.toString("utf8")).replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  let tail = Buffer.from(redactPublicText(cleaned).value);
+  const render = () => `ISOLATION_DOCKER_DIAGNOSTIC ${JSON.stringify({ operation: record.operation, phase: record.phase,
+    code: record.code, signal: record.signal, tail: tail.toString("utf8") })}`;
+  let line = render();
+  while (Buffer.byteLength(line) > 16 * 1024) { tail = tail.subarray(Math.max(1, Math.ceil(tail.length / 8))); line = render(); }
+  return line;
+}
+async function withDockerDiagnostics<T>(action: () => Promise<T>): Promise<T> {
+  if (diagnostics.active) throw new Error("Diagnostic observation cannot nest.");
+  diagnostics.active = true; diagnostics.session += 1; diagnostics.records = [];
+  try { return await action(); }
+  catch (error) {
+    try { for (const record of diagnostics.records) console.error(diagnosticLine(record)); }
+    catch { /* Diagnostic rendering or an unavailable console must preserve the backend failure. */ }
+    throw error;
+  }
+  finally { diagnostics.active = false; diagnostics.records = []; }
+}
+
+it("observes actual child failures without altering exit status and bounds sanitized diagnostic output", async () => {
+  const failure = new Error("Synthetic positive target failed.");
+  const printed = vi.spyOn(console, "error").mockImplementation(() => {});
+  let retained: DockerDiagnostic[] = [];
+  try {
+    await expect(withDockerDiagnostics(async () => {
+      for (let index = 0; index < 5; index += 1) {
+        const script = index < 4 ? `process.stdout.write('discarded-${index}');process.exitCode=23;` :
+          String.raw`process.stdout.write('x'.repeat(96*1024),()=>{process.stderr.write('\u001b[31mvisible\u001b[0m\u0000 token=synthetic-fixture-only end');process.exitCode=23;});`;
+        const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+          const child = spawn(process.execPath, ["-e", script], { cwd: os.tmpdir(), env: { PATH: "/usr/bin:/bin", HOME: os.tmpdir() },
+            stdio: ["ignore", "pipe", "pipe"] });
+          child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
+        });
+        expect(exit).toEqual({ code: 23, signal: null });
+      }
+      retained = diagnostics.records.slice();
+      expect(retained).toHaveLength(4); expect(retained.at(-1)!.tail.length).toBe(64 * 1024);
+      expect(retained.every((record) => record.code === 23 && record.signal === null)).toBe(true);
+      throw failure;
+    })).rejects.toBe(failure);
+    expect(printed).toHaveBeenCalledTimes(4);
+    for (const call of printed.mock.calls) {
+      expect(call).toHaveLength(1); const line = String(call[0]);
+      expect(Buffer.byteLength(line)).toBeLessThanOrEqual(16 * 1024);
+      expect(line).toMatch(/^ISOLATION_DOCKER_DIAGNOSTIC /);
+      const record = JSON.parse(line.slice("ISOLATION_DOCKER_DIAGNOSTIC ".length));
+      expect(record).toMatchObject({ operation: "process", phase: "none", code: 23, signal: null });
+      expect(record.tail).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/); expect(record.tail).not.toContain("[31m");
+      expect(record.tail).not.toContain("synthetic-fixture-only");
+    }
+    expect(String(printed.mock.calls.at(-1)![0])).toContain("[REDACTED:CREDENTIAL]");
+    expect(diagnostics.active).toBe(false); expect(diagnostics.records).toHaveLength(0);
+    printed.mockImplementationOnce(() => { throw new Error("Synthetic diagnostic sink failure."); });
+    await expect(withDockerDiagnostics(async () => {
+      diagnostics.records.push(retained.at(-1)!); throw failure;
+    })).rejects.toBe(failure);
+    expect(diagnostics.active).toBe(false); expect(diagnostics.records).toHaveLength(0);
+  } finally { printed.mockRestore(); }
+}, 10_000);
 
 const required = process.env.BOOTSTRAP_REQUIRE_ISOLATION_TESTS === "1";
 const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -168,6 +258,7 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
     const trap = path.join(outside, "host-git-trap"); const marker = path.join(outside, "host-git-ran");
     await writeFile(trap, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected host Git execution');\nprocess.exitCode = 1;\n`, { mode: 0o755 });
+    await mkdir(path.join(original, ".git/info"), { recursive: true });
     await writeFile(path.join(original, ".git/info/attributes"), "* filter=canary diff=canary\n");
     const oldConfig = await readFile(path.join(original, ".git/config"), "utf8");
     await writeFile(path.join(original, ".git/config"), `${oldConfig}\n[core]\n\tfsmonitor = ${trap}\n\thooksPath = ${outside}\n[filter "canary"]\n\tclean = ${trap}\n\tsmudge = ${trap}\n[diff "canary"]\n\ttextconv = ${trap}\n[credential]\n\thelper = !${trap}\n[url "ext::${trap}"]\n\tinsteadOf = https://fixture.invalid/\n`);
@@ -237,9 +328,9 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     replace(input, file("scripts/ci/run-fast-checks.sh", "#!/bin/bash\nset -euo pipefail\nnode probe.cjs checks\n", true));
     replace(input, file(".githooks/pre-commit", "#!/bin/bash\nset -euo pipefail\nnode probe.cjs hook\n", true)); input.hook = ".githooks/pre-commit";
     const frozen = freezeNodeValidation(input);
-    const hook = await validateIsolatedNode(input);
+    const hook = await withDockerDiagnostics(() => validateIsolatedNode(input));
     const candidate = await finalCandidate(input);
-    const report = await validateIsolatedNode(candidate);
+    const report = await withDockerDiagnostics(() => validateIsolatedNode(candidate));
     if (hook.phase !== "prepared-hook" || report.phase !== "final-check") throw new Error("Wrong validation phase evidence.");
     expect(report.profile).toBe(NODE_ISOLATION_PROFILE); expect(report.image).toBe(NODE_ISOLATION_IMAGE);
     expect(report.sourceSha256).toBe(frozen.sourceSha256); expect(report.preparedTree).toBe(candidateTrees.get(candidate.candidateCommit)); expect(report.baseCommit).toBe(input.baseCommit);
@@ -400,9 +491,9 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     const input: NodeValidationInput = { profile: NODE_ISOLATION_PROFILE, phase: "prepared-hook", ...identities(), files, baseBundle: await readFile(bundle), baseCommit,
       branch: "codex/isolation-bootstrap", commitMessage: "test: validate public Bootstrap snapshot\n\nSigned-off-by: Isolation Fixture <isolation-fixture@example.invalid>\n", hook: ".githooks/pre-commit" };
     const before = freezeNodeValidation(input).sourceSha256;
-    const hook = await validateIsolatedNode(input); expect(hook.phase).toBe("prepared-hook");
+    const hook = await withDockerDiagnostics(() => validateIsolatedNode(input)); expect(hook.phase).toBe("prepared-hook");
     const candidate = await finalCandidate(input);
-    const report = await validateIsolatedNode(candidate);
+    const report = await withDockerDiagnostics(() => validateIsolatedNode(candidate));
     if (hook.phase !== "prepared-hook" || report.phase !== "final-check") throw new Error("Wrong validation phase evidence.");
     expect(report.sourceSha256).toBe(before); expect(report.baseCommit).toBe(baseCommit); expect(report.image).toBe(NODE_ISOLATION_IMAGE);
     expect(report.phase).toBe("final-check"); expect(report.candidateCommit).toBe(candidate.candidateCommit); expect(report.preparedTree).toBe(hook.preparedTree);

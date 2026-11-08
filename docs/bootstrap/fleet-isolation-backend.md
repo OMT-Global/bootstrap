@@ -34,6 +34,8 @@ Every created container explicitly uses `--log-driver none`; bounded attached ou
 
 The trusted supervisor must supply explicit planned public author and committer identities, including raw Git dates (`epoch timezone`). There is no default identity, ambient configuration fallback, or inference from the DCO. The supported hook context is root-directory, no-editor, all-staged, and single-parent only; partial commits, amendments, merges, editor sessions, and subdirectory-prefix contexts need a later reviewed profile. Hook replay exports `.git/index`, empty `GIT_PREFIX`, `GIT_EDITOR=:`, both planned identities/date values, and a sanitized local Git user matching the planned committer.
 
+The declared comparison is `git --git-dir=.git -c core.hooksPath=.githooks commit --file=<public-message>` with the frozen `.git/COMMIT_EDITMSG` already prepared. The hook phase dispatches `git --git-dir=.git -c core.hooksPath=.githooks hook run pre-commit`, so Git provides `GIT_DIR=.git` and nested Git sees the enabled `.githooks` configuration. Preparation retains disabled hooks; the command-scoped override activates only the authorized hook. This is the fixed profile's invocation contract, with no promise of arbitrary ambient-message or OS/process introspection equivalence.
+
 The expected pipeline is:
 
 1. Validate the supported source, package/lock, hook, and profile inputs and freeze their exact bytes/modes.

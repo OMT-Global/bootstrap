@@ -26,7 +26,7 @@ const manifest = normalizeManifest({
 const generated = renderManagedFiles(manifest).find((file) => file.path === ".github/workflows/release-publish-reusable.yml");
 if (!generated) throw new Error("Generated publish reusable is missing");
 
-async function runPublish(shell: string, hook: "missing" | "not-executable" | "failed" | "passed", required = true) {
+async function runPublish(shell: string, hook: "missing" | "not-executable" | "directory" | "failed" | "passed", required = true) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-publish-"));
   try {
     const bin = path.join(directory, "bin");
@@ -79,7 +79,10 @@ esac
     const publishHook = path.join(directory, "publish.sh");
     await writeFile(publishHook, '#!/bin/bash\nprintf "publish-hook\\n" >> "$EVENT_LOG"\n');
     const postpublishHook = path.join(directory, "postpublish.sh");
-    if (hook !== "missing") {
+    if (hook === "directory") {
+      await mkdir(postpublishHook);
+      await chmod(postpublishHook, 0o755);
+    } else if (hook !== "missing") {
       await writeFile(postpublishHook, `#!/bin/bash
 printf 'postpublish:%s\\n' "$1" >> "$EVENT_LOG"
 exit ${hook === "failed" ? 42 : 0}
@@ -130,11 +133,11 @@ for (const [source, shell] of [
   ["generated", publishShell(generated.contents)]
 ] as const) {
   describe(`${source} release publish recovery boundaries`, () => {
-    it.each(["missing", "not-executable"] as const)("rejects a %s required postpublish hook before any publication mutation", async (hook) => {
+    it.each(["missing", "not-executable", "directory"] as const)("rejects a %s required postpublish hook before any publication mutation", async (hook) => {
       const result = await runPublish(shell, hook);
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Postpublish verification script is required but missing or not executable.");
       expect(result.events).toEqual([]);
+      expect(result.stderr).toContain("Postpublish verification script is required but missing or not executable.");
     });
 
     it("leaves floating aliases untouched when the postpublish hook fails", async () => {
@@ -152,8 +155,8 @@ for (const [source, shell] of [
       ]);
     });
 
-    it("continues to allow an absent optional postpublish hook", async () => {
-      const result = await runPublish(shell, "missing", false);
+    it.each(["missing", "directory"] as const)("continues to allow a %s optional postpublish hook", async (hook) => {
+      const result = await runPublish(shell, hook, false);
       expect(result.status).toBe(0);
       expect(result.events).toEqual([
         "publish-hook", "release-upload",

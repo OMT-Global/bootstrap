@@ -264,6 +264,7 @@ async function main(): Promise<void> {
         : `**Fleet upgrade ${report.mode}**\n${report.results.map((entry) =>
           `- [${entry.status}] ${entry.repo}: ${entry.reason}${entry.pullRequestUrl ? ` (PR ${entry.pullRequestUrl})` : ""}`
         ).join("\n")}\n`);
+      if (options.apply && report.results.some((entry) => entry.status === "failed")) process.exitCode = 1;
     });
 
   const apply = program.command("apply").description("Apply one bootstrap target.");

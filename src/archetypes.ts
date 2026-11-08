@@ -2101,7 +2101,7 @@ function releasePublishReusableWorkflow(): string {
             run: |
               set -euo pipefail
               [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
-              if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" && ! -x "$POSTPUBLISH_SCRIPT" ]]; then
+              if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" && ( ! -f "$POSTPUBLISH_SCRIPT" || ! -x "$POSTPUBLISH_SCRIPT" ) ]]; then
                 echo "Postpublish verification script is required but missing or not executable." >&2
                 exit 1
               fi
@@ -2180,7 +2180,7 @@ function releasePublishReusableWorkflow(): string {
                   && gh release upload "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber \
                   || gh release create "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "\${release_args[@]}"
               fi
-              if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
+              if [[ -f "$POSTPUBLISH_SCRIPT" && -x "$POSTPUBLISH_SCRIPT" ]]; then
                 "$POSTPUBLISH_SCRIPT" "$TAG"
               elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
                 echo "Postpublish verification script is required but missing or not executable." >&2

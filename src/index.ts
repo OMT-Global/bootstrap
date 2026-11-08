@@ -14,4 +14,3 @@ export * from "./runners.js";
 export * from "./state.js";
 export * from "./types.js";
 export * from "./upgrades.js";
-export * from "./upgrade-executor.js";

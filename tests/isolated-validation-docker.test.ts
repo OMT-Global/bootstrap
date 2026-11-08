@@ -301,6 +301,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
   assert.equal(cp.execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], {encoding:'utf8'}).trim(), 'codex/isolation-fixture');
   if (process.argv[2] === 'hook') {
     const planned = ${JSON.stringify({author: input.author, committer: input.committer})};
+    assert.equal(process.env.GIT_DIR, '.git');
+    assert.equal(cp.execFileSync('git', ['config', '--get', 'core.hooksPath'], {encoding:'utf8'}).trim(), '.githooks');
     assert.equal(process.env.GIT_INDEX_FILE, '.git/index');
     assert.equal(process.env.GIT_PREFIX, '');
     assert.equal(process.env.GIT_EDITOR, ':');
@@ -389,6 +391,29 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     replace(input, file(".githooks/pre-commit", `#!/bin/bash\nset -euo pipefail\n${body}\n`, true));
     await expect(validateIsolatedNode(input)).rejects.toThrow(/Isolated/);
     expect(await resources()).toEqual(beforeResources);
+  }, timeout);
+
+  it("enforces a context-sensitive staged-content policy using Git's enabled hook context", async () => {
+    const { input } = await fixture(); input.hook = ".githooks/pre-commit";
+    // A legitimate policy can skip disabled hooks; direct execution would falsely accept this staged source.
+    const policy = `#!/bin/bash
+set -euo pipefail
+if [[ "$(git config --get core.hooksPath)" == "/disabled-hooks" ]]; then exit 0; fi
+[[ "\${GIT_DIR-}" == ".git" ]] || exit 21
+if [[ "$(git show :README.md)" == "prepared public source" ]]; then
+  printf '%s\\n' 'ISOLATED-CONTEXT-POLICY-REJECTED'
+  exit 23
+fi
+`;
+    replace(input, file(".githooks/pre-commit", policy, true));
+    const printed = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(withDockerDiagnostics(() => validateIsolatedNode(input))).rejects.toThrow(/Isolated/);
+      const records = printed.mock.calls.map(([line]) => JSON.parse(String(line).slice("ISOLATION_DOCKER_DIAGNOSTIC ".length)));
+      expect(records).toEqual(expect.arrayContaining([expect.objectContaining({ operation: "start", phase: "hook", code: 1,
+        tail: expect.stringContaining("ISOLATED-CONTEXT-POLICY-REJECTED") })]));
+      expect(await resources()).toEqual(beforeResources);
+    } finally { printed.mockRestore(); }
   }, timeout);
 
   it.each(["base parent", "message", "prepared tree", "author", "committer"])("rejects a wrong final candidate %s before starting target checks", async (kind) => {

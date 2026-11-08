@@ -1,0 +1,60 @@
+# Public source: https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/project.bootstrap.yaml
+version: 1
+project:
+  name: flow
+  displayName: OMT-Global Flow
+  description: Org-level autonomous flow protocol for OMT-Global issues, PRs, worker lanes, and merge gates.
+  visibility: public
+  owner: OMT-Global
+  defaultBranch: main
+# Stewardship projection approved in OMT-Global/flow#26 (maintainer decision 2026-07-15):
+# MIT license rendered from the repo-local approved template; GitHub private
+# vulnerability reporting is the confidential security route. legal/ is a
+# product-owned legal input; LICENSE and THIRD_PARTY_NOTICES.md are
+# Bootstrap-managed outputs declared in .bootstrap/managed-files.json.
+license:
+  mode: spdx
+  identifier: MIT
+  holder: OMT Global
+  holderVerification: github-org:OMT-Global
+  years: "2026"
+  template:
+    path: legal/mit-license-template.txt
+    sha256: 0a6aa4a08352ee287faa69276561dc15e1c8a0929c2b2db34a56c7663250271a
+    approval: flow-issue-26:maintainer-approval-2026-07-15
+    spdxIdentifier: MIT
+  thirdPartyNotices: []
+repo:
+  # Flow's canonical github/ inputs, guidance, and validating hook are product-owned.
+  # Only unchanged generic projections are delegated to Bootstrap.
+  managedPaths:
+    - .github/ISSUE_TEMPLATE/implementation.yml
+    - .github/ISSUE_TEMPLATE/flow_blocker.yml
+  docs:
+    # SECURITY.md is product-owned (OMT-Global/flow#26): its response clocks must
+    # match released Flow policy v1.0.1 (policies/security-provenance-v1.json),
+    # so the generic Bootstrap security projection is explicitly opted out.
+    security: false
+archetype:
+  kind: generic-empty
+github:
+  createRepo: true
+  flowGovernance: true
+  autoMerge: true
+  deleteBranchOnMerge: true
+  requiredApprovals: 1
+  requiredStatusChecks:
+    - CI Gate
+  repoFeatures:
+    hasIssues: true
+    hasProjects: true
+    hasWiki: false
+    hasDiscussions: true
+ci:
+  codeqlLanguages:
+    - python
+  runnerPolicy: github-hosted-first
+agents:
+  sharedSkills:
+    - github
+    - gh-issues

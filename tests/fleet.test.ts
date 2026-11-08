@@ -13,7 +13,9 @@ vi.mock("../src/github/provision.js", () => ({
 }));
 
 import { reconcileFleet } from "../src/fleet.js";
-import type { CommandRunner } from "../src/lib/process.js";
+import { execRunner, type CommandRunner } from "../src/lib/process.js";
+import { loadManifest } from "../src/manifest.js";
+import { applyRepo, planRepo } from "../src/render.js";
 
 const tempDirs: string[] = [];
 
@@ -84,6 +86,52 @@ describe("reconcileFleet", () => {
     });
   });
 
+  it("blocks GitHub-only apply from an uncommitted manifest even when generated files match", async () => {
+    const workspaceRoot = await makeTempDir();
+    const repoPath = path.join(workspaceRoot, "dirty-manifest");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(repoPath));
+    const runner: CommandRunner = (command, args, options) => {
+      if (command !== "git") throw new Error(`Unexpected command: ${command}`);
+      return execRunner(command, [
+        "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+        "-c", "user.name=Fleet test", "-c", "user.email=fleet-test@example.invalid",
+        ...(args ?? [])
+      ], options);
+    };
+    const git = async (...args: string[]) => {
+      const result = await runner("git", args, { cwd: repoPath });
+      if (result.exitCode !== 0) throw new Error(result.stderr);
+      return result.stdout.trim();
+    };
+    const manifestPath = path.join(repoPath, "project.bootstrap.yaml");
+    const originalManifest = [
+      "project:", "  name: dirty-manifest", "  owner: acme", "archetype:", "  kind: generic-empty",
+      "repo:", "  managedPaths: [CODEOWNERS]", "github:", "  requiredApprovals: 1", "  codeowners:",
+      '    - pattern: "*"', '      owners: ["@maintainer"]', ""
+    ].join("\n");
+    await writeFile(manifestPath, originalManifest);
+    await git("init", "-b", "main");
+    await applyRepo(await loadManifest(manifestPath), repoPath);
+    await git("add", ".");
+    await git("commit", "-m", "Synthetic governed baseline");
+    await writeFile(manifestPath, originalManifest.replace("requiredApprovals: 1", "requiredApprovals: 2"));
+    const plan = await planRepo(await loadManifest(manifestPath), repoPath);
+    expect(plan.changes.every((change) => change.type === "unchanged")).toBe(true);
+    expect(await git("status", "--porcelain")).toContain("project.bootstrap.yaml");
+
+    const report = await reconcileFleet({ workspaceRoot, applyGitHub: true, runner });
+
+    expect(report.results[0]).toMatchObject({
+      repo: "acme/dirty-manifest",
+      status: "blocked",
+      reason: "Target worktree is dirty; refusing to apply bootstrap changes.",
+      githubActions: []
+    });
+    expect(applyGitHubMock).not.toHaveBeenCalled();
+    expect(await readFile(manifestPath, "utf8")).toContain("requiredApprovals: 2");
+    expect(await git("status", "--porcelain")).toContain("project.bootstrap.yaml");
+  });
+
   it("opens a draft PR for repo drift when requested", async () => {
     const workspaceRoot = await makeTempDir();
     const repoPath = path.join(workspaceRoot, "needs-sync");
@@ -116,7 +164,7 @@ describe("reconcileFleet", () => {
       status: "pr-opened",
       pullRequestUrl: "https://github.com/acme/needs-sync/pull/42"
     });
-    expect(calls.some((call) => call.startsWith("git checkout -B codex/bootstrap-reconcile/needs-sync-"))).toBe(
+    expect(calls.some((call) => call.startsWith("git checkout -b codex/bootstrap-reconcile/needs-sync-"))).toBe(
       true
     );
     expect(calls).toContain("git commit -m chore: reconcile bootstrap-managed files");
@@ -130,7 +178,13 @@ describe("reconcileFleet", () => {
     await import("node:fs/promises").then(({ mkdir }) => mkdir(repoPath, { recursive: true }));
     await writeManifest(repoPath, "github-only");
 
-    const report = await reconcileFleet({ workspaceRoot, applyGitHub: true });
+    const runner: CommandRunner = async (command, args) => {
+      if (command === "git" && args?.join(" ") === "status --porcelain") {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      throw new Error(`Unexpected command: ${command} ${args?.join(" ")}`);
+    };
+    const report = await reconcileFleet({ workspaceRoot, applyGitHub: true, runner });
 
     expect(applyGitHubMock).toHaveBeenCalledTimes(1);
     expect(report.mode).toBe("apply");
@@ -178,7 +232,7 @@ describe("reconcileFleet", () => {
       reason: "No repo drift; applied GitHub reconciliation without opening a PR."
     });
     expect(calls).toContain("git status --porcelain");
-    expect(calls.some((call) => call.startsWith("git checkout -B "))).toBe(false);
+    expect(calls.some((call) => call.startsWith("git checkout -b "))).toBe(false);
     expect(calls).not.toContain("git commit -m chore: reconcile bootstrap-managed files");
     expect(calls.some((call) => call.startsWith("gh pr create"))).toBe(false);
   });

@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 
+import { renderManagedFiles } from "../src/archetypes.js";
+import { normalizeManifest } from "../src/manifest.js";
+
 function loadWorkflow(relativePath: string) {
   const workflowPath = path.resolve(relativePath);
   return YAML.parse(readFileSync(workflowPath, "utf8")) as Record<string, unknown>;
@@ -138,5 +141,60 @@ describe("reusable workflows", () => {
     expect((postpublish.jobs as any).postpublish).toBeTruthy();
     expect(JSON.stringify(postpublish)).not.toContain("|| true");
     expect(JSON.stringify(postpublish)).toContain("Postpublish verification hook is missing or not executable");
+  });
+});
+
+// Permission contracts verified from the pinned 7bb026d and b064ddb reusables.
+// A reusable workflow cannot elevate permissions delegated by its caller.
+const governedCallers = [
+  { name: "release-preflight", job: "preflight", permissions: { contents: "read", actions: "read", "id-token": "write" } },
+  { name: "full-release-validation", job: "validate", permissions: { contents: "read", actions: "read" } },
+  { name: "release-publish", job: "publish", permissions: { contents: "write", actions: "read", packages: "write", "id-token": "write", attestations: "write" } },
+  { name: "release-postpublish", job: "postpublish", permissions: { contents: "read", actions: "read" } }
+];
+
+function generatedReleaseWorkflows(visibility: "public" | "private") {
+  const manifest = normalizeManifest({
+    project: { name: "release-pilot", owner: "acme", visibility },
+    archetype: { kind: "generic-empty" },
+    ci: { codeqlLanguages: ["javascript-typescript"] },
+    release: { enabled: true, maturity: "governed" }
+  });
+  return new Map(renderManagedFiles(manifest)
+    .filter((file) => file.path.startsWith(".github/workflows/"))
+    .map((file) => [file.path, YAML.parse(file.contents)]));
+}
+
+describe("governed release callers", () => {
+  for (const { name, job, permissions } of governedCallers) {
+    it(`${name} delegates the pinned reusable's permissions in the checked-in caller`, () => {
+      const caller = loadWorkflow(`.github/workflows/${name}.yml`);
+      const reusable = loadWorkflow(`.github/workflows/${name}-reusable.yml`);
+      const call = (caller.jobs as any)[job];
+      expect(call.uses).toMatch(new RegExp(`${name}-reusable\\.yml@[0-9a-f]{40}$`));
+      expect(reusable.permissions).toEqual(permissions);
+      expect(call.permissions).toEqual(reusable.permissions);
+    });
+
+    it.each(["public", "private"] as const)(`${name} delegates the reusable's exact permissions for %s repositories`, (visibility) => {
+      const files = generatedReleaseWorkflows(visibility);
+      const caller = files.get(`.github/workflows/${name}.yml`);
+      const reusable = files.get(`.github/workflows/${name}-reusable.yml`);
+      expect(reusable.permissions).toEqual(permissions);
+      expect(caller.jobs[job].permissions).toEqual(reusable.permissions);
+    });
+  }
+
+  it("requests public-compatible evidence retention in both checked-in non-publishing callers", () => {
+    for (const [name, job] of [["release-preflight", "preflight"], ["full-release-validation", "validate"]]) {
+      const workflow = loadWorkflow(`.github/workflows/${name}.yml`);
+      expect((workflow.jobs as any)[job!].with.evidence_retention_days).toBe(90);
+    }
+  });
+
+  it.each([["public", 90], ["private", 365]] as const)("requests %s-compatible evidence retention", (visibility, retention) => {
+    const files = generatedReleaseWorkflows(visibility);
+    expect(files.get(".github/workflows/release-preflight.yml").jobs.preflight.with.evidence_retention_days).toBe(retention);
+    expect(files.get(".github/workflows/full-release-validation.yml").jobs.validate.with.evidence_retention_days).toBe(retention);
   });
 });

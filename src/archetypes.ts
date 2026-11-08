@@ -1717,6 +1717,10 @@ function releasePreflightCallerWorkflow(manifest: BootstrapManifest): string {
 
     jobs:
       preflight:
+        permissions:
+          contents: read
+          actions: read
+          id-token: write
         uses: ${governedReleaseWorkflowRef(manifest, "release-preflight-reusable.yml")}
         with:
           version: \${{ inputs.version }}
@@ -1731,7 +1735,7 @@ function releasePreflightCallerWorkflow(manifest: BootstrapManifest): string {
           tag_prefix: '${manifest.release.tagPrefix}'
           default_branch: ${manifest.project.defaultBranch}
           evidence_artifact_name: release-evidence
-          evidence_retention_days: 365
+          evidence_retention_days: ${manifest.project.visibility === "public" ? 90 : 365}
   `;
 }
 
@@ -1755,6 +1759,9 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
 
     jobs:
       validate:
+        permissions:
+          contents: read
+          actions: read
         uses: ${governedReleaseWorkflowRef(manifest, "full-release-validation-reusable.yml")}
         with:
           target_ref: \${{ inputs.target_ref }}
@@ -1762,7 +1769,7 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
           validate_script: scripts/release/validate.sh
           artifact_dir: ${manifest.release.artifacts.directory}
           evidence_artifact_name: release-evidence
-          evidence_retention_days: 365
+          evidence_retention_days: ${manifest.project.visibility === "public" ? 90 : 365}
   `;
 }
 
@@ -1798,6 +1805,12 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
 
     jobs:
       publish:
+        permissions:
+          contents: write
+          actions: read
+          packages: write
+          id-token: write
+          attestations: write
         uses: ${governedReleaseWorkflowRef(manifest, "release-publish-reusable.yml")}
         with:
           tag: \${{ inputs.tag }}
@@ -1847,6 +1860,9 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
 
     jobs:
       postpublish:
+        permissions:
+          contents: read
+          actions: read
         uses: ${governedReleaseWorkflowRef(manifest, "release-postpublish-reusable.yml")}
         with:
           tag: \${{ inputs.tag }}
@@ -2085,6 +2101,10 @@ function releasePublishReusableWorkflow(): string {
             run: |
               set -euo pipefail
               [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
+              if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" && ( ! -f "$POSTPUBLISH_SCRIPT" || ! -x "$POSTPUBLISH_SCRIPT" ) ]]; then
+                echo "Postpublish verification script is required but missing or not executable." >&2
+                exit 1
+              fi
               tag_sha="$(git rev-parse "$TAG^{commit}")"
               if [[ "$REQUIRE_SIGNED_TAG" == "true" ]]; then
                 git tag -v "$TAG" >/dev/null
@@ -2160,18 +2180,18 @@ function releasePublishReusableWorkflow(): string {
                   && gh release upload "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber \
                   || gh release create "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "\${release_args[@]}"
               fi
+              if [[ -f "$POSTPUBLISH_SCRIPT" && -x "$POSTPUBLISH_SCRIPT" ]]; then
+                "$POSTPUBLISH_SCRIPT" "$TAG"
+              elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
+                echo "Postpublish verification script is required but missing or not executable." >&2
+                exit 1
+              fi
               if [[ "$TAG" != *"-rc."* && "$TAG" != *"-beta."* ]]; then
                 version="\${TAG#"$TAG_PREFIX"}"; IFS=. read -r major minor patch <<<"$version"
                 git config user.name "github-actions[bot]"
                 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
                 [[ "$UPDATE_MINOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}.\${minor}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}.\${minor}"
                 [[ "$UPDATE_MAJOR_TAG" == "true" ]] && git tag -f "\${TAG_PREFIX}\${major}" "$tag_sha" && git push -f origin "refs/tags/\${TAG_PREFIX}\${major}"
-              fi
-              if [[ -x "$POSTPUBLISH_SCRIPT" ]]; then
-                "$POSTPUBLISH_SCRIPT" "$TAG"
-              elif [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" ]]; then
-                echo "Postpublish verification script is required but missing or not executable." >&2
-                exit 1
               fi
               printf '{"schema_version":1,"repo":"%s","tag":"%s","tag_sha":"%s","publish_run_id":"%s"}\\n' "$GITHUB_REPOSITORY" "$TAG" "$tag_sha" "$GITHUB_RUN_ID" >"$ARTIFACT_DIR/postpublish-evidence.json"
           - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -16,11 +16,14 @@ on:
 
 jobs:
   validate:
-    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@b064ddbcee093036a207e44a3ca75c4199a006eb
+    permissions:
+      contents: read
+      actions: read
+    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@913b298fab0fb008796011d940ee7362a347659d
     with:
       target_ref: ${{ inputs.target_ref }}
       release_profile: ${{ inputs.release_profile }}
       validate_script: scripts/release/validate.sh
       artifact_dir: dist/release
       evidence_artifact_name: release-evidence
-      evidence_retention_days: 365
+      evidence_retention_days: 90

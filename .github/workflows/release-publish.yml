@@ -28,7 +28,13 @@ on:
 
 jobs:
   publish:
-    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@ec3ce30f4cc19ea1fcd462b09bcd7e28854adbf8
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@913b298fab0fb008796011d940ee7362a347659d
     with:
       tag: ${{ inputs.tag }}
       channel: ${{ inputs.channel }}

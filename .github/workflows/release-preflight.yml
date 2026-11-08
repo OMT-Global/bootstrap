@@ -24,6 +24,10 @@ on:
 
 jobs:
   preflight:
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@7bb026dce82996a30ea38428fa9919613e9977c7
     with:
       version: ${{ inputs.version }}
@@ -38,4 +42,4 @@ jobs:
       tag_prefix: 'v'
       default_branch: main
       evidence_artifact_name: release-evidence
-      evidence_retention_days: 365
+      evidence_retention_days: 90

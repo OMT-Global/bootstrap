@@ -20,6 +20,9 @@ on:
 
 jobs:
   postpublish:
+    permissions:
+      contents: read
+      actions: read
     uses: OMT-Global/bootstrap/.github/workflows/release-postpublish-reusable.yml@7bb026dce82996a30ea38428fa9919613e9977c7
     with:
       tag: ${{ inputs.tag }}

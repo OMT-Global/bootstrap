@@ -1717,6 +1717,10 @@ function releasePreflightCallerWorkflow(manifest: BootstrapManifest): string {
 
     jobs:
       preflight:
+        permissions:
+          contents: read
+          actions: read
+          id-token: write
         uses: ${governedReleaseWorkflowRef(manifest, "release-preflight-reusable.yml")}
         with:
           version: \${{ inputs.version }}
@@ -1731,7 +1735,7 @@ function releasePreflightCallerWorkflow(manifest: BootstrapManifest): string {
           tag_prefix: '${manifest.release.tagPrefix}'
           default_branch: ${manifest.project.defaultBranch}
           evidence_artifact_name: release-evidence
-          evidence_retention_days: 365
+          evidence_retention_days: ${manifest.project.visibility === "public" ? 90 : 365}
   `;
 }
 
@@ -1755,6 +1759,9 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
 
     jobs:
       validate:
+        permissions:
+          contents: read
+          actions: read
         uses: ${governedReleaseWorkflowRef(manifest, "full-release-validation-reusable.yml")}
         with:
           target_ref: \${{ inputs.target_ref }}
@@ -1762,7 +1769,7 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
           validate_script: scripts/release/validate.sh
           artifact_dir: ${manifest.release.artifacts.directory}
           evidence_artifact_name: release-evidence
-          evidence_retention_days: 365
+          evidence_retention_days: ${manifest.project.visibility === "public" ? 90 : 365}
   `;
 }
 
@@ -1798,6 +1805,12 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
 
     jobs:
       publish:
+        permissions:
+          contents: write
+          actions: read
+          packages: write
+          id-token: write
+          attestations: write
         uses: ${governedReleaseWorkflowRef(manifest, "release-publish-reusable.yml")}
         with:
           tag: \${{ inputs.tag }}
@@ -1847,6 +1860,9 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
 
     jobs:
       postpublish:
+        permissions:
+          contents: read
+          actions: read
         uses: ${governedReleaseWorkflowRef(manifest, "release-postpublish-reusable.yml")}
         with:
           tag: \${{ inputs.tag }}

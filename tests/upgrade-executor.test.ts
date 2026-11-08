@@ -1,0 +1,336 @@
+import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import YAML from "yaml";
+
+import { execRunner, type CommandRunner } from "../src/lib/process.js";
+import { loadManifest, normalizeManifest } from "../src/manifest.js";
+import { applyRepo } from "../src/render.js";
+import { flowPolicyDigest } from "../src/policy.js";
+import { executeFleetPolicyUpgrades } from "../src/upgrade-executor.js";
+
+const temporary: string[] = [];
+const generatorCommit = "a".repeat(40);
+const policy = (version: string) => ({ standard: "public-repository-standard", version });
+const ok = (value = "") => ({ stdout: value, stderr: "", exitCode: 0 });
+const fail = () => ({ stdout: "", stderr: "injected fault", exitCode: 1 });
+const evidence = (repo: string) => Object.fromEntries(["repo", "issue", "policyDiff", "tests", "exceptions", "provenance", "autoreview"].map((key) => [key, key === "repo" ? repo : `https://github.com/${repo}/${key === "issue" ? "issues/62" : "actions/runs/123"}`])) as { repo: string; issue: string; policyDiff: string; tests: string; exceptions: string; provenance: string; autoreview: string };
+
+async function git(cwd: string, args: string[]) {
+  const result = await execRunner("git", args, { cwd });
+  if (result.exitCode) throw new Error(result.stderr);
+  return result.stdout.trim();
+}
+
+async function fixture(targetVersion = "1.0.1") {
+  const workspaceRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), "bootstrap-upgrade-test-")));
+  temporary.push(workspaceRoot);
+  const target = policy(targetVersion);
+  const bundlePath = path.join(workspaceRoot, "approved-target.yaml");
+  await writeFile(bundlePath, YAML.stringify(target));
+  const input = {
+    generatorCommit,
+    target: { ref: `refs/tags/v${targetVersion}`, sha256: flowPolicyDigest(target), bundlePath },
+    evidence: [] as ReturnType<typeof evidence>[],
+    pilots: [] as { repo: string; repoClass: string; currentPolicy: string; targetPolicy: string; commit: string; outcome: "passed" | "failed"; validationWorkflow: string; evidence: string }[]
+  };
+  const repos = new Map<string, { cwd: string; head: string; visibility: string; repoClass: "cli" | "service" }>();
+  const calls: { command: string; args: string[]; cwd?: string }[] = [];
+  const bodies: string[] = [];
+  const faults = { commit: false, push: false, restore: false, review: false, checks: false, status: false, validation: false, missingUrl: false, untrustedRun: false };
+  let githubUnavailable = false;
+  async function add(repo: string, options: { version?: string; repoClass?: "cli" | "service"; visibility?: "public" | "private" } = {}) {
+    const cwd = path.join(workspaceRoot, repo.split("/")[1]!);
+    const currentVersion = options.version ?? "1.0.0";
+    const repoClass = options.repoClass ?? "cli";
+    await mkdir(path.join(cwd, "scripts/ci"), { recursive: true });
+    const manifest = normalizeManifest({ version: 2, project: { name: repo.split("/")[1]!, owner: repo.split("/")[0]!, visibility: options.visibility ?? "public", defaultBranch: "main" }, repo: { class: repoClass, managedPaths: ["project.bootstrap.yaml"] }, archetype: { kind: "generic-empty" }, ci: { codeqlLanguages: ["javascript-typescript"] }, policy: { flow: { ref: `refs/tags/v${currentVersion}`, sha256: flowPolicyDigest(policy(currentVersion)), bundlePath: "flow-policy.yaml" } } });
+    await git(cwd, ["init", "-b", "main"]);
+    await git(cwd, ["config", "user.name", "Synthetic Test"]);
+    await git(cwd, ["config", "user.email", "synthetic@example.invalid"]);
+    await git(cwd, ["config", "commit.gpgsign", "false"]);
+    await git(cwd, ["remote", "add", "origin", `https://github.com/${repo}.git`]);
+    await writeFile(path.join(cwd, "flow-policy.yaml"), YAML.stringify(policy(currentVersion)));
+    await writeFile(path.join(cwd, "scripts/ci/run-fast-checks.sh"), "#!/usr/bin/env bash\nset -euo pipefail\ntest -f flow-policy.yaml\n");
+    await applyRepo(manifest, cwd);
+    await git(cwd, ["add", "--all"]);
+    await git(cwd, ["commit", "-m", "test fixture"]);
+    repos.set(repo, { cwd, head: await git(cwd, ["rev-parse", "HEAD"]), visibility: options.visibility ?? "public", repoClass });
+    input.evidence.push(evidence(repo));
+    return cwd;
+  }
+  const runner: CommandRunner = async (command, args = [], options = {}) => {
+    calls.push({ command, args, ...(options.cwd ? { cwd: options.cwd } : {}) });
+    if (command === "git" && ![...repos.values()].some((repo) => repo.cwd === options.cwd)) {
+      if (args.join(" ") === "rev-parse HEAD") return ok(generatorCommit);
+      if (args.join(" ") === "status --porcelain") return ok();
+      throw new Error(`Unexpected generator command: ${args.join(" ")}`);
+    }
+    if (command === "git" && args[0] === "push") return faults.push ? fail() : ok();
+    if (command === "git" && args[0] === "ls-remote") return ok();
+    if (command === "git" && args[0] === "commit" && faults.commit) return fail();
+    if (command === "git" && args.join(" ") === "checkout main" && faults.restore) return fail();
+    if (command === "autoreview") return faults.review ? fail() : ok("No actionable findings.");
+    if (command === "bash" && faults.validation) return fail();
+    if (command === "gh") {
+      if (githubUnavailable) return fail();
+      if (args[0] === "api") {
+        const endpoint = args[1]!;
+        const name = endpoint.split("/").slice(1, 3).join("/");
+        const repo = repos.get(name)!;
+        if (endpoint === `repos/${name}`) return ok(JSON.stringify({ full_name: name, visibility: repo.visibility, private: repo.visibility === "private", archived: false, default_branch: "main" }));
+        if (endpoint.endsWith("/commits/main")) return ok(JSON.stringify({ sha: repo.head }));
+        if (endpoint.includes("/actions/runs/")) return ok(JSON.stringify({ repository: { full_name: name }, head_sha: repo.head, status: "completed", conclusion: "success", event: faults.untrustedRun ? "pull_request" : "workflow_dispatch", path: ".github/workflows/extended-validation.yml" }));
+        if (endpoint.includes("/contents/")) {
+          if (endpoint.includes(".github/workflows/extended-validation.yml")) return ok(JSON.stringify({ type: "file", path: ".github/workflows/extended-validation.yml" }));
+          const file = endpoint.split("/contents/")[1]!.split("?")[0]!;
+          return ok(JSON.stringify({ content: Buffer.from(await git(repo.cwd, ["show", `${repo.head}:${file}`])).toString("base64") }));
+        }
+        if (endpoint.endsWith("/status")) return ok(JSON.stringify({ total_count: 1, state: faults.status ? "failure" : "success" }));
+        if (endpoint.includes("/check-runs?")) return ok(JSON.stringify({ total_count: 1, check_runs: [{ name: "Validation", status: faults.checks ? "in_progress" : "completed", conclusion: faults.checks ? null : "success" }] }));
+        throw new Error(`Unexpected API endpoint: ${endpoint}`);
+      }
+      if (args.slice(0, 2).join(" ") === "pr create") {
+        bodies.push(await readFile(args[args.indexOf("--body-file") + 1]!, "utf8"));
+        return ok(faults.missingUrl ? "" : `https://github.com/${args[args.indexOf("--repo") + 1]}/pull/99\n`);
+      }
+      throw new Error(`Unexpected GitHub command: ${args.join(" ")}`);
+    }
+    return execRunner(command, args, options);
+  };
+  function pilot(repo: string) {
+    const candidate = repos.get(repo)!;
+    input.pilots.push({ repo, repoClass: candidate.repoClass, currentPolicy: "1.0.0", targetPolicy: targetVersion, commit: candidate.head, outcome: "passed", validationWorkflow: ".github/workflows/extended-validation.yml", evidence: `https://github.com/${repo}/actions/runs/123` });
+  }
+  return { workspaceRoot, input, repos, add, runner, calls, faults, bodies, pilot, unavailable: () => { githubUnavailable = true; }, run: (apply = false, maxBatchSize = 1) => executeFleetPolicyUpgrades({ workspaceRoot, repos: [...repos.keys()], input, runner, apply, maxBatchSize }) };
+}
+
+afterEach(async () => { await Promise.all(temporary.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+
+describe("guarded Flow policy upgrade execution", () => {
+  it("defaults to a non-mutating inventory and blocks later class entries without a verified pilot", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    await f.add("acme/b");
+    const before = await readFile(path.join(a, "project.bootstrap.yaml"), "utf8");
+    const report = await f.run();
+    expect(report.mode).toBe("plan");
+    expect(report.results[0]).toMatchObject({ repo: "acme/a", status: "planned", role: "pilot", currentPolicy: "1.0.0", targetPolicy: "1.0.1", risk: "patch", autoMergeEligible: false });
+    expect(report.results[1]).toMatchObject({ repo: "acme/b", status: "blocked", role: "batch" });
+    expect(report.results[1]!.reason).toContain("has not passed");
+    expect(await readFile(path.join(a, "project.bootstrap.yaml"), "utf8")).toBe(before);
+    expect(f.calls.some(({ command, args }) => command === "autoreview" || ["push", "checkout", "commit"].includes(args[0] ?? ""))).toBe(false);
+  });
+
+  it("redacts private and unverified checkouts from reports", async () => {
+    const f = await fixture();
+    await f.add("secret/local-private", { visibility: "private" });
+    await f.add("secret/remote-private");
+    f.repos.get("secret/remote-private")!.visibility = "private";
+    expect(JSON.stringify(await f.run())).not.toContain("secret/");
+    const g = await fixture();
+    await g.add("secret/unverified");
+    g.unavailable();
+    expect(JSON.stringify(await g.run())).not.toContain("secret/");
+  });
+
+  it("rejects stale generator, invalid target digest, mutable target refs, and duplicate allowlists", async () => {
+    const f = await fixture();
+    await f.add("acme/a");
+    const run = (input: unknown = f.input, repos = ["acme/a"]) => executeFleetPolicyUpgrades({ workspaceRoot: f.workspaceRoot, repos, input, runner: f.runner });
+    await expect(run({ ...f.input, generatorCommit: "b".repeat(40) })).rejects.toThrow("Generator commit");
+    await expect(run({ ...f.input, target: { ...f.input.target, sha256: "b".repeat(64) } })).rejects.toThrow("digest");
+    expect((await run({ ...f.input, target: { ...f.input.target, ref: "refs/heads/main" } })).results[0]!.status).toBe("blocked");
+    await expect(run(f.input, ["acme/a", "other/a"])).rejects.toThrow("ambiguous");
+    await expect(run({ ...f.input, pilotOutcome: "passed" })).rejects.toThrow("Invalid upgrade input");
+  });
+
+  it("does not replace a dirty representative with a later clean repository", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    await f.add("acme/b");
+    await writeFile(path.join(a, "operator-work"), "preserve");
+    const report = await f.run(true);
+    expect(report.results.map(({ status }) => status)).toEqual(["blocked", "blocked"]);
+    expect(report.results[0]!.reason).toContain("Dirty");
+    expect(report.results[1]!.reason).toContain("has not passed");
+    expect(await readFile(path.join(a, "operator-work"), "utf8")).toBe("preserve");
+  });
+
+  it("fails closed for origin mismatch and stale default-branch checkouts", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    await git(a, ["remote", "set-url", "origin", "https://github.com/other/repo.git"]);
+    expect((await f.run(true)).results[0]!.reason).toContain("Origin differs");
+    await git(a, ["remote", "set-url", "origin", "https://github.com/acme/a.git"]);
+    await git(a, ["remote", "set-url", "--push", "origin", "https://github.com/other/repo.git"]);
+    expect((await f.run(true)).results[0]!.reason).toContain("Origin differs");
+    await git(a, ["config", "--unset", "remote.origin.pushurl"]);
+    f.repos.get("acme/a")!.head = "f".repeat(40);
+    expect((await f.run(true)).results[0]!.reason).toContain("live default branch");
+  });
+
+  it("verifies the passed pilot commit, policy bundle, and exact-head checks before patch eligibility", async () => {
+    const f = await fixture();
+    await f.add("acme/a", { version: "1.0.1" });
+    await f.add("acme/b");
+    f.pilot("acme/a");
+    expect((await f.run()).results[1]).toMatchObject({ status: "planned", role: "batch", autoMergeEligible: true });
+    f.faults.untrustedRun = true;
+    expect((await f.run()).results[1]!.reason).toContain("exact trusted commit and workflow");
+    f.faults.untrustedRun = false;
+    f.faults.checks = true;
+    expect((await f.run()).results[1]!.reason).toContain("incomplete or failing");
+    f.faults.checks = false;
+    f.faults.status = true;
+    expect((await f.run()).results[1]!.reason).toContain("statuses");
+    f.faults.status = false;
+    f.input.pilots[0]!.commit = "b".repeat(40);
+    expect((await f.run()).results[1]!.reason).toContain("Pilot commit differs");
+  });
+
+  it("requires matching source/target/class evidence and stops failed pilots", async () => {
+    const f = await fixture();
+    await f.add("acme/a", { version: "1.0.1" });
+    await f.add("acme/b");
+    f.pilot("acme/a");
+    f.input.pilots[0]!.currentPolicy = "0.9.0";
+    expect((await f.run()).results[1]!.reason).toContain("not bound");
+    f.input.pilots[0]!.currentPolicy = "1.0.0";
+    f.input.pilots[0]!.outcome = "failed";
+    expect((await f.run()).results[1]!.reason).toContain("pilot failed");
+  });
+
+  it("creates a validated, reviewed draft on a new branch and restores main without enabling merge", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    const result = (await f.run(true)).results[0]!;
+    expect(result).toMatchObject({ status: "pr-opened", pullRequestUrl: "https://github.com/acme/a/pull/99" });
+    expect(await git(a, ["branch", "--show-current"])).toBe("main");
+    expect(await git(a, ["status", "--porcelain"])).toBe("");
+    expect(await git(a, ["show", `${result.branch}:flow-policy.yaml`])).toContain("1.0.1");
+    const committed = YAML.parse(await git(a, ["show", `${result.branch}:project.bootstrap.yaml`]));
+    expect(committed.policy.flow).toMatchObject({ ref: f.input.target.ref, sha256: f.input.target.sha256 });
+    expect(await git(a, ["show", "-s", "--format=%B", result.branch!])).toContain("Signed-off-by: Synthetic Test");
+    expect(f.bodies[0]).toContain("Refs https://github.com/acme/a/issues/62");
+    expect(f.bodies[0]).toContain("Provenance: https://github.com/acme/a/actions/runs/123");
+    expect(f.calls.findIndex(({ command }) => command === "bash")).toBeLessThan(f.calls.findIndex(({ command }) => command === "autoreview"));
+    expect(f.calls.findIndex(({ command }) => command === "autoreview")).toBeLessThan(f.calls.findIndex(({ args }) => args[0] === "push"));
+    expect(f.calls.some(({ command, args }) => command === "gh" && (args.includes("merge") || args.includes("--auto")))).toBe(false);
+  });
+
+  it("preserves dirty generated output after commit failure and blocks retries", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    f.faults.commit = true;
+    const first = (await f.run(true)).results[0]!;
+    expect(first.status).toBe("failed");
+    expect(first.reason).toContain("commit failed");
+    expect(await git(a, ["branch", "--show-current"])).toBe(first.branch);
+    expect(await git(a, ["status", "--porcelain"])).not.toBe("");
+    const before = await git(a, ["rev-parse", first.branch!]);
+    f.faults.commit = false;
+    expect((await f.run(true)).results[0]!.status).toBe("blocked");
+    expect(await git(a, ["rev-parse", first.branch!])).toBe(before);
+  });
+
+  it("preserves pushed-recovery commits after push failure and refuses an existing branch on retry", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    f.faults.push = true;
+    const first = (await f.run(true)).results[0]!;
+    expect(first.status).toBe("failed");
+    expect(await git(a, ["branch", "--show-current"])).toBe("main");
+    const recovery = await git(a, ["rev-parse", first.branch!]);
+    f.faults.push = false;
+    expect((await f.run(true)).results[0]!.reason).toContain("Recovery branch exists");
+    expect(await git(a, ["rev-parse", first.branch!])).toBe(recovery);
+  });
+
+  it("retains a known PR URL and reports restoration failure", async () => {
+    const f = await fixture();
+    await f.add("acme/a");
+    f.faults.restore = true;
+    const result = (await f.run(true)).results[0]!;
+    expect(result).toMatchObject({ status: "failed", pullRequestUrl: "https://github.com/acme/a/pull/99" });
+    expect(result.reason).toContain("Could not restore");
+  });
+
+  it("bounds attempted mutations across independent classes even when the first attempt fails", async () => {
+    const f = await fixture();
+    await f.add("acme/a");
+    await f.add("acme/b", { repoClass: "service" });
+    f.faults.push = true;
+    const report = await f.run(true);
+    expect(report.results[0]!.status).toBe("failed");
+    expect(report.results[1]!.reason).toContain("Batch limit reached");
+    expect(f.calls.filter(({ args }) => args[0] === "push")).toHaveLength(1);
+  });
+
+  it("runs local validation and refuses to push when validation or autoreview fails", async () => {
+    for (const fault of ["validation", "review"] as const) {
+      const f = await fixture();
+      await f.add("acme/a");
+      f.faults[fault] = true;
+      expect((await f.run(true)).results[0]!.status).toBe("failed");
+      expect(f.calls.some(({ args }) => args[0] === "push")).toBe(false);
+    }
+  });
+
+  it("preserves unrelated validation outputs without staging or committing them", async () => {
+    for (const staged of [false, true]) {
+      const f = await fixture();
+      const a = await f.add("acme/a");
+      await writeFile(path.join(a, "scripts/ci/run-fast-checks.sh"), `#!/usr/bin/env bash\nset -euo pipefail\necho preserve > unrelated-output\n${staged ? "git add unrelated-output" : ""}\n`);
+      await git(a, ["add", "scripts/ci/run-fast-checks.sh"]);
+      await git(a, ["commit", "-m", "fixture validation output"]);
+      f.repos.get("acme/a")!.head = await git(a, ["rev-parse", "HEAD"]);
+      const result = (await f.run(true)).results[0]!;
+      expect(result.status).toBe("failed");
+      expect(result.reason).toContain("unrelated files");
+      expect(await readFile(path.join(a, "unrelated-output"), "utf8")).toContain("preserve");
+      expect(f.calls.some(({ args }) => args[0] === "push" || args[0] === "commit")).toBe(false);
+      if (!staged) expect(await git(a, ["diff", "--cached", "--name-only"])).not.toContain("unrelated-output");
+    }
+  });
+
+  it("routes minor upgrades to independent review and blocks unsupported major policies", async () => {
+    const minor = await fixture("1.1.0");
+    await minor.add("acme/a");
+    expect((await minor.run()).results[0]).toMatchObject({ status: "planned", risk: "minor", autoMergeEligible: false });
+    expect((await minor.run()).results[0]!.reason).toContain("Independent review");
+    const major = await fixture("2.0.0");
+    await major.add("acme/a");
+    expect((await major.run()).results[0]!.reason).toContain("notification and an accepted ADR");
+  });
+
+  it("blocks evidence links to unverified repositories and normalization tricks", async () => {
+    const f = await fixture();
+    await f.add("acme/a");
+    f.input.evidence[0]!.provenance = "https://github.com/private/evidence/actions/runs/123";
+    expect((await f.run()).results[0]!.reason).toContain("verified public repository");
+    f.input.evidence[0]!.provenance = "https://github.com/acme/a/../../private/evidence";
+    expect((await f.run()).results[0]!.reason).toContain("verified public repository");
+    expect(JSON.stringify(await f.run())).not.toContain("private/evidence");
+  });
+
+  it("rejects symlink and hardlinked write targets without changing their external files", async () => {
+    for (const kind of ["symlink", "hardlink"] as const) {
+      const f = await fixture();
+      const a = await f.add("acme/a");
+      const original = path.join(a, "flow-policy.yaml");
+      const outside = path.join(f.workspaceRoot, "external.yaml");
+      const before = await readFile(original, "utf8");
+      await writeFile(outside, before);
+      await rm(original);
+      if (kind === "symlink") await symlink(outside, original); else await link(outside, original);
+      await git(a, ["add", "--all"]);
+      await git(a, ["commit", "--allow-empty", "-m", "unsafe fixture path"]);
+      f.repos.get("acme/a")!.head = await git(a, ["rev-parse", "HEAD"]);
+      expect((await f.run(true)).results[0]!.status).toBe("blocked");
+      expect(await readFile(outside, "utf8")).toBe(before);
+      expect(f.calls.some(({ args }) => args[0] === "push")).toBe(false);
+    }
+  });
+});

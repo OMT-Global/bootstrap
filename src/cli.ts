@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 
 import { runDoctor } from "./doctor.js";
 import { formatConformanceReport, githubCapabilitySnapshotSchema, runConformance } from "./conformance.js";
@@ -16,6 +16,7 @@ import {
 import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
 import { planFleetPolicyUpgrades, type FleetUpgradeCandidate } from "./upgrades.js";
+import { executeFleetPolicyUpgrades } from "./upgrade-executor.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -227,6 +228,42 @@ async function main(): Promise<void> {
         return;
       }
       process.stdout.write(`${plan.map((entry) => `- [${entry.status}] ${entry.repo} (${entry.repoClass}, ${entry.risk}, ${entry.role}): ${entry.reason}`).join("\n")}\n`);
+    });
+
+  program
+    .command("upgrade-pr")
+    .description("Plan governed Flow policy upgrades; --apply opens bounded draft pull requests.")
+    .requiredOption("--workspace-root <path>", "Directory containing allowlisted local repositories")
+    .requiredOption("--repo <owner/name...>", "Explicit public repository allowlist")
+    .requiredOption("--input <path>", "JSON target policy, evidence, and bound pilot outcomes")
+    .option("--apply", "Create upgrade branches, commits, pushes, and draft pull requests")
+    .option("--max-batch-size <count>", "Maximum draft pull requests per apply", (value) => {
+      if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+        throw new InvalidArgumentError("Batch size must be a positive safe integer.");
+      }
+      return Number(value);
+    }, 3)
+    .option("--report <path>", "Write JSON report")
+    .option("--json", "Emit JSON")
+    .action(async (options) => {
+      const report = await executeFleetPolicyUpgrades({
+        workspaceRoot: path.resolve(options.workspaceRoot),
+        repos: options.repo,
+        input: await readJsonInput(options.input),
+        apply: options.apply ?? false,
+        maxBatchSize: options.maxBatchSize
+      });
+      if (options.report) {
+        const reportPath = path.resolve(options.report);
+        const { mkdir, writeFile } = await import("node:fs/promises");
+        await mkdir(path.dirname(reportPath), { recursive: true });
+        await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+      }
+      process.stdout.write(options.json
+        ? `${JSON.stringify(report, null, 2)}\n`
+        : `**Fleet upgrade ${report.mode}**\n${report.results.map((entry) =>
+          `- [${entry.status}] ${entry.repo}: ${entry.reason}${entry.pullRequestUrl ? ` (PR ${entry.pullRequestUrl})` : ""}`
+        ).join("\n")}\n`);
     });
 
   const apply = program.command("apply").description("Apply one bootstrap target.");

@@ -1,0 +1,177 @@
+{
+  "$schema": "../schemas/public-repository-standard-v1.schema.json",
+  "standard": "public-repository-standard",
+  "version": "1.0.0",
+  "publisher": {
+    "identitySource": "publisherKey",
+    "spendThresholdSource": "publisher.spendingApprovalThreshold"
+  },
+  "repositoryClasses": {
+    "cli": "Command-line product with a stable invocation and exit-code contract.",
+    "library": "Reusable package with a documented public API and compatibility contract.",
+    "service": "Long-running or request-driven network service with operational boundaries.",
+    "infrastructure": "Infrastructure definition, provisioning, or operational control plane.",
+    "github-action": "Reusable GitHub Actions component with pinned runtime and input/output contracts.",
+    "specification": "Normative protocol, schema, language, or interoperability definition.",
+    "documentation": "Documentation-first repository whose published content is the product."
+  },
+  "maturityLevels": {
+    "experimental": "May disappear or change without migration.",
+    "alpha": "Useful, but interfaces may break.",
+    "beta": "Direction is feature-complete; migrations are provided.",
+    "stable": "SemVer compatibility, an upgrade path, and documented security handling.",
+    "maintenance": "Security and critical fixes only.",
+    "archived": "Read-only, unsupported, and receives no security fixes."
+  },
+  "materialActions": [
+    "adr-change",
+    "public-api-change",
+    "breaking-compatibility-change",
+    "database-migration",
+    "runtime-dependency-addition",
+    "authentication-authorization-change",
+    "security-finding-or-waiver",
+    "production-deployment",
+    "release-publication",
+    "repository-visibility-change",
+    "repository-settings-change",
+    "material-recurring-cost",
+    "policy-exception",
+    "major-feature-removal",
+    "provenance-capture-failure",
+    "conformance-bypass"
+  ],
+  "notifications": {
+    "mode": "execute-and-notify",
+    "requiredDestinations": ["governing-issue-or-pull-request", "configured-notification-mechanism"],
+    "continueAfterNotification": true
+  },
+  "humanHardStops": {
+    "categories": [
+      "license-change",
+      "public-ownership-change",
+      "repository-ownership-transfer",
+      "expose-previously-private-data",
+      "irreversible-production-data-destruction",
+      "external-legal-contractual-obligation",
+      "spend-above-configured-threshold",
+      "grant-organization-owner-permission",
+      "grant-billing-permission",
+      "permanent-policy-exception"
+    ],
+    "spendThresholdSource": "publisher.spendingApprovalThreshold"
+  },
+  "adrTriggers": [
+    "external-dependency-addition",
+    "persistent-data-store-addition",
+    "public-api-change",
+    "authentication-authorization-change",
+    "network-boundary-addition",
+    "deployment-model-change",
+    "breaking-compatibility-change",
+    "significant-build-system-change",
+    "architecture-decision-reversal",
+    "permanent-policy-exception"
+  ],
+  "quality": {
+    "testFirst": true,
+    "testEverythingWorthImplementing": true,
+    "strongTypingAtMeaningfulBoundaries": true,
+    "silentErrorsProhibited": true,
+    "pullRequestChangedLines": {
+      "targetBelow": 400,
+      "warningAbove": 800,
+      "blockAbove": 1500,
+      "excludedKinds": ["generated", "lockfile", "fixture", "vendored"]
+    },
+    "dcoVersion": "1.1"
+  },
+  "security": {
+    "requiredControls": [
+      "secret-scanning",
+      "dependency-scanning",
+      "code-scanning",
+      "sbom-generation",
+      "provenance-attestation",
+      "immutable-action-references",
+      "private-vulnerability-reporting",
+      "security-contact",
+      "security-response-policy",
+      "fork-safe-workflows"
+    ],
+    "responseTargets": {
+      "acknowledgePrivateReportBusinessDays": 2,
+      "triageCalendarDays": 7,
+      "criticalRemediateOrContainCalendarDays": 7,
+      "highRemediateCalendarDays": 30
+    }
+  },
+  "provenance": {
+    "publicManifestRequired": true,
+    "publicManifestPath": "provenance/runs",
+    "privateSinkReference": "logical-name",
+    "literalSecretsProhibited": true,
+    "secretReplacement": "typed-placeholder",
+    "failClosedForRequiredMaterialChanges": true
+  },
+  "release": {
+    "strategy": "when-ready",
+    "versioning": "semver",
+    "conventionalCommits": true,
+    "immutableExactTags": true,
+    "automatedChangelogProposal": true,
+    "agentPublishAfterGates": true,
+    "postPublicationVerification": true,
+    "productionPolicyPin": "exact-release-or-immutable-sha",
+    "releaseBranches": "supported-older-lines-only"
+  },
+  "exceptions": {
+    "humanApprovalRequired": true,
+    "requiredFields": ["id", "policy", "scope", "rationale", "approvedBy", "issue"],
+    "temporaryNormallyExpires": true,
+    "expiredResult": "blocking",
+    "permanentRequires": ["adr", "explicit-human-approval"]
+  },
+  "conformance": {
+    "outputFormats": ["human", "json"],
+    "blockingRuleIds": [
+      "PRS-CLASS-001",
+      "PRS-MATURITY-001",
+      "PRS-MATERIAL-001",
+      "PRS-NOTIFY-001",
+      "PRS-HARDSTOP-001",
+      "PRS-ADR-001",
+      "PRS-QUALITY-001",
+      "PRS-SECURITY-001",
+      "PRS-PROV-001",
+      "PRS-RELEASE-001",
+      "PRS-EXCEPTION-001",
+      "PRS-CONFORMANCE-001"
+    ],
+    "blockingExitCode": 1
+  },
+  "compatibility": {
+    "repositoryClassAliases": {
+      "application": "service",
+      "tooling": "cli"
+    },
+    "legacyTerms": {
+      "autonomy-class-2": "material-change-independent-review",
+      "release-maturity": "release-automation-profile"
+    }
+  },
+  "rules": [
+    {"id": "PRS-CLASS-001", "area": "repository-classification", "severity": "blocking", "summary": "Repositories use a supported class or an approved exception."},
+    {"id": "PRS-MATURITY-001", "area": "maturity", "severity": "blocking", "summary": "Repositories declare one supported product maturity level."},
+    {"id": "PRS-MATERIAL-001", "area": "material-action", "severity": "blocking", "summary": "Material changes receive independent agent review."},
+    {"id": "PRS-NOTIFY-001", "area": "notification", "severity": "blocking", "summary": "Material actions notify required destinations before continuing."},
+    {"id": "PRS-HARDSTOP-001", "area": "human-hard-stop", "severity": "blocking", "summary": "Defined hard stops require explicit human approval."},
+    {"id": "PRS-ADR-001", "area": "adr", "severity": "blocking", "summary": "Material architecture triggers have a linked ADR."},
+    {"id": "PRS-QUALITY-001", "area": "quality", "severity": "blocking", "summary": "Behavior starts with a failing test and meaningful boundaries are typed."},
+    {"id": "PRS-SECURITY-001", "area": "security", "severity": "blocking", "summary": "The repository satisfies its required security controls and response policy."},
+    {"id": "PRS-PROV-001", "area": "provenance", "severity": "blocking", "summary": "Required provenance is signed, redacted, and captured without literal secrets."},
+    {"id": "PRS-RELEASE-001", "area": "release", "severity": "blocking", "summary": "Releases use immutable exact tags and pinned production policy."},
+    {"id": "PRS-EXCEPTION-001", "area": "exception", "severity": "blocking", "summary": "Exceptions are approved, scoped, documented, and unexpired when temporary."},
+    {"id": "PRS-CONFORMANCE-001", "area": "conformance", "severity": "blocking", "summary": "Blocking violations return deterministic non-zero conformance results."}
+  ]
+}

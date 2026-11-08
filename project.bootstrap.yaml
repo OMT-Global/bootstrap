@@ -8,6 +8,12 @@ project:
   visibility: public
   owner: OMT-Global
   defaultBranch: main
+policy:
+  flow:
+    # Flow v1.0.1, source commit 504c79e59689f906a234e7145ee5752588b438b3.
+    ref: refs/tags/v1.0.1
+    sha256: 52877f4225a192c6ac2250a7f289f479be83a923ce15152c517db77ab0d5249d
+    bundlePath: policy/flow-public-standard.json
 repo:
   class: tooling
   classMigration:
@@ -177,7 +183,15 @@ ci:
   prGovernance:
     enforceAfter: 2026-07-13T23:00:00Z
   additionalWorkflows: []
-  appPaths: []
+  appPaths:
+    - src/**
+    - tests/**
+    - test/**
+    - profiles/**
+    - policy/**
+    - package*.json
+    - tsconfig.json
+    - vitest.config.ts
   ciPaths: []
   extendedPaths: []
   macosCheck:
@@ -186,7 +200,13 @@ ci:
     runsOn:
       - macos-14
     command: xcodebuild -version
-  customScripts: {}
+  customScripts:
+    fast: |
+      node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error("Bootstrap checks require Node.js 20 or newer."); process.exit(1); }'
+      npm ci --ignore-scripts
+      npm run typecheck
+      npm test -- --maxWorkers=2 --minWorkers=1
+      npm run build
   dependabot:
     enabled: true
     securityUpdates: true

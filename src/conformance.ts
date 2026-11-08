@@ -18,7 +18,6 @@ import {
 import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, selectManagedFiles } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
-import { loadResolvedFlowPolicy } from "./policy.js";
 import type { BootstrapManifest, PolicyException } from "./types.js";
 
 export const CONFORMANCE_SCHEMA_VERSION = 2;
@@ -95,14 +94,6 @@ const publicSecurityCapabilityControls = [
 
 const trustedSecurityJobCondition = "github.event_name == 'push' || github.event_name == 'schedule'";
 const dependencyReviewJobCondition = "github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'";
-
-const responseTargetDaysSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-const flowResponseTargetsSchema = z.object({
-  acknowledgePrivateReportBusinessDays: responseTargetDaysSchema,
-  triageCalendarDays: responseTargetDaysSchema,
-  criticalRemediateOrContainCalendarDays: responseTargetDaysSchema,
-  highRemediateCalendarDays: responseTargetDaysSchema
-}).strict();
 
 function result(
   ruleId: string,
@@ -598,87 +589,6 @@ function yamlReferencesSecretContext(
   return false;
 }
 
-function withoutFencedCode(contents: string): string {
-  const visible: string[] = [];
-  let fence: { character: string; length: number; listIndent: number } | undefined;
-  let inComment = false;
-  for (const original of contents.split(/\r\n?|\n/)) {
-    let tabAdjustment = 0;
-    const line = original.replace(/\t/g, (_tab, offset: number) => {
-      const width = 4 - (offset + tabAdjustment) % 4;
-      tabAdjustment += width - 1;
-      return " ".repeat(width);
-    });
-    if (fence) {
-      if (fence.listIndent > 0 && line.trim() && !line.startsWith(" ".repeat(fence.listIndent))) {
-        fence = undefined;
-      } else {
-        const closing = line.slice(fence.listIndent).match(/^ {0,3}(`+|~+)[ ]*$/);
-        if (closing && closing[1]![0] === fence.character && closing[1]!.length >= fence.length) fence = undefined;
-        continue;
-      }
-    }
-    const opening = !inComment && line.match(/^( {0,3})((?:[-+*]|[0-9]{1,9}[.)]) {1,4})?(`{3,}|~{3,})(.*)$/);
-    if (opening && (opening[3]![0] !== "`" || !opening[4]!.includes("`"))) {
-      fence = { character: opening[3]![0]!, length: opening[3]!.length, listIndent: opening[2] ? opening[1]!.length + opening[2].length : 0 };
-      continue;
-    }
-    for (const marker of original.matchAll(/<!--|-->/g)) inComment = marker[0] === "<!--";
-    visible.push(original);
-  }
-  return visible.join("\n");
-}
-
-function withoutInlineCode(contents: string): string {
-  return contents.split(/(\n[ \t]*\n)/).map((paragraph) => {
-    const runs = [...paragraph.matchAll(/`+/g)];
-    const nextByLength = new Map<number, number>();
-    const closers = new Array<[number | undefined, number | undefined]>(runs.length);
-    for (let index = runs.length - 1; index >= 0; index -= 1) {
-      const length = runs[index]![0].length;
-      closers[index] = [nextByLength.get(length), nextByLength.get(length - 1)];
-      nextByLength.set(length, index);
-    }
-    let visible = "";
-    let offset = 0;
-    for (let index = 0; index < runs.length; index += 1) {
-      const opening = runs[index]!;
-      let escaped = 0;
-      for (let before = opening.index - 1; before >= 0 && paragraph[before] === "\\"; before -= 1) escaped += 1;
-      const length = opening[0].length - escaped % 2;
-      if (length === 0) continue;
-      const closing = closers[index]![escaped % 2];
-      if (closing === undefined) continue;
-      visible += paragraph.slice(offset, opening.index + escaped % 2) + "\n";
-      offset = runs[closing]!.index + runs[closing]![0].length;
-      index = closing;
-    }
-    return visible + paragraph.slice(offset);
-  }).join("");
-}
-
-function withoutHtmlContainers(contents: string): string {
-  contents = contents.replace(/<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<\?[\s\S]*?(?:\?>|$)|<![A-Z][\s\S]*?(?:>|$)/g, "\n");
-  const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-  const stack: string[] = [];
-  let visible = "";
-  let offset = 0;
-  for (const tag of contents.matchAll(/<(\/?)([a-z][a-z0-9:-]*)\b(?:[^>"']|"[^"]*(?:"|$)|'[^']*(?:'|$))*(?:>|$)/gi)) {
-    if (stack.length === 0) visible += contents.slice(offset, tag.index);
-    const name = tag[2]!.toLowerCase();
-    if (tag[1] === "/") {
-      const opening = stack.lastIndexOf(name);
-      if (opening >= 0) stack.length = opening;
-    } else if (!voidElements.has(name) && !/\/\s*>$/.test(tag[0])) {
-      stack.push(name);
-    }
-    visible += "\n";
-    offset = tag.index + tag[0].length;
-  }
-  if (stack.length === 0) visible += contents.slice(offset);
-  return visible;
-}
-
 async function publicSecurityResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   if (manifest.project.visibility !== "public") {
     return [
@@ -703,49 +613,17 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       remediation: "Restore the managed fallback that requests a confidential channel without publishing vulnerability details."
     });
   }
-  if (manifest.repo.docs?.security === false && manifest.policy?.flow) {
-    try {
-      const { policy } = await loadResolvedFlowPolicy(manifest, targetDir);
-      const { responseTargets: targets } = z.object({ responseTargets: flowResponseTargetsSchema }).parse(policy.security);
-      const deadline = (days: number, unit: "business" | "calendar"): string => `${days} ${unit} day${days === 1 ? "" : "s"}`;
-      const responseText = withoutInlineCode(withoutHtmlContainers(withoutFencedCode(securityDoc ?? "")
-        .replace(/<!--[\s\S]*?(?:-->|$)/g, "")));
-      const commitmentLines = new Set(responseText.split(/\r?\n/)
-        .filter((line) => !/^(?: {4}| {0,3}\t)/.test(line))
-        .map((line) => line.trim().replace(/^[-*+]\s+/, "").replace(/\.$/, "").toLowerCase()));
-      for (const commitment of [
-        `Acknowledge a complete private report within ${deadline(targets.acknowledgePrivateReportBusinessDays, "business")}`,
-        `Triage a confirmed report within ${deadline(targets.triageCalendarDays, "calendar")}`,
-        `Remediate or contain critical findings within ${deadline(targets.criticalRemediateOrContainCalendarDays, "calendar")}`,
-        `Remediate high findings within ${deadline(targets.highRemediateCalendarDays, "calendar")}`,
-        "Coordinate public disclosure with the reporter after remediation"
-      ]) {
-        if (!commitmentLines.has(commitment.toLowerCase())) {
-          baselineFailures.push({
-            evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
-            remediation: "Restore the response commitment from the verified released Flow policy in the product-owned security document."
-          });
-        }
-      }
-    } catch (error) {
-      baselineFailures.push({
-        evidence: `The declared Flow security response policy is invalid: ${safeEvidence(error instanceof Error ? error.message : String(error))}`,
-        remediation: "Restore an immutable, digest-verified compatible Flow bundle with four positive safe-integer response targets."
-      });
-    }
-  } else {
-    if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
-      baselineFailures.push({
-        evidence: "SECURITY.md does not define acknowledgement and status-update targets",
-        remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
-      });
-    }
-    if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
-      baselineFailures.push({
-        evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
-        remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
-      });
-    }
+  if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
+    baselineFailures.push({
+      evidence: "SECURITY.md does not define acknowledgement and status-update targets",
+      remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
+    });
+  }
+  if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
+    baselineFailures.push({
+      evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
+      remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
+    });
   }
 
   const dependabot = await readTextIfExists(path.join(targetDir, ".github/dependabot.yml"));

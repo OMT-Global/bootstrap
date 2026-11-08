@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -40,6 +40,7 @@ async function fixture(targetVersion = "1.0.1") {
   const bodies: string[] = [];
   const faults = { commit: false, push: false, restore: false, review: false, checks: false, status: false, validation: false, missingUrl: false, untrustedRun: false };
   let githubUnavailable = false;
+  let validationMutation: ((cwd: string) => Promise<void>) | undefined;
   async function add(repo: string, options: { version?: string; sourceVersion?: string; managedPaths?: string[]; repoClass?: "cli" | "service"; visibility?: "public" | "private" } = {}) {
     const cwd = path.join(workspaceRoot, repo.split("/")[1]!);
     const currentVersion = options.version ?? "1.0.0";
@@ -84,6 +85,11 @@ async function fixture(targetVersion = "1.0.1") {
     if (command === "git" && args.join(" ") === "checkout main" && faults.restore) return fail();
     if (command === "autoreview") return faults.review ? fail() : ok("No actionable findings.");
     if (command === "bash" && faults.validation) return fail();
+    if (command === "bash" && validationMutation) {
+      const result = await execRunner(command, args, options);
+      if (result.exitCode === 0) await validationMutation(options.cwd!);
+      return result;
+    }
     if (command === "gh") {
       if (githubUnavailable) return fail();
       if (args[0] === "api") {
@@ -121,7 +127,7 @@ async function fixture(targetVersion = "1.0.1") {
     const candidate = repos.get(repo)!;
     input.pilots.push({ repo, repoClass: candidate.repoClass, currentPolicy: candidate.sourceVersion, targetPolicy: targetVersion, commit: candidate.head, sourceCommit: candidate.sourceHead, outcome: "passed", validationWorkflow: ".github/workflows/extended-validation.yml", evidence: `https://github.com/${repo}/actions/runs/123` });
   }
-  return { workspaceRoot, input, repos, add, runner, calls, faults, bodies, pilot, unavailable: () => { githubUnavailable = true; }, run: (apply = false, maxBatchSize = 1) => executeFleetPolicyUpgrades({ workspaceRoot, repos: [...repos.keys()], input, runner, apply, maxBatchSize }) };
+  return { workspaceRoot, input, repos, add, runner, calls, faults, bodies, pilot, afterValidation: (mutation: (cwd: string) => Promise<void>) => { validationMutation = mutation; }, unavailable: () => { githubUnavailable = true; }, run: (apply = false, maxBatchSize = 1) => executeFleetPolicyUpgrades({ workspaceRoot, repos: [...repos.keys()], input, runner, apply, maxBatchSize }) };
 }
 
 afterEach(async () => { await Promise.all(temporary.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
@@ -336,6 +342,83 @@ describe("guarded Flow policy upgrade execution", () => {
       expect((await f.run(true)).results[0]!.status).toBe("failed");
       expect(f.calls.some(({ args }) => args[0] === "push")).toBe(false);
     }
+  });
+
+  it.each(["manifest", "bundle", "generated", "executable"])("rejects validation mutations within the allowed %s output before commit", async (kind) => {
+    const f = await fixture();
+    const a = await f.add("acme/a", kind === "manifest" ? { managedPaths: ["README.md"] } : {});
+    f.afterValidation(async (cwd) => {
+      if (kind === "manifest") {
+        const file = path.join(cwd, "project.bootstrap.yaml");
+        const document = YAML.parseDocument(await readFile(file, "utf8"));
+        document.setIn(["github", "deleteBranchOnMerge"], false);
+        await writeFile(file, document.toString());
+      } else if (kind === "bundle") {
+        const file = path.join(cwd, "flow-policy.yaml");
+        await writeFile(file, Buffer.concat([await readFile(file), Buffer.from([0x23, 0xff, 0x0a])]));
+      } else if (kind === "generated") {
+        const file = path.join(cwd, ".bootstrap/managed-files.json");
+        await writeFile(file, `${await readFile(file, "utf8")}\n`);
+      } else await chmod(path.join(cwd, "flow-policy.yaml"), 0o755);
+    });
+    const result = (await f.run(true)).results[0]!;
+    expect(result.status).toBe("failed");
+    expect(result.reason).toContain("changed prepared output");
+    expect(await git(a, ["branch", "--show-current"])).toBe(result.branch);
+    expect(f.calls.some(({ args }) => args[0] === "commit" || args[0] === "push")).toBe(false);
+  });
+
+  it("rejects validation resurrecting an allowed generated deletion", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    await writeFile(path.join(a, "stale-generated.txt"), "retired output\n");
+    const { loadRepoState, writeRepoState } = await import("../src/state.js");
+    const { sha256 } = await import("../src/lib/hash.js");
+    const state = (await loadRepoState(a))!;
+    state.managedFiles["stale-generated.txt"] = sha256("retired output\n");
+    await writeRepoState(a, state);
+    await git(a, ["add", "stale-generated.txt"]);
+    await git(a, ["commit", "-m", "fixture generated deletion"]);
+    f.repos.get("acme/a")!.head = await git(a, ["rev-parse", "HEAD"]);
+    f.afterValidation((cwd) => writeFile(path.join(cwd, "stale-generated.txt"), "resurrected output\n"));
+    const result = (await f.run(true)).results[0]!;
+    expect(result.reason).toContain("changed prepared output");
+    expect(f.calls.some(({ args }) => args[0] === "commit" || args[0] === "push")).toBe(false);
+  });
+
+  it.each(["symlink", "hardlink", "directory"])("rejects validation replacing an allowed output with a %s", async (kind) => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    const outside = path.join(f.workspaceRoot, "outside-policy.yaml");
+    const bytes = await readFile(f.input.target.bundlePath);
+    await writeFile(outside, bytes);
+    f.afterValidation(async (cwd) => {
+      const file = path.join(cwd, "flow-policy.yaml");
+      await rm(file);
+      if (kind === "symlink") await symlink(outside, file);
+      else if (kind === "hardlink") await link(outside, file);
+      else await mkdir(file);
+    });
+    const result = (await f.run(true)).results[0]!;
+    expect(result.status).toBe("failed");
+    expect(result.reason).toContain(kind === "directory" ? "regular file or a deletion" : "Non-regular, symlink, or hardlinked");
+    expect(await readFile(outside)).toEqual(bytes);
+    expect(await git(a, ["branch", "--show-current"])).toBe(result.branch);
+    expect(f.calls.some(({ args }) => args[0] === "commit" || args[0] === "push")).toBe(false);
+  });
+
+  it("rejects formatter-hook mutations of prepared output after commit without pushing", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    const hook = path.join(a, ".git/hooks/pre-commit");
+    await writeFile(hook, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '# hook mutation\\n' >> flow-policy.yaml\ngit add -- flow-policy.yaml\n");
+    await chmod(hook, 0o755);
+    const result = (await f.run(true)).results[0]!;
+    expect(result.status).toBe("failed");
+    expect(result.reason).toContain("changed prepared output");
+    expect(f.calls.some(({ args }) => args[0] === "push")).toBe(false);
+    expect(f.calls.some(({ command }) => command === "autoreview")).toBe(false);
+    expect(await git(a, ["show", `${result.branch}:flow-policy.yaml`])).toContain("hook mutation");
   });
 
   it("preserves unrelated validation outputs without staging or committing them", async () => {

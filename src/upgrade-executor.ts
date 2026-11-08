@@ -80,6 +80,17 @@ async function safePath(root: string, relative: string): Promise<string> {
   return current;
 }
 
+async function snapshotFiles(root: string, files: Iterable<string>): Promise<string[]> {
+  const snapshots: string[] = [];
+  for (const file of files) {
+    const fullPath = await safePath(root, file);
+    const stat = await lstat(fullPath).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return undefined; });
+    requireCondition(!stat || stat.isFile(), "Planned output must remain a regular file or a deletion.");
+    snapshots.push(stat ? `${stat.mode & 0o111}:${(await readFile(fullPath)).toString("base64")}` : "deleted");
+  }
+  return snapshots;
+}
+
 /** Explicit allowlist only; GitHub settings, home profiles, merges, and auto-merge are never mutated. */
 export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOptions): Promise<{ mode: "plan" | "apply"; results: UpgradeExecutionResult[] }> {
   const parsed = inputSchema.safeParse(options.input);
@@ -284,18 +295,25 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
         await writeFile(manifestPath, nextManifestText);
         await writeFile(bundlePath, targetText);
         await applyRepo(await loadManifest(manifestPath), cwd);
+        const allowed = new Set(["project.bootstrap.yaml", manifest.policy!.flow.bundlePath, ...result.drift]);
+        const prepared = await snapshotFiles(cwd, allowed);
+        const verifyPrepared = async () => requireCondition(
+          (await snapshotFiles(cwd, allowed)).every((value, index) => value === prepared[index]),
+          "Checks or commit changed prepared output; inspect the recovery branch."
+        );
         await safePath(cwd, "scripts/ci/run-fast-checks.sh");
         await command(cwd, "bash", ["scripts/ci/run-fast-checks.sh"]);
+        await verifyPrepared();
         const appliedManifest = await loadManifest(manifestPath);
         await loadResolvedFlowPolicy(appliedManifest, cwd);
         const repeated = await planRepo(appliedManifest, cwd);
         requireCondition(repeated.changes.every((change) => change.type === "unchanged"), "Generated output is not idempotent after validation.");
-        const allowed = new Set(["project.bootstrap.yaml", manifest.policy!.flow.bundlePath, ...result.drift]);
         const changed = `${await command(cwd, "git", ["diff", "--name-only", "--no-renames", "-z"], true)}\0${await command(cwd, "git", ["ls-files", "--others", "--exclude-standard", "-z"], true)}\0${await command(cwd, "git", ["diff", "--cached", "--name-only", "--no-renames", "-z"], true)}`.split("\0").filter(Boolean);
         requireCondition(changed.every((file) => allowed.has(file)), "Validation changed unrelated files; inspect the recovery branch.");
         const pathspecs = [...allowed].map((file) => `:(literal)${file}`);
         await command(cwd, "git", ["add", "--all", "--", ...pathspecs]);
         await command(cwd, "git", ["commit", "--only", "--signoff", "-m", `chore: upgrade Flow policy to ${target.version}`, "--", ...pathspecs]);
+        await verifyPrepared();
         const upgradeCommit = await command(cwd, "git", ["rev-parse", "HEAD"]);
         requireCondition(!(await command(cwd, "git", ["status", "--porcelain"])), "Commit left dirty output; inspect the recovery branch.");
         await command(cwd, "autoreview", ["--mode", "branch", "--base", base]);

@@ -1,4 +1,4 @@
-import type { ProjectVisibility, RunnerPolicy } from "./types.js";
+import type { GitHubHostedImage, ProjectVisibility, RunnerPolicy } from "./types.js";
 
 export type RunnerCapability = "shell" | "docker" | "services" | "browser" | "container-job";
 
@@ -16,18 +16,19 @@ const SHELL_SAFE_SELF_HOSTED_LABELS = ["self-hosted", "linux", "shell-only"];
 export function resolveRunsOn(
   runnerPolicy: RunnerPolicy,
   visibility: ProjectVisibility,
-  capabilities: RunnerCapability[]
+  capabilities: RunnerCapability[],
+  githubHostedImage: GitHubHostedImage = "ubuntu-latest"
 ): RunsOn {
   const hasIncompatibleCapability = capabilities.some((capability) =>
     INCOMPATIBLE_CAPABILITIES.has(capability)
   );
 
   if (runnerPolicy === "github-hosted-first") {
-    return "ubuntu-latest";
+    return githubHostedImage;
   }
 
   if (hasIncompatibleCapability) {
-    return "ubuntu-latest";
+    return githubHostedImage;
   }
 
   return [

@@ -37,6 +37,7 @@ export function verifyGitSnapshot(input: GitSnapshotInput): VerifiedGitSnapshot 
       demand(typeof file.path === "string" && relativePath(file.path) && !["node_modules", "dist"].includes(file.path.split("/")[0]!.toLowerCase()) && !names.has(file.path));
       demand((file.mode === "100644" || file.mode === "100755") && file.bytes instanceof Uint8Array);
       names.add(file.path); size += file.bytes.byteLength; demand(size <= ISOLATION_LIMITS.sourceBytes);
+      // File payloads are opaque Git blobs; UTF-8 validation belongs to paths and parsed metadata.
       const bytes = Buffer.from(file.bytes); return { path: file.path, mode: file.mode, bytes, oid: objectId("blob", bytes), sha256: digest(bytes) };
     }).sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
     for (const file of files) {
@@ -173,5 +174,12 @@ export async function openDataRepository(snapshot: VerifiedGitSnapshot, options:
       }),
       dispose: () => protect(async () => { closed = true; cancellation.abort(); await Promise.allSettled(active); if (!removed) { await rm(directory, { recursive: true, force: true }); removed = true; } })
     });
-  } catch { closed = true; cancellation.abort(); try { await rm(directory, { recursive: true, force: true }); } catch { /* The fixed failure also covers cleanup. */ } throw failure(); }
+  } catch {
+    closed = true; cancellation.abort();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { await rm(directory, { recursive: true, force: true }); break; }
+      catch { /* Bounded cleanup retry; the primary sanitized failure remains authoritative. */ }
+    }
+    throw failure();
+  }
 }

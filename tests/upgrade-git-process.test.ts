@@ -17,6 +17,8 @@ const faults = vi.hoisted(() => ({
   closed: [] as ChildProcess[],
   cwd: [] as string[],
   cleanupDirectory: "",
+  captureCleanupDirectory: false,
+  cleanupAttempts: 0,
   cleanupFailures: 0
 }));
 
@@ -26,6 +28,7 @@ vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   return { ...actual, spawn: (command: string, args: readonly string[] = [], options: SpawnOptions = {}) => {
     faults.cwd.push(String(options.cwd));
+    if (faults.captureCleanupDirectory && !faults.cleanupDirectory) faults.cleanupDirectory = String(options.cwd);
     if (faults.spawnFault === "throw") throw new Error("private spawn failure detail");
     const child = actual.spawn(command, args, options);
     child.once("close", () => { faults.closed.push(child); });
@@ -55,9 +58,12 @@ vi.mock("node:fs", async (original) => {
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual, rm: (...args: Parameters<typeof actual.rm>) => {
-    if (faults.cleanupFailures && String(args[0]) === faults.cleanupDirectory && args[1]?.recursive) {
-      faults.cleanupFailures--;
-      return Promise.reject(Object.assign(new Error("private cleanup failure detail"), { code: "EACCES" }));
+    if (String(args[0]) === faults.cleanupDirectory && args[1]?.recursive) {
+      faults.cleanupAttempts++;
+      if (faults.cleanupFailures) {
+        faults.cleanupFailures--;
+        return Promise.reject(Object.assign(new Error("private cleanup failure detail"), { code: "EACCES" }));
+      }
     }
     return actual.rm(...args);
   } };
@@ -103,9 +109,23 @@ async function blockedChild(): Promise<ChildProcess> {
   return faults.blocked[0]!;
 }
 
+async function originalInventory(root: string, prefix = ""): Promise<unknown[]> {
+  const result: unknown[] = [];
+  for (const name of (await readdir(path.join(root, prefix))).sort()) {
+    const relative = prefix ? prefix + "/" + name : name; const entry = path.join(root, relative); const stat = await lstat(entry);
+    if (stat.isDirectory()) result.push([relative, "directory", stat.mode], ...await originalInventory(root, relative));
+    else {
+      expect(stat.isFile()).toBe(true);
+      result.push([relative, "file", stat.mode, createHash("sha256").update(await readFile(entry)).digest("hex")]);
+    }
+  }
+  return result;
+}
+
 afterEach(async () => {
   vi.useRealTimers(); faults.zeroFlag = ""; faults.spawnFault = ""; faults.blockConfig = false;
-  faults.cleanupDirectory = ""; faults.cleanupFailures = 0;
+  const cleanupDirectory = faults.cleanupDirectory;
+  faults.cleanupDirectory = ""; faults.captureCleanupDirectory = false; faults.cleanupFailures = 0; faults.cleanupAttempts = 0;
   for (const child of faults.blocked) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
@@ -114,6 +134,7 @@ afterEach(async () => {
     // Reap only known disposable fixture paths even when testing a broken cleanup.
     await rm(path.dirname(repository.root), { recursive: true, force: true });
   }
+  if (cleanupDirectory && faults.cwd.includes(cleanupDirectory)) await rm(cleanupDirectory, { recursive: true, force: true });
   faults.blocked.length = 0; faults.closed.length = 0; faults.cwd.length = 0;
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -166,6 +187,32 @@ describe("private Git process faults (not semantic or confinement evidence)", ()
     const child = await blockedChild(); child.kill("SIGTERM");
     expect((await pending as Error).message).toBe(fixed);
     expect(faults.closed).toContain(child); expect(child.exitCode).toBeNull(); expect(child.signalCode).toBe("SIGTERM");
+  });
+
+  it.each([1, 3])("audit cleanup owner bounds a %i-failure cleanup and preserves the original checkout", async (failures) => {
+    const data = await fixture(); const before = await originalInventory(data.root);
+    faults.captureCleanupDirectory = true; faults.cleanupFailures = failures;
+    const error = await auditCheckout(data.root, data.snapshot, "https://github.com/example/public.git").then(() => undefined, (value: unknown) => value);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Checkout is not eligible for a governed upgrade.");
+    expect((error as Error).message).not.toContain(faults.cleanupDirectory);
+    expect(faults.cleanupAttempts).toBe(2);
+    if (failures === 1) await expect(lstat(faults.cleanupDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    else { expect((await lstat(faults.cleanupDirectory)).isDirectory()).toBe(true); expect(faults.cleanupFailures).toBe(1); }
+    expect(await originalInventory(data.root)).toEqual(before);
+  });
+
+  it.each([1, 3])("initialization cleanup owner bounds a %i-failure cleanup and preserves the primary sanitized error", async (failures) => {
+    const data = await fixture(); const before = await originalInventory(data.root);
+    faults.captureCleanupDirectory = true; faults.cleanupFailures = failures; faults.spawnFault = "throw";
+    const error = await openDataRepository(data.snapshot).then(() => undefined, (value: unknown) => value);
+    expect(error).toBeInstanceOf(Error); expect((error as Error).message).toBe(fixed);
+    expect((error as Error).message).not.toContain("private");
+    expect((error as Error).message).not.toContain(faults.cleanupDirectory);
+    expect(faults.cleanupAttempts).toBe(2);
+    if (failures === 1) await expect(lstat(faults.cleanupDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    else { expect((await lstat(faults.cleanupDirectory)).isDirectory()).toBe(true); expect(faults.cleanupFailures).toBe(1); }
+    expect(await originalInventory(data.root)).toEqual(before);
   });
 
   it("retries a failed cleanup rather than reporting false success on a second dispose", async () => {

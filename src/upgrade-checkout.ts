@@ -159,5 +159,14 @@ export async function auditCheckout(root: string, snapshot: VerifiedGitSnapshot,
     return { baseCommit: snapshot.baseCommit, tree: snapshot.tree, sourceSha256: snapshot.sourceSha256,
       originalStateSha256: digest(Buffer.from(JSON.stringify({ metadata, tracked: files.map(({ path, mode, bytes }) => ({ path, mode, sha256: digest(bytes) })) }))) };
   } catch { throw failure(); }
-  finally { if (repository) { try { await repository.dispose(); } catch { throw failure(); } } }
+  finally {
+    if (repository) {
+      try { await repository.dispose(); }
+      catch {
+        try { await repository.dispose(); } catch { /* Persistent cleanup failure cannot be repaired here. */ }
+        // Even a successful retry cannot turn an audit with failed cleanup into success.
+        throw failure();
+      }
+    }
+  }
 }

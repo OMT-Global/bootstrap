@@ -67,6 +67,25 @@ describe("private verified Git data", () => {
     expect((await lstat(data.root)).isDirectory()).toBe(true);
   });
 
+  it("preserves opaque binary regular-file payloads through real Git snapshot and materialization", async () => {
+    const bytes = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x0d, 0x0a, 0xc3, 0x28, 0x41, 0x00]);
+    const name = "assets/binary-payload.bin";
+    const data = await fixture([{ path: name, mode: "100644", bytes }]);
+    const snapshot = data.snapshot();
+    expect(snapshot).toMatchObject({ baseCommit: data.baseCommit, tree: data.tree });
+    expect(copySnapshotFiles(snapshot)).toEqual([{ path: name, mode: "100644", bytes }]);
+    const repository = await openDataRepository(snapshot);
+    try {
+      const actual = await readFile(path.join(repository.root, name));
+      expect(actual).toEqual(bytes);
+      const oid = data.git(["hash-object", "--stdin", "--no-filters"], actual).toString().trim();
+      expect(oid).toBe(objectId("blob", bytes));
+      expect(data.git(["rev-parse", `${data.baseCommit}:${name}`]).toString().trim()).toBe(oid);
+      expect(await repository.readIndex(await readFile(path.join(repository.root, ".git/index"))))
+        .toEqual([{ path: name, mode: "100644", oid, stage: 0 }]);
+    } finally { await repository.dispose(); }
+  });
+
   it("owns copied snapshot bytes rather than trusting caller or returned Buffer mutations", async () => {
     const data = await fixture();
     const snapshot = data.snapshot();

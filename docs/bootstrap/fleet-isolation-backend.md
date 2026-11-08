@@ -1,0 +1,59 @@
+# Fleet isolation backend
+
+Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62). [ADR-0013](../decisions/ADR-0013-isolated-node-validation-backend.md) accepts the bounded architecture; the [review record](../security/fleet-isolation-design.md#independent-review-and-backend-stage-disposition) distinguishes that decision from runtime evidence.
+
+This is the backend stage. It does not expose a fleet apply command, construct a signed publication commit, push branches, open PRs, or complete #62. The previously prepared executor remains outside the safe consolidation lane until its separate supervisor integration uses a proven isolated backend.
+
+## Supported boundary
+
+The initial profile is `node-npm-linux-v1`, requiring a Linux/x64 supervisor and a local Linux/amd64 Docker daemon at `unix:///var/run/docker.sock` with an empty CLI configuration. Remote Docker contexts are unsupported. The profile uses the code-owned immutable Node Bookworm image digest `sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0`. Bash, Git, Python 3, Node 24, and npm must actually execute successfully before target scripts run. Source/package metadata about the image is not a substitute for those probes.
+
+The Docker executable must resolve from `/usr/bin/docker` or `/usr/local/bin/docker` to a regular root-owned file and root-owned, non-group/world-writable canonical directory chain. Repository-controlled PATH entries are never searched; another installation location is unsupported by this first profile.
+
+Inputs come from an explicitly frozen public-source snapshot and sanitized Git data. Never pass a live source checkout's `.git`, ignored files, authentication, home, caches, environment, or sockets. The profile rejects unsupported toolchains, workspaces, private/Git/file dependencies, authentication-bearing npm configuration, and unsupported effective hooks. It does not start or install a local container runtime and never falls back to host execution.
+
+The code-owned limits are explicit:
+
+| Surface | Limit |
+|---|---|
+| Source | 10,000 files, 512 MiB total |
+| Public Git bundle | 64 MiB |
+| Package / lock JSON | 1 MiB / 16 MiB |
+| Dependency archives | 1,000 archives, 64 MiB each, 512 MiB total |
+| Execution | 15 minutes per phase, 2 CPUs, 4 GiB memory, 256 PIDs |
+| Download | 30 seconds per archive |
+| Retained Docker output | 8 MiB across the run |
+
+The cache, input, source, temporary, dependency, and build filesystems also have fixed bounds in the profile. An unsupported write location or exhausted bound fails rather than widening access.
+
+The expected pipeline is:
+
+1. Validate the supported source, package/lock, hook, and profile inputs and freeze their exact bytes/modes.
+2. Download bounded public registry tarballs as inert data, reject redirects or credentials, and verify SHA-512 integrity.
+3. Populate a disposable cache and install the exact lock offline with lifecycle scripts disabled.
+4. Run the explicit `prepared-hook` phase against the base HEAD and prepared read-only index. After the future supervisor independently constructs/signs the exact public candidate, run the separate `final-check` phase with that candidate object as clean HEAD. Each phase uses a fresh, independent network-disabled container. Prepared source and sanitized Git/index data remain read-only; only bounded temporary, cache, dependency, and build locations are writable.
+5. Remove each container and its ephemeral storage after success, failure, timeout, cancellation, or partial startup. Cleanup errors remain visible and cannot establish successful validation.
+
+No host path is bind-mounted. Target code receives a fixed minimal environment, no fleet credentials or host agent sockets, no Linux capabilities, and no external network route. The first hook contract permits only no hook or the regular in-repository `.githooks/pre-commit`; do not silently skip other required hooks. The future trusted supervisor must independently reconstruct and sign its own exact tree rather than accepting sandbox-produced Git objects as publication authority.
+
+## Required runtime proof
+
+Before the new standalone workflow is registered on the default branch, use the existing registered [Full Release Validation](../../.github/workflows/full-release-validation.yml) caller. The backend branch's reviewed `ci.customScripts.extended` projection runs normal fast checks, then pulls the pinned image and requires the Docker suite only when `RELEASE_PROFILE=full`. This preserves cheap ordinary PR checks; another profile prints an explicit non-execution message.
+
+After local checks and autoreview, dispatch the existing caller from the reviewed backend branch with its exact committed target SHA:
+
+```sh
+gh workflow run full-release-validation.yml --repo OMT-Global/bootstrap \
+  --ref codex/fleet-isolation-backend \
+  -f target_ref=<reviewed-40-character-commit-SHA> -f release_profile=full
+```
+
+The new manual [Fleet Isolation Validation](../../.github/workflows/fleet-isolation-validation.yml) workflow is a post-merge convenience route once registered. It runs on GitHub-hosted Ubuntu with read-only repository permission, exact-head checkout, and no production fleet credentials. Both routes set `BOOTSTRAP_REQUIRE_ISOLATION_TESTS=1`; unavailable Docker or skipped confinement tests must fail.
+
+Record its exact head SHA, image digest, actual tool versions, offline-cache result, and hostile integration-test results in the PR validation evidence. The suite must demonstrate that fabricated operator environment/file/socket canaries and an outside workspace cannot be read or changed, external networking is blocked, supported hooks really run, failed or mutating hooks block, and containers are cleaned up on failure/timeout. Host Git configuration canaries must cover any host Git reads; testing only pre-commit/pre-push hooks is insufficient for supervisor integration.
+
+At design time, local Docker/Podman was unavailable and no VM/runtime was installed or started. Until the hosted suite succeeds at the exact implementation head, describe the profile as unproven. A successful backend test run does not authorize live fleet execution: supervisor integration, exact-commit review/checks, and an explicitly inspected target allowlist remain separate gates.
+
+## Failure and recovery
+
+Treat unsupported input, incomplete offline cache, unexpected prepared-source writes, missing tools, startup failure, timeout, and cleanup failure as blockers. Preserve sanitized phase/reason evidence without printing target output as trusted text or exposing credentials. The API accepts an `AbortSignal` and force-cleans its named containers/volumes before returning cancellation. Abrupt supervisor loss or SIGKILL cannot guarantee a `finally` block executes; inspect resources carrying the `bootstrap.isolation` label and any reported credential-free scratch recovery state before retrying. Never reset or clean the original checkout to make a failed run appear successful.

@@ -955,7 +955,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 async function actionPinResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   const shaPattern = /^[0-9a-f]{40}$/;
   const inventory = await workflowFiles(targetDir);
-  const sameRepositoryWorkflowPrefix = `${manifest.project.owner}/${manifest.project.name}/.github/workflows/`;
+  const sameRepositorySlug = `${manifest.project.owner}/${manifest.project.name}`.toLowerCase();
   const internalWorkflowRepos = new Set([
     manifest.release.reusableWorkflowRepo,
     manifest.ci.aiAttestation.reusableWorkflowRepo
@@ -1018,8 +1018,9 @@ async function actionPinResults(manifest: BootstrapManifest, targetDir: string):
       const action = reference.value.slice(0, separator);
       const ref = reference.value.slice(separator + 1);
       if (action.startsWith("./")) continue;
-      const isSameRepositoryWorkflow = action.startsWith(sameRepositoryWorkflowPrefix) &&
-        /^[^/]+\.ya?ml$/.test(action.slice(sameRepositoryWorkflowPrefix.length));
+      const actionSegments = action.split("/");
+      const isSameRepositoryWorkflow = actionSegments.slice(0, 2).join("/").toLowerCase() === sameRepositorySlug &&
+        /^\.github\/workflows\/[^/]+\.ya?ml$/.test(actionSegments.slice(2).join("/"));
       const isInternalWorkflow = isSameRepositoryWorkflow ||
         [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
       checked += 1;

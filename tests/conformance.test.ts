@@ -919,20 +919,24 @@ describe("runConformance", () => {
     expect(pinFailures.find((entry) => entry.evidence[0]?.includes("uses must be a string"))?.remediation).toContain("malformed uses value");
   });
 
-  it("accepts immutable same-repository reusable workflows without third-party release metadata", async () => {
+  it.each([
+    ["OMT-Global", "flow", "OMT-Global/flow"],
+    ["OMT-Global", "flow", "omt-global/FLOW"],
+    ["omt-global", "FLOW", "OMT-Global/fLoW"]
+  ])("accepts immutable same-repository reusable workflows for %s/%s called as %s", async (owner, name, repository) => {
     const directory = await fixtureDirectory();
     await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows"), { recursive: true }));
     await writeFile(path.join(directory, ".github/workflows/ci.yml"), [
       "jobs:",
       "  trusted:",
-      "    uses: OMT-Global/flow/.github/workflows/trusted-flow.yml@92199ad3b33c4c1d3d0d70e1d5839bc799715e35",
+      `    uses: ${repository}/.github/workflows/trusted-flow.yml@92199ad3b33c4c1d3d0d70e1d5839bc799715e35`,
       "  alternate:",
-      `    uses: OMT-Global/flow/.github/workflows/trusted-flow.yaml@${"a".repeat(40)}`,
+      `    uses: ${repository}/.github/workflows/trusted-flow.yaml@${"a".repeat(40)}`,
       "  third-party:",
       "    steps:",
       `      - uses: actions/checkout@${"b".repeat(40)} # v4`
     ].join("\n"));
-    const manifest = normalizeManifest({ project: { name: "flow", owner: "OMT-Global" }, archetype: { kind: "generic-empty" } });
+    const manifest = normalizeManifest({ project: { name, owner }, archetype: { kind: "generic-empty" } });
 
     const report = await runConformance(manifest, directory);
 
@@ -943,6 +947,10 @@ describe("runConformance", () => {
 
   it.each([
     ["mutable same-repository callee", "OMT-Global/flow/.github/workflows/trusted-flow.yml@main", "is not pinned to a 40-character SHA"],
+    ["mutable mixed-case same-repository callee", "omt-global/FLOW/.github/workflows/trusted-flow.yml@main", "is not pinned to a 40-character SHA"],
+    ["wrong-case workflow root", `omt-global/FLOW/.GITHUB/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["wrong-case workflow directory", `omt-global/FLOW/.github/WORKFLOWS/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["wrong-case workflow extension", `omt-global/FLOW/.github/workflows/trusted-flow.YML@${"a".repeat(40)}`, "lacks readable release metadata"],
     ["other repository in the same organization", `OMT-Global/other/.github/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
     ["repository prefix collision", `OMT-Global/flow-other/.github/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
     ["same-repository action", `OMT-Global/flow/action@${"a".repeat(40)}`, "lacks readable release metadata"],

@@ -143,13 +143,13 @@ describe("original checkout eligibility is a read-only data audit", () => {
       await blocked(data);
     });
 
-  it.each(["fsmonitor", "filter", "textconv", "credential", "ssh", "rewrite"])("never executes an original %s command canary", async (kind) => {
+  it.each(["fsmonitor", "filter", "textconv", "helper", "ssh", "rewrite"])("never executes an original %s command canary", async (kind) => {
     const attributes = kind === "filter" ? [file(".gitattributes", "*.txt filter=canary\n")] :
       kind === "textconv" ? [file(".gitattributes", "*.txt diff=canary\n")] : [];
     const data = await fixture(attributes); const marker = path.join(data.workspace, "host-command-executed");
     const command = `sh -c ': > "${marker}"'`;
     const key = { fsmonitor: "core.fsmonitor", filter: "filter.canary.clean", textconv: "diff.canary.textconv",
-      credential: "credential.helper", ssh: "core.sshCommand", rewrite: "url.https://private-sentinel.invalid/.insteadOf" }[kind]!;
+      helper: "credential.helper", ssh: "core.sshCommand", rewrite: "url.https://private-sentinel.invalid/.insteadOf" }[kind]!;
     data.git(["config", key, kind === "rewrite" ? "https://github.com/" : command]);
     const before = await inventory(data.root);
     try { await auditCheckout(data.root, data.snapshot, origin); }

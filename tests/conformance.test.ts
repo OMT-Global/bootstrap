@@ -262,6 +262,44 @@ describe("runConformance", () => {
   });
 
   it.each([
+    ["pre/code", "<pre><code>", "</code></pre>"],
+    ["CDATA", "<![CDATA[", "]]>"],
+    ["processing instruction", "<?example", "?>"],
+    ["declaration", "<!DOCTYPE example", ">"],
+    ["unclosed CDATA", "<![CDATA[", ""],
+    ["unclosed processing instruction", "<?example", ""],
+    ["unclosed declaration", "<!DOCTYPE example", ""],
+    ["generic example", '<div class="example">', "</div>"],
+    ["nested same-tag", "<pre>\n<pre>Nested example</pre>", "</pre>"],
+    ["mixed-case", "<PrE><CoDe>", "</cOdE></pRe>"],
+    ["quoted fake closer", '<pre data-note="> </pre>">', "</pre>"],
+    ["unmatched closing tags", "<pre><code>\n</span>\n</div>", "</code></pre>"],
+    ["unclosed quoted attribute", '<pre data-note="', ""],
+    ["unclosed container", "<pre><code>", ""],
+    ["unclosed opening tag", "<pre", ""]
+  ])("rejects all response commitments inside a %s HTML container", async (_name, opening, closing) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, [
+      document.slice(0, document.indexOf("## Response Targets")),
+      opening, ...flowResponseCommitments, closing
+    ].join("\n"));
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001" &&
+      entry.evidence.some((evidence) => evidence.includes("verified Flow response commitment")))).toHaveLength(5);
+  });
+
+  it("keeps plain Markdown commitments after closed, void, and self-closing HTML elements", async () => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `<![CDATA[Example only]]>\n<?example?>\n<!DOCTYPE example>\n<div><code>Example only</code></div>\n<br><img src="sample.png"><input><wbr>\n<hr/><custom />\n${document}`);
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it.each([
     ["missing field", undefined], ["string", "2"], ["zero", 0], ["negative", -1],
     ["fractional", 1.5], ["unsafe integer", Number.MAX_SAFE_INTEGER + 1]
   ])("rejects a verified policy with a %s response target", async (_name, value) => {

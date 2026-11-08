@@ -598,6 +598,28 @@ function yamlReferencesSecretContext(
   return false;
 }
 
+function withoutHtmlContainers(contents: string): string {
+  contents = contents.replace(/<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<\?[\s\S]*?(?:\?>|$)|<![A-Z][\s\S]*?(?:>|$)/g, "\n");
+  const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  const stack: string[] = [];
+  let visible = "";
+  let offset = 0;
+  for (const tag of contents.matchAll(/<(\/?)([a-z][a-z0-9:-]*)\b(?:[^>"']|"[^"]*(?:"|$)|'[^']*(?:'|$))*(?:>|$)/gi)) {
+    if (stack.length === 0) visible += contents.slice(offset, tag.index);
+    const name = tag[2]!.toLowerCase();
+    if (tag[1] === "/") {
+      const opening = stack.lastIndexOf(name);
+      if (opening >= 0) stack.length = opening;
+    } else if (!voidElements.has(name) && !/\/\s*>$/.test(tag[0])) {
+      stack.push(name);
+    }
+    visible += "\n";
+    offset = tag.index + tag[0].length;
+  }
+  if (stack.length === 0) visible += contents.slice(offset);
+  return visible;
+}
+
 async function publicSecurityResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   if (manifest.project.visibility !== "public") {
     return [
@@ -627,9 +649,9 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       const { policy } = await loadResolvedFlowPolicy(manifest, targetDir);
       const { responseTargets: targets } = z.object({ responseTargets: flowResponseTargetsSchema }).parse(policy.security);
       const deadline = (days: number, unit: "business" | "calendar"): string => `${days} ${unit} day${days === 1 ? "" : "s"}`;
-      const commitmentLines = new Set((securityDoc ?? "")
-        .replace(/<!--[\s\S]*?(?:-->|$)|(`{3,}|~{3,})[\s\S]*?(?:\1|$)/g, "")
-        .split(/\r?\n/)
+      const responseText = withoutHtmlContainers((securityDoc ?? "")
+        .replace(/<!--[\s\S]*?(?:-->|$)|(`{3,}|~{3,})[\s\S]*?(?:\1|$)/g, ""));
+      const commitmentLines = new Set(responseText.split(/\r?\n/)
         .filter((line) => !/^(?: {4}|\t)/.test(line))
         .map((line) => line.trim().replace(/^[-*+]\s+/, "").replace(/\.$/, "").toLowerCase()));
       for (const commitment of [

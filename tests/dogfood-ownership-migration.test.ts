@@ -12,6 +12,8 @@ import { applyRepo, planRepo } from "../src/render.js";
 
 const authoritativeReviewRule = "- Before opening or updating a PR, use the `autoreview` skill to review the intended PR diff against its actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.";
 
+const privateReviewConsentRule = "- For private repositories, before transmitting a concrete prepared diff to an external autoreviewer, verify required network access and explicit authorization for that diff scope and reviewer provider. Request only missing access or authorization; reuse grants already supplied in the current session.";
+
 describe("Bootstrap ownership migration", () => {
   it("preserves the owner's authoritative autoreview rule verbatim in managed AGENTS", () => {
     const manifest = normalizeManifest({
@@ -22,6 +24,32 @@ describe("Bootstrap ownership migration", () => {
     expect(readFileSync("AGENTS.md", "utf8").split("\n")).toContain(authoritativeReviewRule);
     expect(instructions.contents.split("\n")).toContain(authoritativeReviewRule);
     expect(instructions.contents).not.toContain("before implementation:");
+  });
+
+  it.each([
+    { label: "explicit private visibility", visibility: "private" as const },
+    { label: "default private visibility", visibility: undefined }
+  ])("requires concrete provider/scope consent before private transmission for $label", ({ visibility }) => {
+    const manifest = normalizeManifest({
+      project: { name: "private-review-consent", owner: "acme", visibility },
+      archetype: { kind: "generic-empty" }
+    });
+    const instructions = renderManagedFiles(manifest).find((file) => file.path === "AGENTS.md")!.contents;
+    expect(instructions.split("\n")).toContain(authoritativeReviewRule);
+    expect(instructions.split("\n")).toContain(privateReviewConsentRule);
+    expect(instructions).not.toContain("before implementation");
+    expect(instructions.indexOf(authoritativeReviewRule)).toBeLessThan(instructions.indexOf(privateReviewConsentRule));
+  });
+
+  it("keeps the complete public AGENTS bytes unchanged and omits the private transmission clause", () => {
+    const manifest = normalizeManifest({
+      project: { name: "public-review-consent", owner: "acme", visibility: "public" },
+      archetype: { kind: "generic-empty" },
+      ci: { codeqlLanguages: ["javascript-typescript"] }
+    });
+    const instructions = renderManagedFiles(manifest).find((file) => file.path === "AGENTS.md")!.contents;
+    expect(instructions).toBe(readFileSync("AGENTS.md", "utf8"));
+    expect(instructions).not.toContain(privateReviewConsentRule);
   });
 
   it("checks the installed Bootstrap ownership boundary and unchanged current plan", async () => {

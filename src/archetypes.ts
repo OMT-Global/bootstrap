@@ -197,6 +197,9 @@ function repoAgents(manifest: BootstrapManifest): string {
         : manifest.archetype.kind === "python-service"
           ? "Python service"
           : "Generic polyglot";
+  const privateReviewConsent = manifest.project.visibility === "private"
+    ? "\n    - For private repositories, before transmitting a concrete prepared diff to an external autoreviewer, verify required network access and explicit authorization for that diff scope and reviewer provider. Request only missing access or authorization; reuse grants already supplied in the current session."
+    : "";
 
   return dedent`
     # AGENTS
@@ -206,7 +209,7 @@ function repoAgents(manifest: BootstrapManifest): string {
     - CI baseline: fast PR checks stay cheap and shell-safe; extended validation runs on \`main\`, nightly, or manual dispatch.
     - Self-hosted runner policy: private-repository trusted jobs may use their matching capability pool. Public repository security workflows use GitHub-hosted isolation; fork pull-request jobs always remain read-only and GitHub-hosted.
     - Add or update tests for every interactive, branching, or operator-facing behavior change.
-    - Before opening or updating a PR, use the \`autoreview\` skill to review the intended PR diff against its actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.
+    - Before opening or updating a PR, use the \`autoreview\` skill to review the intended PR diff against its actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.${privateReviewConsent}
     - PRs must use the generated pull request template. The required PR gate validates summary, issue linkage, validation evidence, and risk notes.
     - Never commit real secrets, runtime auth, or machine-local env files. Use templates and GitHub environments instead.
 

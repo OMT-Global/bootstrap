@@ -25,7 +25,7 @@ The [licensing contract](licensing.md#existing-license-hard-stop) requires appro
 
 - Confirm authority to adopt this exact file/template pair into Bootstrap management, and record the actual approver and approval reference.
 - Record ownership, contributor/assignment review, and distribution-history evidence, preserving previously granted MIT rights.
-- Review the separate third-party component inventory before projecting `THIRD_PARTY_NOTICES.md`; an empty inventory has not been approved.
+- Review the prepared [third-party inventory](third-party-inventory.md) and intended distribution scope before projecting `THIRD_PARTY_NOTICES.md`; the four runtime packages and two Flow source records are not an approved empty inventory.
 
 The prospective manifest fragment below deliberately contains `null` approval/evidence fields. It is a review checklist, not an applicable manifest. Replace them only with verified records after approval; do not use “pending” strings to satisfy schema checks.
 

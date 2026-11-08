@@ -92,3 +92,11 @@ The [release train contract](release-train-contract.md) and [evidence schema](re
 Run preflight and full validation for the same target SHA, retain their run IDs and package, then create the exact tag and publish using those proven inputs. Verify release notes, assets/checksums, postpublish evidence, and floating tags. Record approvals and material-action notifications required by the repository's gates. Package-specific hooks and CI must actually exercise Bootstrap's TypeScript checks; generic placeholder artifacts are not evidence of a publishable Bootstrap build.
 
 The requested consolidation PR can prepare and validate these changes. A release publication, tag mutation, or real two-repository rollout needs its concrete reviewed target and the applicable authorization; this document records no such completion or approval.
+
+## Original stable-tag diagnostic
+
+The owner-requested [v1.0.0 stable preflight](https://github.com/OMT-Global/bootstrap/actions/runs/42498717548) completed successfully against exact tag commit `3d8ceef191d6c73afab7753d5a5c4022fccbb109`; the annotated tag `ab2f71924900a57a2114d78c7edd917cf69c4119` remained unchanged. Artifact ZIP digests, safe paths, checksums, and internal target/version/channel/issue/run bindings were verified.
+
+All three configured hooks were skipped because that historical tag has no `scripts/release/` directory. Its artifacts contain only fallback notes and evidence, with no product build or test execution. This honors the original diagnostic request and does not complete #27. That target also lacks the required postpublish hook; the repaired publisher rejects it before publication writes. A supported stable target, meaningful expected notes/assets or an explicitly approved automation-only scope, matching validation evidence, and human release approval remain necessary. RC-only publication cannot prove stable floating-tag promotion.
+
+The prepared [third-party inventory](third-party-inventory.md) supplies factual license-attribution inputs for #63; ownership, distribution scope, and adoption approval remain separate human evidence.

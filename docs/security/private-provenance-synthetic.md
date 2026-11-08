@@ -22,7 +22,7 @@ Capture/sign/storage/verification failures return no success receipt. Read/appro
 
 ## Local validation
 
-`npm test -- tests/private-provenance.test.ts tests/provenance.test.ts --maxWorkers=1 --minWorkers=1` passed 122 tests (71 synthetic regressions and 51 existing public-provenance tests). `npm run typecheck`, `npm run build`, and `git diff --check` passed. The synthetic suite exercises wire bounds, credentials, subject/run trust, trusted re-signed receipt substitutions, inner AEAD tampering, adapter failures, key-buffer cleanup, caller mutation, nonce/key freshness, and approval/audit acknowledgment ordering. These local results establish no AWS or deployed-broker guarantees. Required branch autoreview and independent implementation review are recorded separately at closeout.
+`npm test -- tests/private-provenance.test.ts tests/provenance.test.ts --maxWorkers=1 --minWorkers=1` passed 128 tests (77 synthetic regressions and 51 existing public-provenance tests). `npm run typecheck`, `npm run build`, and `git diff --check` passed. The synthetic suite exercises wire bounds, credentials, subject/run trust, trusted re-signed receipt substitutions, inner AEAD tampering, adapter failures, key-buffer cleanup, caller mutation, nonce/key freshness, and approval/audit acknowledgment ordering. These local results establish no AWS or deployed-broker guarantees. Required branch autoreview and independent implementation review are recorded separately at closeout.
 
 ## Remaining gates
 

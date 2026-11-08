@@ -123,6 +123,34 @@ describe("synthetic private provenance", () => {
     cleared(f.state.ownedKeys);
   });
 
+  it.each(["capture and read", "malformed JSON", "noncanonical JSON", "invalid UTF-8", "excessive depth", "leading BOM"])(
+    "clears owned plaintext parsing buffers after %s without mutating caller bytes", async (scenario) => {
+      const f = fixture();
+      if (scenario === "malformed JSON") f.options.input = Buffer.from('{"evidence":[');
+      if (scenario === "noncanonical JSON") f.options.input = Buffer.from(JSON.stringify(fabricated, null, 2));
+      if (scenario === "invalid UTF-8") f.options.input = Buffer.from([0xc3, 0x28]);
+      if (scenario === "excessive depth") f.options.input = wire({ schemaVersion: 1, evidence: [{ category: "synthetic-fixture", text: { nested: { deeper: {} } } }] });
+      if (scenario === "leading BOM") f.options.input = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), f.options.input]);
+      const input = f.options.input;
+      const originalInput = Buffer.from(input);
+      const cleartext = wire(fabricated);
+      const copies: Buffer[] = [];
+      const from = Buffer.from;
+      const allocations = vi.spyOn(Buffer, "from").mockImplementation(((...args: unknown[]) => {
+        const result = Reflect.apply(from, Buffer, args) as Buffer;
+        if (args[0] === input || result.equals(cleartext)) copies.push(result);
+        return result;
+      }) as typeof Buffer.from);
+      try {
+        if (scenario === "capture and read") expect(await f.read(await f.capture())).toEqual(fabricated);
+        else await rejected(f.capture(), "capture");
+      } finally { allocations.mockRestore(); }
+      expect(Buffer.from(input).equals(originalInput)).toBe(true);
+      expect(copies.length).toBeGreaterThanOrEqual(scenario === "capture and read" ? 3 : 1);
+      for (const copy of copies) expect(copy.equals(Buffer.alloc(copy.length))).toBe(true);
+    }
+  );
+
   it.each([
     ["missing synthetic flag", (f: ReturnType<typeof fixture>) => { (f.options as any).syntheticOnly = false; }],
     ["non-synthetic category", (f: ReturnType<typeof fixture>) => { f.options.input = wire({ ...fabricated, evidence: [{ category: "prompt", text: "fabricated" }] }); }],

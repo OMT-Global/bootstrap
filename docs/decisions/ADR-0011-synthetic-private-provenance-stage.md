@@ -22,6 +22,6 @@ Provide no built-in AWS, network, filesystem capture, OIDC, broker deployment, C
 
 ## Validation and remaining work
 
-Independent implementation review found no accepted/actionable findings in the frozen code and tests. Focused validation passed 71 new synthetic tests and 51 existing public-provenance tests, typecheck, and build. The follow-up must also pass required branch autoreview and live PR checks at its actual base/head.
+Independent implementation review found no accepted/actionable findings in the frozen code and tests. Focused validation passed 77 new synthetic tests and 51 existing public-provenance tests, typecheck, and build. The follow-up must also pass required branch autoreview and live PR checks at its actual base/head.
 
 Real evidence categories, AWS account/admin/runtime policies, authenticated read approvals, real audit/retention/rotation controls, signing trust, remote adapters, and required-check integration remain separately gated. This stage and its receipts cannot establish production capture or close #161.

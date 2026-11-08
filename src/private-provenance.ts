@@ -133,18 +133,24 @@ function bounded(bytes: Uint8Array, maximum: number): Buffer {
 }
 function parseCanonical(bytes: Uint8Array, maximum: number, depth: number): unknown {
   const copy = bounded(bytes, maximum);
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(copy);
-  const value: unknown = JSON.parse(text);
-  const pending = [{ value, depth: 1 }];
-  while (pending.length) {
-    const item = pending.pop()!;
-    if (item.value && typeof item.value === "object") {
-      assert(item.depth <= depth);
-      for (const child of Object.values(item.value)) pending.push({ value: child, depth: item.depth + 1 });
+  try {
+    // Preserve a leading BOM so JSON parsing rejects it instead of silently normalizing wire bytes.
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(copy);
+    const value: unknown = JSON.parse(text);
+    const pending = [{ value, depth: 1 }];
+    while (pending.length) {
+      const item = pending.pop()!;
+      if (item.value && typeof item.value === "object") {
+        assert(item.depth <= depth);
+        for (const child of Object.values(item.value)) pending.push({ value: child, depth: item.depth + 1 });
+      }
     }
+    // String equality avoids allocating another mutable plaintext buffer for the round trip.
+    assert(text === canonicalizeProvenanceJson(value));
+    return value;
+  } finally {
+    copy.fill(0);
   }
-  assert(copy.equals(canonical(value))); // Also rejects duplicate keys and noncanonical wire encodings.
-  return value;
 }
 function binding(options: SyntheticBindingOptions) {
   assertSynthetic(options);

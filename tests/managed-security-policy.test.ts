@@ -262,4 +262,50 @@ describe("managed verified Flow response policy", () => {
     await expect(planRepo(loaded, directory)).rejects.toThrow("PRS-POLICY-SOURCE-001");
   });
 
+
+  it.each(["spdx", "proprietary"].flatMap((mode) => ["digest", "missing", "malformed", "invalid target"].map((failure) => [mode, failure] as const)))(
+    "keeps every established legal control when Flow projection fails (mode=%s, failure=%s)", async (mode, failure) => {
+      const { directory, manifest, bundle } = await fixture(true);
+      const template = "SPDX-License-Identifier: {{spdx_identifier}}\nCopyright {{copyright_years}} {{copyright_holder}}\nSynthetic test license terms.\n";
+      if (mode === "spdx") await writeFile(path.join(directory, "mit.txt"), template);
+      const configured = normalizeManifest({ ...manifest, license: {
+        ...manifest.license,
+        ...(mode === "spdx" ? { mode: "spdx", identifier: "MIT", template: {
+          path: "mit.txt", sha256: sha256(template), approval: "test-fixture:spdx-template", spdxIdentifier: "MIT"
+        } } : {}),
+        thirdPartyNotices: [{ name: "Synthetic Test Dependency", kind: "dependency", license: "MIT", source: "https://example.invalid/synthetic", notice: "Synthetic contributor notice." }]
+      } });
+      await applyRepo(configured, directory);
+      const beforeReport = await runConformance(configured, directory);
+      for (const ruleId of ["PRS-LICENSE-001", "PRS-LICENSE-NOTICES-001"]) {
+        expect(beforeReport.results).toContainEqual(expect.objectContaining({ ruleId, severity: "pass" }));
+      }
+      const paths = ["LICENSE", "THIRD_PARTY_NOTICES.md", ".bootstrap/managed-files.json", ".bootstrap/bootstrap-state.json"];
+      const before = await Promise.all(paths.map((entry) => readFile(path.join(directory, entry), "utf8")));
+      const sourcePath = path.join(directory, "flow-policy.json");
+      if (failure === "digest") configured.policy!.flow.sha256 = "0".repeat(64);
+      if (failure === "missing") await rm(sourcePath);
+      if (failure === "malformed") await writeFile(sourcePath, "security: [");
+      if (failure === "invalid target") {
+        bundle.security.responseTargets.triageCalendarDays = 0;
+        configured.policy!.flow.sha256 = flowPolicyDigest(bundle);
+        await writeFile(sourcePath, JSON.stringify(bundle));
+      }
+      const report = await runConformance(configured, directory);
+      expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-POLICY-SOURCE-001", severity: "blocking" }));
+      for (const ruleId of ["PRS-LICENSE-001", "PRS-LICENSE-NOTICES-001"]) {
+        expect(report.results.filter((entry) => entry.ruleId === ruleId)).toEqual([
+          expect.objectContaining({ severity: "blocking", classification: "misconfigured", evidence: [expect.stringContaining("projection is unavailable")] })
+        ]);
+      }
+      expect(report.results.filter((entry) => entry.ruleId === "PRS-LICENSE-RECOGNITION-001")).toEqual([
+        expect.objectContaining(mode === "spdx"
+          ? { severity: "warning", classification: "unverified", evidence: ["declared SPDX identifier MIT; GitHub recognition not verified locally"] }
+          : { severity: "pass", classification: "conformant", evidence: ["proprietary notice; SPDX and OSI recognition not claimed"] })
+      ]);
+      await expect(applyRepo(configured, directory)).rejects.toThrow("PRS-POLICY-SOURCE-001");
+      expect(await Promise.all(paths.map((entry) => readFile(path.join(directory, entry), "utf8")))).toEqual(before);
+    }
+  );
+
 });

@@ -1265,6 +1265,29 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
       results.push(result(ruleId, "blocking", [detail], "Restore the legal output as a regular repository file before conforming."));
     }
   } else {
+    // Recognition describes the declared mode and remains evaluable without a projection.
+    results.push(
+      manifest.license.mode === "proprietary"
+        ? result(
+            "PRS-LICENSE-RECOGNITION-001",
+            "pass",
+            ["proprietary notice; SPDX and OSI recognition not claimed"],
+            "Do not present the proprietary notice as an open-source license."
+          )
+        : result(
+            "PRS-LICENSE-RECOGNITION-001",
+            "warning",
+            [`declared SPDX identifier ${manifest.license.identifier}; GitHub recognition not verified locally`],
+            "Verify GitHub's detected license/community profile after publication.",
+            "unverified"
+          )
+    );
+    if (!projection) {
+      for (const [ruleId, surface] of [["PRS-LICENSE-001", "License"], ["PRS-LICENSE-NOTICES-001", "Third-party notices"]] as const) {
+        results.push(result(ruleId, "blocking", [`${surface} projection is unavailable because the declared Flow policy could not be resolved.`],
+          "Restore the pinned local policy before evaluating dependent legal output; existing legal evidence and ownership claims remain required."));
+      }
+    }
     try {
       const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
       for (const [managedPath, managedHash] of Object.entries(effectiveState?.managedFiles ?? {})) {
@@ -1286,10 +1309,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
           );
         }
       }
-      if (!projection) {
-        results.push(result("PRS-LICENSE-001", "blocking", ["License projection is unavailable because the declared Flow policy could not be resolved."],
-          "Restore the pinned local policy before evaluating dependent legal output; existing legal evidence and ownership claims remain required."));
-      } else {
+      if (projection) {
         const licenseProjection = await projectLicensePolicy(
           manifest,
           targetDir,
@@ -1316,22 +1336,6 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
           existingNotices === expectedNotices
             ? result("PRS-LICENSE-NOTICES-001", "pass", [THIRD_PARTY_NOTICES_PATH], "Keep dependency, asset, font, media, and incorporated-source obligations current.")
             : result("PRS-LICENSE-NOTICES-001", "blocking", [THIRD_PARTY_NOTICES_PATH], "Generate or reconcile the separate third-party notice inventory.")
-        );
-        results.push(
-          manifest.license.mode === "proprietary"
-            ? result(
-                "PRS-LICENSE-RECOGNITION-001",
-                "pass",
-                ["proprietary notice; SPDX and OSI recognition not claimed"],
-                "Do not present the proprietary notice as an open-source license."
-              )
-            : result(
-                "PRS-LICENSE-RECOGNITION-001",
-                "warning",
-                [`declared SPDX identifier ${manifest.license.identifier}; GitHub recognition not verified locally`],
-                "Verify GitHub's detected license/community profile after publication.",
-                "unverified"
-              )
         );
       }
     } catch (error) {

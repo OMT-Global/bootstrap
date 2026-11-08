@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile, chmod, rm, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, chmod, rm, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -79,8 +79,14 @@ if(cfg.holdCleanup && command==='rm' && phase==='storage') {
   transport.executable = executable; transport.unavailable = false; transport.uid = options.untrustedUid ?? 0; transport.mode = options.untrustedMode ?? 0o100755; transport.badAncestor = options.untrustedAncestor ?? false;
   process.env.PATH = `${path.dirname(executable)}${path.delimiter}${originalPath}`;
   Object.defineProperty(process, "platform", { value: "linux" }); Object.defineProperty(process, "arch", { value: "x64" });
-  return { directory, releaseCleanup: () => writeFile(path.join(directory, "release-cleanup"), "released"),
-    calls: async () => (await readFile(log, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; })).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) };
+  const journal = () => readFile(log, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; });
+  const parse = (text: string) => text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const calls = async () => parse(await journal());
+  return { directory, releaseCleanup: () => writeFile(path.join(directory, "release-cleanup"), "released"), calls,
+    pollCalls: async () => {
+      // A child append can be observed before its final newline; completed records still parse strictly.
+      const text = await journal(); return parse(text.slice(0, text.lastIndexOf("\n") + 1));
+    } };
 }
 afterEach(async () => {
   Object.defineProperty(process, "platform", platform); Object.defineProperty(process, "arch", architecture);
@@ -92,6 +98,22 @@ afterEach(async () => {
 });
 
 describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement proof)", () => {
+  it("waits for newline-complete journal records during polling and parses final records strictly", async () => {
+    const fake = await fakeDocker(); const log = path.join(fake.directory, "calls.jsonl");
+    const first = { args: ["version"] }, second = { args: ["rm", "--force", "synthetic-storage"] };
+    const record = JSON.stringify(second), boundary = record.indexOf("synthetic-storage") + 5;
+    await writeFile(log, `${JSON.stringify(first)}\n${record.slice(0, boundary)}`);
+    await expect(fake.calls()).rejects.toBeInstanceOf(SyntaxError);
+    await expect(fake.pollCalls()).resolves.toEqual([first]);
+    await appendFile(log, record.slice(boundary));
+    await expect(fake.pollCalls()).resolves.toEqual([first]);
+    await appendFile(log, "\n");
+    await expect(fake.pollCalls()).resolves.toEqual([first, second]);
+    await expect(fake.calls()).resolves.toEqual([first, second]);
+    await appendFile(log, '{"args":}\n');
+    await expect(fake.pollCalls()).rejects.toBeInstanceOf(SyntaxError);
+    await expect(fake.calls()).rejects.toBeInstanceOf(SyntaxError);
+  });
   it("constructs a fixed confined profile and separately validates a declared hook", async () => {
     const fake = await fakeDocker(); process.env.BOOTSTRAP_SYNTHETIC_OPERATOR_CANARY = "fixture-only";
     const replay = await validateIsolatedNode(fixture(true, "prepared-hook"));
@@ -258,7 +280,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     const operation = validateIsolatedNode(fixture(), { signal: controller.signal });
     for (let attempt = 0; attempt < 200; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
-      if ((await fake.calls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"))) break;
+      if ((await fake.pollCalls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"))) break;
     }
     controller.abort(); await expect(operation).rejects.toThrow("cancelled");
     const calls = await fake.calls();
@@ -273,7 +295,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
       let attached = false; const until = Date.now() + 5000;
       while (Date.now() < until) {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        attached = (await fake.calls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"));
+        attached = (await fake.pollCalls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"));
         if (attached) break;
       }
       expect(attached).toBe(true);
@@ -300,7 +322,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
       let attached = false; const until = performance.now() + 5000;
       while (performance.now() < until) {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        attached = (await fake.calls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"));
+        attached = (await fake.pollCalls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"));
         if (attached) break;
       }
       expect(attached).toBe(true); expect(wholeDelays).toHaveLength(1);
@@ -339,7 +361,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
       let cleaning = false; const until = performance.now() + 5000;
       while (performance.now() < until) {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        cleaning = (await fake.calls()).some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"));
+        cleaning = (await fake.pollCalls()).some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"));
         if (cleaning) break;
       }
       expect(cleaning).toBe(true); const guardedDuringCleanup = active;

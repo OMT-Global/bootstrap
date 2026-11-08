@@ -88,7 +88,7 @@ The shared positive probe now directly executes a fresh mode-0755 shebang helper
 
 Status: independent implemented source/config/test delta review clean at the exact hashes below after the coordinator adopted the material Microsoft-image/six-tool design. Actual new-image acceptance and final full-branch autoreview remain pending.
 
-| Current reviewed artifact | SHA-256 |
+| Prior independently reviewed six-tool artifact | SHA-256 |
 |---|---|
 | `src/isolation/node-profile.ts` | `faaba43ef0656d907fd217feb17fb424b8ae28969340ff7895a629d4ee88e0f3` |
 | `src/isolation/node-validation.ts` | `bc69470ff0e3100bc39ddd5cf6af477382a176f0fa20f2d57b9194dc001f8a16` |
@@ -114,3 +114,20 @@ The combined public tree passes 752 local tests with fourteen explicit Docker sk
 The backend subsequently merged the published, reviewed [PR #207](https://github.com/OMT-Global/bootstrap/pull/207) parent at `4d0a05ce70ce543549d51652893a0ad409f1cc00` through configured-signed, DCO merge commit `b7e2b266f14908c28d00c5738f60679d304fb854`. Its only integration adaptation passes `loadResolvedFlowPolicy` context into the backend entrypoint test's renderer call. The managed parent files and the three core backend module hashes are preserved. The intended backend diff against that actual parent remains seventeen paths and 439 counted source/config lines.
 
 The final-base local gate passes 800 tests with fourteen explicit Docker skips, typecheck/build, 45 action pins, source scans, and whitespace checks. Doctor passes, and the extended script is byte-identical to its verified-context renderer projection and unchanged in the plan. Thirteen unrelated repository-plan entries remain unapplied. Exact final-base hosted acceptance and full-branch autoreview against `origin/codex/managed-security-policy` remain pending.
+
+## Cleanup-completion lifecycle delta
+
+The final full-branch review identified a lifecycle gap: the controller detached its whole-operation timer and caller cancellation listener before cleanup, so cancellation or deadline expiry during successful cleanup could still release success evidence. The coordinator accepted this correction within the existing backend lifecycle contract. On 2026-11-08 the independent architect reviewed the frozen source and regression delta below and found no remaining actionable delta issue. This is an automated source review, not GitHub approval or runtime proof of this changed controller.
+
+| Current cleanup-reviewed artifact | SHA-256 |
+|---|---|
+| `src/isolation/node-profile.ts` | `faaba43ef0656d907fd217feb17fb424b8ae28969340ff7895a629d4ee88e0f3` |
+| `src/isolation/node-validation.ts` | `5954a2e145cc0d4bb0fd1cd293e0e61138ff86adab24a5cfdffaaf1f608662e1` |
+| `src/isolation/setup.ts` | `7b38153cb286a36cdd595f02bdf16d0b3cb45c77c55fd9ffc896949f7e4a4d3f` |
+| `tests/isolated-validation.test.ts` | `2b4673d7908844d282c24c8c15932f3fad74298c13ac9b1e011e6f8c90113500` |
+
+Cancellation and watchdog guards now remain attached through every independent cleanup attempt, including removal of the host transfer directory. Cleanup commands retain their separate 30-second budgets and receive no cancellation signal, so expiry cannot suppress later removals. Before releasing evidence, the controller checks the timeout latch, the absolute wall clock even if its timer callback was delayed, and caller cancellation. It preserves an earlier primary failure, appends any cleanup failure as secondary context, and always detaches the guards afterward. No public API, profile, authority, resource quota, or timeout budget changes.
+
+Three controlled regressions hold a real fixture CLI child during keeper removal and separately trigger caller cancellation, a live watchdog callback, or elapsed wall time with an unfired watchdog. Each returned false success against the prior controller hash `bc69470ff0e3100bc39ddd5cf6af477382a176f0fa20f2d57b9194dc001f8a16`. The corrected cases reject success while requiring every container and volume removal, host-directory cleanup, and final guard detachment. All thirty focused lifecycle cases pass, including the existing success, cancellation, failure, and secondary-cleanup-error cases.
+
+The full local gate passes 803 tests with fourteen explicit Docker skips, typecheck/build, 45 action pins, source scans, and whitespace checks. Doctor passes all eleven checks; the extended script remains byte-identical to its verified-context projection and unchanged in the plan, with thirteen unrelated entries left unapplied. The intended branch still has seventeen paths and 442 counted source/config lines. Earlier exact-head hosted results remain historical evidence; this changed controller requires a new exact-head hosted acceptance run and final full-branch autoreview against `origin/codex/managed-security-policy`.

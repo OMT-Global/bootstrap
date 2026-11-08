@@ -176,13 +176,16 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
     await storageAlive();
   } catch (error) { failure = operationTimedOut ? new IsolationError("Isolated operation timed out.") : options.signal?.aborted ? new IsolationError("Isolated validation was cancelled.") : error; }
   finally {
-    clearTimeout(operationTimer); options.signal?.removeEventListener("abort", cancel);
     let cleanupFailed = false;
-    // Independent cleanup budget ensures an output-limit failure cannot prevent container removal.
-    for (const name of containers.reverse()) try { await command(executable, ["rm", "--force", name], home, { bytes: 0 }, 30_000); } catch { cleanupFailed = true; }
-    for (const name of volumes.reverse()) try { await command(executable, ["volume", "rm", "--force", name], home, { bytes: 0 }, 30_000); } catch { cleanupFailed = true; }
-    await rm(home, { recursive: true, force: true }).catch(() => { cleanupFailed = true; });
-    if (cleanupFailed) failure = new IsolationError(`${failure instanceof Error ? failure.message : "Isolation run did not complete cleanly."} Cleanup failed; inspect Docker resources labeled bootstrap.isolation=${id}.`);
+    try {
+      // Cleanup has independent budgets; cancellation/deadline guards remain live until it finishes.
+      for (const name of containers.reverse()) try { await command(executable, ["rm", "--force", name], home, { bytes: 0 }, 30_000); } catch { cleanupFailed = true; }
+      for (const name of volumes.reverse()) try { await command(executable, ["volume", "rm", "--force", name], home, { bytes: 0 }, 30_000); } catch { cleanupFailed = true; }
+      await rm(home, { recursive: true, force: true }).catch(() => { cleanupFailed = true; });
+      if (!failure && (operationTimedOut || Date.now() >= deadline)) failure = new IsolationError("Isolated operation timed out.");
+      else if (!failure && options.signal?.aborted) failure = new IsolationError("Isolated validation was cancelled.");
+      if (cleanupFailed) failure = new IsolationError(`${failure instanceof Error ? failure.message : "Isolation run did not complete cleanly."} Cleanup failed; inspect Docker resources labeled bootstrap.isolation=${id}.`);
+    } finally { clearTimeout(operationTimer); options.signal?.removeEventListener("abort", cancel); }
   }
   if (failure) throw new IsolationError(failure instanceof IsolationError ? failure.message : "Isolated preparation or validation failed.");
   demand(report, "No isolated validation evidence was produced."); return report;

@@ -97,10 +97,10 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
   const limit = options.maxBatchSize ?? 1;
   requireCondition(Number.isInteger(limit) && limit > 0 && limit <= 10, "maxBatchSize must be an integer from 1 to 10.");
   const runner = options.runner ?? execRunner;
-  const command = async (cwd: string, executable: string, args: string[]) => {
+  const command = async (cwd: string, executable: string, args: string[], raw = false) => {
     const response = await runner(executable, args, { cwd });
     requireCondition(response.exitCode === 0, `${executable} ${args[0]} failed; inspect local command logs and recovery state.`);
-    return response.stdout.trim();
+    return raw ? response.stdout : response.stdout.trim();
   };
   const api = async (cwd: string, endpoint: string) => JSON.parse(await command(cwd, "gh", ["api", endpoint])) as any;
   const generatorRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -179,6 +179,15 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
       for (const change of plan.changes) await safePath(cwd, change.path);
       result.drift = plan.changes.filter((change) => change.type !== "unchanged").map((change) => change.path);
       if (current.source.ref === input.target.ref && current.source.sha256 === input.target.sha256 && !result.drift.length) { result.status = "unchanged"; result.reason = "Policy pin and generated output already match."; continue; }
+      const document = YAML.parseDocument(await readFile(manifestPath, "utf8"));
+      document.setIn(["policy", "flow", "ref"], input.target.ref);
+      document.setIn(["policy", "flow", "sha256"], input.target.sha256);
+      const nextManifestText = document.toString();
+      const manualDrift = [
+        ...(await readFile(manifestPath, "utf8") !== nextManifestText ? ["project.bootstrap.yaml"] : []),
+        ...(await readFile(bundlePath, "utf8") !== targetText ? [manifest.policy!.flow.bundlePath] : [])
+      ];
+      result.drift = [...new Set([...result.drift, ...manualDrift])].sort();
       requireCondition(current.policy.version !== target.version, "Policy version is already selected; reconcile generator drift separately.");
       requireCondition(validatePolicyExceptions(manifest.exceptions).blocking === false, "Invalid or expired exceptions require remediation.");
       const evidence = input.evidence.find((item) => item.repo === repo);
@@ -269,10 +278,7 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
       try {
         await command(cwd, "git", ["checkout", "-b", branch]);
         created = true;
-        const document = YAML.parseDocument(await readFile(manifestPath, "utf8"));
-        document.setIn(["policy", "flow", "ref"], input.target.ref);
-        document.setIn(["policy", "flow", "sha256"], input.target.sha256);
-        await writeFile(manifestPath, document.toString());
+        await writeFile(manifestPath, nextManifestText);
         await writeFile(bundlePath, targetText);
         await applyRepo(await loadManifest(manifestPath), cwd);
         await safePath(cwd, "scripts/ci/run-fast-checks.sh");
@@ -282,10 +288,11 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
         const repeated = await planRepo(appliedManifest, cwd);
         requireCondition(repeated.changes.every((change) => change.type === "unchanged"), "Generated output is not idempotent after validation.");
         const allowed = new Set(["project.bootstrap.yaml", manifest.policy!.flow.bundlePath, ...result.drift]);
-        const changed = `${await command(cwd, "git", ["diff", "--name-only", "--no-renames", "-z"])}\0${await command(cwd, "git", ["ls-files", "--others", "--exclude-standard", "-z"])}\0${await command(cwd, "git", ["diff", "--cached", "--name-only", "--no-renames", "-z"])}`.split("\0").filter(Boolean);
+        const changed = `${await command(cwd, "git", ["diff", "--name-only", "--no-renames", "-z"], true)}\0${await command(cwd, "git", ["ls-files", "--others", "--exclude-standard", "-z"], true)}\0${await command(cwd, "git", ["diff", "--cached", "--name-only", "--no-renames", "-z"], true)}`.split("\0").filter(Boolean);
         requireCondition(changed.every((file) => allowed.has(file)), "Validation changed unrelated files; inspect the recovery branch.");
-        await command(cwd, "git", ["add", "--all", "--", ...allowed]);
-        await command(cwd, "git", ["commit", "--signoff", "-m", `chore: upgrade Flow policy to ${target.version}`]);
+        const pathspecs = [...allowed].map((file) => `:(literal)${file}`);
+        await command(cwd, "git", ["add", "--all", "--", ...pathspecs]);
+        await command(cwd, "git", ["commit", "--only", "--signoff", "-m", `chore: upgrade Flow policy to ${target.version}`, "--", ...pathspecs]);
         const upgradeCommit = await command(cwd, "git", ["rev-parse", "HEAD"]);
         requireCondition(!(await command(cwd, "git", ["status", "--porcelain"])), "Commit left dirty output; inspect the recovery branch.");
         await command(cwd, "autoreview", ["--mode", "branch", "--base", base]);

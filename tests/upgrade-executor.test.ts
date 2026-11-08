@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
 
 import { execRunner, type CommandRunner } from "../src/lib/process.js";
-import { loadManifest, normalizeManifest } from "../src/manifest.js";
+import { loadManifest, normalizeManifest, stringifyManifest } from "../src/manifest.js";
 import { applyRepo } from "../src/render.js";
 import { flowPolicyDigest } from "../src/policy.js";
 import { executeFleetPolicyUpgrades } from "../src/upgrade-executor.js";
@@ -40,13 +40,13 @@ async function fixture(targetVersion = "1.0.1") {
   const bodies: string[] = [];
   const faults = { commit: false, push: false, restore: false, review: false, checks: false, status: false, validation: false, missingUrl: false, untrustedRun: false };
   let githubUnavailable = false;
-  async function add(repo: string, options: { version?: string; sourceVersion?: string; repoClass?: "cli" | "service"; visibility?: "public" | "private" } = {}) {
+  async function add(repo: string, options: { version?: string; sourceVersion?: string; managedPaths?: string[]; repoClass?: "cli" | "service"; visibility?: "public" | "private" } = {}) {
     const cwd = path.join(workspaceRoot, repo.split("/")[1]!);
     const currentVersion = options.version ?? "1.0.0";
     const repoClass = options.repoClass ?? "cli";
     const seedVersion = options.sourceVersion ?? (currentVersion === targetVersion ? "1.0.0" : currentVersion);
     await mkdir(path.join(cwd, "scripts/ci"), { recursive: true });
-    const manifest = normalizeManifest({ version: 2, project: { name: repo.split("/")[1]!, owner: repo.split("/")[0]!, visibility: options.visibility ?? "public", defaultBranch: "main" }, repo: { class: repoClass, managedPaths: ["project.bootstrap.yaml"] }, archetype: { kind: "generic-empty" }, ci: { codeqlLanguages: ["javascript-typescript"] }, policy: { flow: { ref: `refs/tags/v${seedVersion}`, sha256: flowPolicyDigest(policy(seedVersion)), bundlePath: "flow-policy.yaml" } } });
+    const manifest = normalizeManifest({ version: 2, project: { name: repo.split("/")[1]!, owner: repo.split("/")[0]!, visibility: options.visibility ?? "public", defaultBranch: "main" }, repo: { class: repoClass, managedPaths: options.managedPaths ?? ["project.bootstrap.yaml"] }, archetype: { kind: "generic-empty" }, ci: { codeqlLanguages: ["javascript-typescript"] }, policy: { flow: { ref: `refs/tags/v${seedVersion}`, sha256: flowPolicyDigest(policy(seedVersion)), bundlePath: "flow-policy.yaml" } } });
     await git(cwd, ["init", "-b", "main"]);
     await git(cwd, ["config", "user.name", "Synthetic Test"]);
     await git(cwd, ["config", "user.email", "synthetic@example.invalid"]);
@@ -54,6 +54,7 @@ async function fixture(targetVersion = "1.0.1") {
     await git(cwd, ["remote", "add", "origin", `https://github.com/${repo}.git`]);
     await writeFile(path.join(cwd, "flow-policy.yaml"), YAML.stringify(policy(seedVersion)));
     await writeFile(path.join(cwd, "scripts/ci/run-fast-checks.sh"), "#!/usr/bin/env bash\nset -euo pipefail\ntest -f flow-policy.yaml\n");
+    await writeFile(path.join(cwd, "project.bootstrap.yaml"), stringifyManifest(manifest));
     await applyRepo(manifest, cwd);
     await git(cwd, ["add", "--all"]);
     await git(cwd, ["commit", "-m", "test fixture"]);
@@ -61,6 +62,7 @@ async function fixture(targetVersion = "1.0.1") {
     if (currentVersion !== seedVersion) {
       const upgraded = { ...manifest, policy: { flow: { ...manifest.policy!.flow, ref: `refs/tags/v${currentVersion}`, sha256: flowPolicyDigest(policy(currentVersion)) } } };
       await writeFile(path.join(cwd, "flow-policy.yaml"), YAML.stringify(policy(currentVersion)));
+      await writeFile(path.join(cwd, "project.bootstrap.yaml"), stringifyManifest(upgraded));
       await applyRepo(upgraded, cwd);
       await git(cwd, ["add", "--all"]);
       await git(cwd, ["commit", "-m", "fixture governed policy upgrade"]);
@@ -329,6 +331,61 @@ describe("guarded Flow policy upgrade execution", () => {
       expect(f.calls.some(({ args }) => args[0] === "push" || args[0] === "commit")).toBe(false);
       if (!staged) expect(await git(a, ["diff", "--cached", "--name-only"])).not.toContain("unrelated-output");
     }
+  });
+
+  it("preserves exact whitespace-prefixed staged names and never commits unrelated validation output", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a");
+    await writeFile(path.join(a, "scripts/ci/run-fast-checks.sh"), "#!/usr/bin/env bash\nset -euo pipefail\necho preserve > ' project.bootstrap.yaml'\ngit add -- ' project.bootstrap.yaml'\n");
+    await git(a, ["add", "scripts/ci/run-fast-checks.sh"]);
+    await git(a, ["commit", "-m", "fixture whitespace validation output"]);
+    f.repos.get("acme/a")!.head = await git(a, ["rev-parse", "HEAD"]);
+    const result = (await f.run(true)).results[0]!;
+    expect(result.status).toBe("failed");
+    expect(result.reason).toContain("unrelated files");
+    const index = await execRunner("git", ["diff", "--cached", "--name-only", "-z"], { cwd: a });
+    expect(index.stdout).toBe(" project.bootstrap.yaml\0");
+    expect(f.calls.some(({ args }) => args[0] === "push" || args[0] === "commit")).toBe(false);
+    expect(await git(a, ["rev-parse", "HEAD"])).toBe(f.repos.get("acme/a")!.head);
+  });
+
+  it("includes manual manifest and bundle writes in restricted dry-run plans and preserves no-op behavior", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a", { managedPaths: ["README.md"] });
+    const planned = (await f.run()).results[0]!;
+    expect(planned.drift).toEqual(["flow-policy.yaml", "project.bootstrap.yaml"]);
+    const result = (await f.run(true)).results[0]!;
+    expect(result.status).toBe("pr-opened");
+    const written = (await git(a, ["diff", "--name-only", f.repos.get("acme/a")!.head, result.branch!])).split("\n");
+    expect(written.sort()).toEqual(planned.drift);
+    const g = await fixture();
+    await g.add("acme/no-op", { version: "1.0.1", managedPaths: ["README.md"] });
+    await writeFile(g.input.target.bundlePath, `# layout-only difference\n${await readFile(g.input.target.bundlePath, "utf8")}`);
+    expect((await g.run()).results[0]).toMatchObject({ status: "unchanged", drift: [] });
+  });
+
+  it("commits only allowed new files and deletions with explicit literal paths", async () => {
+    const f = await fixture();
+    const a = await f.add("acme/a", { managedPaths: ["project.bootstrap.yaml", "README.md"] });
+    await rm(path.join(a, "README.md"));
+    await writeFile(path.join(a, "stale-generated.txt"), "old generator output\n");
+    const { loadRepoState, writeRepoState } = await import("../src/state.js");
+    const { sha256 } = await import("../src/lib/hash.js");
+    const state = (await loadRepoState(a))!;
+    state.managedFiles["stale-generated.txt"] = sha256("old generator output\n");
+    await writeRepoState(a, state);
+    await git(a, ["add", "--all"]);
+    await git(a, ["commit", "-m", "fixture generated additions and deletions"]);
+    f.repos.get("acme/a")!.head = await git(a, ["rev-parse", "HEAD"]);
+    const result = (await f.run(true)).results[0]!;
+    expect(result.status).toBe("pr-opened");
+    const changes = await git(a, ["diff", "--name-status", f.repos.get("acme/a")!.head, result.branch!]);
+    expect(changes).toContain("A\tREADME.md");
+    expect(changes).toContain("D\tstale-generated.txt");
+    const commit = f.calls.find(({ args }) => args[0] === "commit")!;
+    expect(commit.args).toContain("--only");
+    expect(commit.args).toContain(":(literal)stale-generated.txt");
+    expect(commit.args).toContain(":(literal)README.md");
   });
 
   it("routes minor upgrades to independent review and blocks unsupported major policies", async () => {

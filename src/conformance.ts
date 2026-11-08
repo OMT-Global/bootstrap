@@ -18,6 +18,8 @@ import {
 import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, selectManagedFiles } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
+import { loadResolvedFlowPolicy } from "./policy.js";
+import { extractPolicyStatements, readPolicyMarkdown } from "./security-response-markdown.js";
 import type { BootstrapManifest, PolicyException } from "./types.js";
 
 export const CONFORMANCE_SCHEMA_VERSION = 2;
@@ -102,6 +104,14 @@ const publicSecurityCapabilityControls = [
 
 const trustedSecurityJobCondition = "github.event_name == 'push' || github.event_name == 'schedule'";
 const dependencyReviewJobCondition = "github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'";
+
+const responseTargetDaysSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const flowResponseTargetsSchema = z.object({
+  acknowledgePrivateReportBusinessDays: responseTargetDaysSchema,
+  triageCalendarDays: responseTargetDaysSchema,
+  criticalRemediateOrContainCalendarDays: responseTargetDaysSchema,
+  highRemediateCalendarDays: responseTargetDaysSchema
+}).strict();
 
 function result(
   ruleId: string,
@@ -597,6 +607,10 @@ function yamlReferencesSecretContext(
   return false;
 }
 
+function hasProductSecurityPolicy(manifest: BootstrapManifest): boolean {
+  return manifest.project.visibility === "public" && manifest.repo.docs?.security === false && manifest.policy?.flow !== undefined;
+}
+
 async function publicSecurityResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   if (manifest.project.visibility !== "public") {
     return [
@@ -607,7 +621,17 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 
   const baselineFailures: { evidence: string; remediation: string }[] = [];
   const forkFailures: { evidence: string; remediation: string }[] = [];
-  const securityDoc = await readTextIfExists(path.join(targetDir, "SECURITY.md"));
+  const productPolicy = hasProductSecurityPolicy(manifest);
+  const productInput = productPolicy ? await readPolicyMarkdown(targetDir) : undefined;
+  const securityDoc = productPolicy
+    ? (productInput?.kind === "supported" ? productInput.text : undefined)
+    : await readTextIfExists(path.join(targetDir, "SECURITY.md"));
+  if (productInput && productInput.kind !== "supported") {
+    baselineFailures.push({
+      evidence: `SECURITY.md product policy input is ${productInput.kind === "missing" ? "missing" : `unsupported: ${productInput.reason}`}.`,
+      remediation: "Provide a regular, singly linked UTF-8 SECURITY.md within the documented response-policy input limits."
+    });
+  }
   const expectedAdvisoryUrl = `https://github.com/${manifest.project.owner}/${manifest.project.name}/security/advisories/new`;
   if (!securityDoc?.includes(expectedAdvisoryUrl)) {
     baselineFailures.push({
@@ -621,17 +645,56 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       remediation: "Restore the managed fallback that requests a confidential channel without publishing vulnerability details."
     });
   }
-  if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define acknowledgement and status-update targets",
-      remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
-    });
-  }
-  if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
-      remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
-    });
+  if (productPolicy) {
+    let targets: z.infer<typeof flowResponseTargetsSchema> | undefined;
+    try {
+      const { policy } = await loadResolvedFlowPolicy(manifest, targetDir);
+      targets = z.object({ responseTargets: flowResponseTargetsSchema }).parse(policy.security).responseTargets;
+    } catch {
+      baselineFailures.push({
+        evidence: "The declared Flow security response policy is invalid.",
+        remediation: "Restore an immutable, digest-verified compatible Flow bundle with four positive safe-integer response targets."
+      });
+    }
+    if (targets && productInput?.kind === "supported") {
+      const extracted = extractPolicyStatements(productInput.text);
+      if (extracted.kind === "unsupported") {
+        baselineFailures.push({
+          evidence: `SECURITY.md product policy Markdown is unsupported: ${extracted.reason}.`,
+          remediation: "Use the documented HTML-free CommonMark statement grammar within its input and tree limits."
+        });
+      } else {
+        const deadline = (days: number, unit: "business" | "calendar"): string => `${days} ${unit} day${days === 1 ? "" : "s"}`;
+        const statements = new Set(extracted.statements.map((statement) => statement.text));
+        for (const commitment of [
+          `Acknowledge a complete private report within ${deadline(targets.acknowledgePrivateReportBusinessDays, "business")}`,
+          `Triage a confirmed report within ${deadline(targets.triageCalendarDays, "calendar")}`,
+          `Remediate or contain critical findings within ${deadline(targets.criticalRemediateOrContainCalendarDays, "calendar")}`,
+          `Remediate high findings within ${deadline(targets.highRemediateCalendarDays, "calendar")}`,
+          "Coordinate public disclosure with the reporter after remediation"
+        ]) {
+          if (!statements.has(commitment.toLowerCase())) {
+            baselineFailures.push({
+              evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
+              remediation: "Restore the complete response commitment in an eligible plain paragraph or list paragraph."
+            });
+          }
+        }
+      }
+    }
+  } else {
+    if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define acknowledgement and status-update targets",
+        remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
+      });
+    }
+    if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
+        remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
+      });
+    }
   }
 
   const dependabot = await readTextIfExists(path.join(targetDir, ".github/dependabot.yml"));
@@ -1047,6 +1110,22 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
       validExceptionIds.has(entry.id)
   );
   const selectedManagedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const productSecurityPolicy = hasProductSecurityPolicy(manifest);
+  let productSecurityOwnershipBlocked = false;
+  if (productSecurityPolicy) {
+    try {
+      const { state, ownership } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
+      productSecurityOwnershipBlocked = Object.hasOwn(state?.managedFiles ?? {}, "SECURITY.md") || Object.hasOwn(ownership.hashes, "SECURITY.md");
+      if (productSecurityOwnershipBlocked) {
+        results.push(result("PRS-OWNERSHIP-001", "blocking", ["Product-owned SECURITY.md requires a manual ownership migration before generic planning."],
+          "Review and back up the ownership migration, preserving the product policy bytes; do not delete claims or transfer ownership implicitly."));
+      }
+    } catch {
+      productSecurityOwnershipBlocked = true;
+      results.push(result("PRS-OWNERSHIP-001", "blocking", ["Product-owned SECURITY.md ownership metadata could not be verified."],
+        "Resolve ownership metadata through a reviewed, backed-up migration before generic planning."));
+    }
+  }
   const missingRequiredFiles: string[] = [];
   for (const file of selectedManagedFiles) {
     if (await readTextIfExists(path.join(targetDir, file.path)) === undefined) missingRequiredFiles.push(file.path);
@@ -1190,6 +1269,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     try {
       const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
       for (const [managedPath, managedHash] of Object.entries(effectiveState?.managedFiles ?? {})) {
+        if (productSecurityPolicy && managedPath === "SECURITY.md") continue;
         const existing = managedPath === LICENSE_PATH || managedPath === THIRD_PARTY_NOTICES_PATH
           ? await readManagedLegalOutputTextIfExists(targetDir, managedPath)
           : await readTextIfExists(path.join(targetDir, managedPath));
@@ -1305,15 +1385,17 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     }
   }
 
-  try {
-    await planRepo(manifest, targetDir);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
-    pushUnique(
-      results,
-      result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
-    );
+  if (!productSecurityOwnershipBlocked) {
+    try {
+      await planRepo(manifest, targetDir);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
+      pushUnique(
+        results,
+        result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
+      );
+    }
   }
 
   const sorted = results.sort((left, right) => compareCodePoints(left.ruleId, right.ruleId) || compareCodePoints(left.evidence.join("\n"), right.evidence.join("\n")));

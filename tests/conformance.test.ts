@@ -645,7 +645,7 @@ describe("runConformance", () => {
     expect(baselineEvidence).toContain("CodeQL analysis category does not preserve per-language evidence");
     expect(baselineEvidence).toContain("SBOM inputs do not preserve the managed SPDX JSON artifact contract");
     expect(baselineEvidence).toContain("codeql lacks contents: read or security-events: write");
-    expect(baselineEvidence).toContain("sbom lacks contents: write");
+    expect(baselineEvidence).toContain("sbom lacks read-only contents permission");
     expect(baselineEvidence).toContain("codeql has no approved security executor boundary");
     expect(baselineEvidence).toContain("sbom has no approved security executor boundary");
     expect(forkEvidence).toContain("does not use GitHub-hosted isolation");

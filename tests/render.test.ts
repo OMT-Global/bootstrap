@@ -308,7 +308,7 @@ describe("renderManagedFiles", () => {
     expect(model?.contents).toContain("GitHub-hosted isolation");
     expect(model?.contents).toContain("private-vulnerability-reporting");
 
-    expect(workflow?.contents).toContain("sbom:\n    if: github.event_name == 'push' || github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write");
+    expect(workflow?.contents).toContain("sbom:\n    if: github.event_name == 'push' || github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read");
   });
 
   it("routes Swift CodeQL analysis to macOS autobuild", () => {

@@ -475,7 +475,8 @@ const manifestSchema = z.object({
       fastChecks: z.array(z.string()).optional(),
       extendedChecks: z.array(z.string()).optional(),
       nightlyCron: z.string().optional(),
-      codeqlLanguages: z.array(z.enum(["javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust", "go", "swift"])).optional(),
+      codeqlSetup: z.enum(["advanced", "default"]).optional(),
+      codeqlLanguages: z.array(z.enum(["actions", "javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust", "go", "swift"])).optional(),
       prGovernance: z
         .object({
           enforceAfter: z.string().datetime({ offset: true })
@@ -863,6 +864,13 @@ function normalizePackageManager(
 
 export function normalizeManifest(raw: z.input<typeof manifestSchema>): BootstrapManifest {
   const parsed = manifestSchema.parse(raw);
+  if (parsed.ci?.codeqlLanguages?.includes("actions") && parsed.ci.codeqlSetup !== "default") {
+    throw new Error("The actions CodeQL language requires ci.codeqlSetup: default; advanced Actions projection is not supported.");
+  }
+  if (parsed.ci?.codeqlSetup === "default" && (parsed.ci.codeqlLanguages?.length === 0 ||
+    (parsed.ci.codeqlLanguages === undefined && parsed.archetype.kind === "generic-empty"))) {
+    throw new Error("ci.codeqlLanguages must declare at least one language for CodeQL default setup.");
+  }
   const unknownSettings = Object.keys(parsed).filter((key) => !KNOWN_MANIFEST_SETTINGS.has(key)).sort();
   const version = parsed.version ?? 1;
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
@@ -957,6 +965,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
       extendedChecks: parsed.ci?.extendedChecks ?? ["integration", "release-readiness"],
       nightlyCron: parsed.ci?.nightlyCron ?? "0 7 * * *",
+      ...(parsed.ci?.codeqlSetup ? { codeqlSetup: parsed.ci.codeqlSetup } : {}),
       codeqlLanguages: parsed.ci?.codeqlLanguages ?? (
         parsed.archetype.kind === "python-service"
           ? ["python"]

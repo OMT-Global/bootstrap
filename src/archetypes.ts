@@ -1591,7 +1591,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
             with:
               fail-on-severity: high
 
-      codeql:
+${manifest.ci.codeqlSetup === "default" ? "" : `      codeql:
         if: github.event_name == 'push' || github.event_name == 'schedule'
         runs-on: \${{ matrix.runner }}
         strategy:
@@ -1612,11 +1612,11 @@ ${indentBlock(codeQlMatrix(manifest), 12)}
             with:
               category: "/language:\${{ matrix.language }}"
 
-      sbom:
+`}      sbom:
         if: github.event_name == 'push' || github.event_name == 'schedule'
         runs-on: ubuntu-latest
         permissions:
-          contents: write
+          contents: read
         steps:
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
           - uses: anchore/sbom-action@${actionPins.sbom}
@@ -3313,14 +3313,18 @@ function securityModelDoc(manifest: BootstrapManifest): string {
     ## Trust Boundaries
 
     - Pull requests, including forks, are untrusted input. The pull-request lane runs on GitHub-hosted isolation with read-only repository permissions, does not read GitHub Actions secrets, and runs only dependency review after GitHub provisioning enables the dependency graph and sets \`DEPENDENCY_REVIEW_ENABLED=true\`.
-    - Code scanning and SBOM generation run only for trusted default-branch pushes and schedules on GitHub-hosted isolation.
+    - ${manifest.ci.codeqlSetup === "default"
+      ? "GitHub default setup uses provider-managed triggers and separately verified GitHub-hosted execution. The generated SBOM job remains limited to trusted default-branch pushes and schedules."
+      : "Code scanning and SBOM generation run only for trusted default-branch pushes and schedules on GitHub-hosted isolation."}
     - GitHub-hosted security capabilities are evaluated from a versioned capability snapshot so unsupported plan features remain distinct from repository misconfiguration.
 
     ## Required Controls
 
     - Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. The dependency-graph observation must also record \`dependencyReviewEnabled: true\` after provisioning verifies \`DEPENDENCY_REVIEW_ENABLED=true\`.
     - \`.github/dependabot.yml\` keeps both dependency and GitHub Actions pins updateable.
-    - \`.github/workflows/security.yml\` performs dependency review, CodeQL analysis for \`${codeQlLanguages(manifest)}\`, and SPDX JSON SBOM generation using immutable action SHAs.
+    - ${manifest.ci.codeqlSetup === "default"
+      ? `GitHub default setup supplies CodeQL analysis for ${codeQlLanguages(manifest)} from separately observed provider-managed execution; .github/workflows/security.yml retains dependency review and SPDX JSON SBOM generation using immutable action SHAs.`
+      : `\`.github/workflows/security.yml\` performs dependency review, CodeQL analysis for \`${codeQlLanguages(manifest)}\`, and SPDX JSON SBOM generation using immutable action SHAs.`}
     - \`SECURITY.md\` directs reporters to a private advisory and defines acknowledgement, update, remediation, and coordinated-disclosure targets.
 
     ## Fork Safety

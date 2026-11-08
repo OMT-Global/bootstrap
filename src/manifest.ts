@@ -470,6 +470,7 @@ const manifestSchema = z.object({
     .object({
       policy: z.enum(["standard", "standard-public", "experimental", "strict"]).optional(),
       runnerPolicy: z.enum(["hybrid-safe", "self-hosted-first", "github-hosted-first"]).optional(),
+      githubHostedImage: z.enum(["ubuntu-latest", "ubuntu-24.04"]).optional(),
       nodeVersion: z.string().optional(),
       pythonVersion: z.string().optional(),
       fastChecks: z.array(z.string()).optional(),
@@ -960,6 +961,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     ci: {
       ...(parsed.ci?.policy ? { policy: parsed.ci.policy } : {}),
       runnerPolicy: parsed.ci?.runnerPolicy ?? "hybrid-safe",
+      ...(parsed.ci?.githubHostedImage ? { githubHostedImage: parsed.ci.githubHostedImage } : {}),
       nodeVersion: parsed.ci?.nodeVersion ?? "20",
       pythonVersion: parsed.ci?.pythonVersion ?? "3.12",
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],

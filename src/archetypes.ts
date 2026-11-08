@@ -1552,6 +1552,10 @@ function codeQlLanguages(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages.join(",");
 }
 
+function githubHostedRunner(manifest: BootstrapManifest): string {
+  return manifest.ci.githubHostedImage ?? "ubuntu-latest";
+}
+
 function codeQlMatrix(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages
     .map((language) => {
@@ -1560,7 +1564,7 @@ function codeQlMatrix(manifest: BootstrapManifest): string {
       return [
         `- language: ${language}`,
         `  build-mode: ${autobuild ? "autobuild" : "none"}`,
-        `  runner: ${swift ? "macos-14" : "ubuntu-latest"}`
+        `  runner: ${swift ? "macos-14" : githubHostedRunner(manifest)}`
       ].join("\n");
     })
     .join("\n");
@@ -1583,7 +1587,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
     jobs:
       dependency-review:
         if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         permissions:
           contents: read
           pull-requests: read
@@ -1616,7 +1620,7 @@ ${indentBlock(codeQlMatrix(manifest), 12)}
 
 `}      sbom:
         if: github.event_name == 'push' || github.event_name == 'schedule'
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         permissions:
           contents: read
         steps:
@@ -1679,7 +1683,7 @@ function releaseCallerWorkflow(manifest: BootstrapManifest): string {
       release:
         uses: ${manifest.release.reusableWorkflowRepo}/.github/workflows/release.yml@${manifest.release.reusableWorkflowRef}
         with:
-          runs-on: '["ubuntu-latest"]'
+          runs-on: '["${githubHostedRunner(manifest)}"]'
           verify-script: scripts/ci/run-release-verification.sh
           version-script: scripts/ci/run-release-version.sh
           build-script: scripts/ci/run-release-build.sh
@@ -2539,7 +2543,7 @@ function releaseEvidenceSchemaDoc(): string {
 
 function prWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: PR Fast CI
@@ -2820,7 +2824,7 @@ ${indentBlock(setupSteps(manifest), 10)}
 }
 
 function issueHygieneWorkflow(manifest: BootstrapManifest): string {
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: Issue Hygiene Report
@@ -2869,7 +2873,7 @@ function issueHygieneScript(): string {
 
 function extendedWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: Extended Validation
@@ -3505,7 +3509,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
           (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
           (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         timeout-minutes: 30
         steps:
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

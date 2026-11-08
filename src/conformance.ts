@@ -18,6 +18,7 @@ import {
 import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, selectManagedFiles } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
+import { loadResolvedFlowPolicy } from "./policy.js";
 import type { BootstrapManifest, PolicyException } from "./types.js";
 
 export const CONFORMANCE_SCHEMA_VERSION = 2;
@@ -94,6 +95,14 @@ const publicSecurityCapabilityControls = [
 
 const trustedSecurityJobCondition = "github.event_name == 'push' || github.event_name == 'schedule'";
 const dependencyReviewJobCondition = "github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'";
+
+const responseTargetDaysSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const flowResponseTargetsSchema = z.object({
+  acknowledgePrivateReportBusinessDays: responseTargetDaysSchema,
+  triageCalendarDays: responseTargetDaysSchema,
+  criticalRemediateOrContainCalendarDays: responseTargetDaysSchema,
+  highRemediateCalendarDays: responseTargetDaysSchema
+}).strict();
 
 function result(
   ruleId: string,
@@ -613,17 +622,49 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       remediation: "Restore the managed fallback that requests a confidential channel without publishing vulnerability details."
     });
   }
-  if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define acknowledgement and status-update targets",
-      remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
-    });
-  }
-  if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
-      remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
-    });
+  if (manifest.repo.docs?.security === false && manifest.policy?.flow) {
+    try {
+      const { policy } = await loadResolvedFlowPolicy(manifest, targetDir);
+      const { responseTargets: targets } = z.object({ responseTargets: flowResponseTargetsSchema }).parse(policy.security);
+      const deadline = (days: number, unit: "business" | "calendar"): string => `${days} ${unit} day${days === 1 ? "" : "s"}`;
+      const commitmentLines = new Set((securityDoc ?? "")
+        .replace(/<!--[\s\S]*?(?:-->|$)|(`{3,}|~{3,})[\s\S]*?(?:\1|$)/g, "")
+        .split(/\r?\n/)
+        .filter((line) => !/^(?: {4}|\t)/.test(line))
+        .map((line) => line.trim().replace(/^[-*+]\s+/, "").replace(/\.$/, "").toLowerCase()));
+      for (const commitment of [
+        `Acknowledge a complete private report within ${deadline(targets.acknowledgePrivateReportBusinessDays, "business")}`,
+        `Triage a confirmed report within ${deadline(targets.triageCalendarDays, "calendar")}`,
+        `Remediate or contain critical findings within ${deadline(targets.criticalRemediateOrContainCalendarDays, "calendar")}`,
+        `Remediate high findings within ${deadline(targets.highRemediateCalendarDays, "calendar")}`,
+        "Coordinate public disclosure with the reporter after remediation"
+      ]) {
+        if (!commitmentLines.has(commitment.toLowerCase())) {
+          baselineFailures.push({
+            evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
+            remediation: "Restore the response commitment from the verified released Flow policy in the product-owned security document."
+          });
+        }
+      }
+    } catch (error) {
+      baselineFailures.push({
+        evidence: `The declared Flow security response policy is invalid: ${safeEvidence(error instanceof Error ? error.message : String(error))}`,
+        remediation: "Restore an immutable, digest-verified compatible Flow bundle with four positive safe-integer response targets."
+      });
+    }
+  } else {
+    if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define acknowledgement and status-update targets",
+        remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
+      });
+    }
+    if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
+        remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
+      });
+    }
   }
 
   const dependabot = await readTextIfExists(path.join(targetDir, ".github/dependabot.yml"));
@@ -914,6 +955,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 async function actionPinResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   const shaPattern = /^[0-9a-f]{40}$/;
   const inventory = await workflowFiles(targetDir);
+  const sameRepositoryWorkflowPrefix = `${manifest.project.owner}/${manifest.project.name}/.github/workflows/`;
   const internalWorkflowRepos = new Set([
     manifest.release.reusableWorkflowRepo,
     manifest.ci.aiAttestation.reusableWorkflowRepo
@@ -976,7 +1018,10 @@ async function actionPinResults(manifest: BootstrapManifest, targetDir: string):
       const action = reference.value.slice(0, separator);
       const ref = reference.value.slice(separator + 1);
       if (action.startsWith("./")) continue;
-      const isInternalWorkflow = [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
+      const isSameRepositoryWorkflow = action.startsWith(sameRepositoryWorkflowPrefix) &&
+        /^[^/]+\.ya?ml$/.test(action.slice(sameRepositoryWorkflowPrefix.length));
+      const isInternalWorkflow = isSameRepositoryWorkflow ||
+        [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
       checked += 1;
       if (!shaPattern.test(ref)) {
         addFailure(

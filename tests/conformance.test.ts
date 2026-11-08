@@ -7,11 +7,46 @@ import { conformanceReportSchema, formatConformanceReport, githubCapabilitySnaps
 import { normalizeManifest } from "../src/manifest.js";
 import { applyRepo } from "../src/render.js";
 import { sha256 } from "../src/lib/hash.js";
+import { flowPolicyDigest } from "../src/policy.js";
 
 const proprietaryTemplate = "Copyright {{copyright_years}} {{copyright_holder}}\nApproved proprietary terms.\n";
 
 async function fixtureDirectory(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "bootstrap-conformance-"));
+}
+
+const flowResponseCommitments = [
+  "Acknowledge a complete private report within 2 business days.",
+  "Triage a confirmed report within 7 calendar days.",
+  "Remediate or contain critical findings within 7 calendar days.",
+  "Remediate high findings within 30 calendar days.",
+  "Coordinate public disclosure with the reporter after remediation."
+];
+
+async function productSecurityFixture() {
+  const directory = await fixtureDirectory();
+  const bundle = JSON.parse(await readFile(new URL("../policy/flow-public-standard.json", import.meta.url), "utf8"));
+  const policyPath = path.join(directory, "flow-policy.json");
+  await writeFile(policyPath, JSON.stringify(bundle));
+  const manifest = normalizeManifest({
+    project: { name: "flow", owner: "OMT-Global", visibility: "public", maturity: "stable" },
+    repo: { class: "specification", docs: { security: false } },
+    archetype: { kind: "node-ts-service" },
+    release: { enabled: false },
+    policy: { flow: { ref: "refs/tags/v1.0.1", sha256: flowPolicyDigest(bundle), bundlePath: "flow-policy.json" } }
+  });
+  await applyRepo(manifest, directory);
+  const document = [
+    "# Security Policy",
+    "Use https://github.com/OMT-Global/flow/security/advisories/new for private reports.",
+    "If unavailable, request a confidential channel with a Private security contact requested issue without vulnerability details.",
+    "## Response Targets",
+    ...flowResponseCommitments.map((commitment) => `- ${commitment}`),
+    "- Medium and low findings are remediated best-effort and scheduled by maintainers."
+  ].join("\n");
+  const documentPath = path.join(directory, "SECURITY.md");
+  await writeFile(documentPath, document);
+  return { directory, manifest, bundle, policyPath, document, documentPath };
 }
 
 describe("runConformance", () => {
@@ -166,6 +201,150 @@ describe("runConformance", () => {
     expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-FORK-SAFETY-001", severity: "pass", classification: "conformant" }));
     expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-CAPABILITY-001")).toEqual([]);
     expect(report.results.filter((entry) => entry.ruleId === "PRS-GITHUB-CAPABILITY-001")).toHaveLength(controls.length);
+  });
+
+  it("validates product-owned security commitments against the verified released Flow targets", async () => {
+    const { directory, manifest } = await productSecurityFixture();
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-FORK-SAFETY-001", severity: "pass" }));
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-CAPABILITY-001")).toHaveLength(7);
+  });
+
+  it("reads response deadlines from the verified bundle rather than hardcoded Flow clocks", async () => {
+    const { directory, manifest, bundle, policyPath, document, documentPath } = await productSecurityFixture();
+    bundle.security.responseTargets.highRemediateCalendarDays = 31;
+    await writeFile(policyPath, JSON.stringify(bundle));
+    const candidate = { ...manifest, policy: { flow: { ...manifest.policy!.flow, sha256: flowPolicyDigest(bundle) } } };
+    const mismatched = await runConformance(candidate, directory);
+    expect(mismatched.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+      evidence: [expect.stringContaining("Remediate high findings within 31 calendar days")]
+    }));
+
+    await writeFile(documentPath, document.replace("high findings within 30 calendar days", "high findings within 31 calendar days"));
+    const matched = await runConformance(candidate, directory);
+    expect(matched.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it.each(flowResponseCommitments)("blocks a missing product-owned commitment: %s", async (commitment) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, document.replace(`- ${commitment}`, ""));
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+      evidence: [expect.stringContaining("verified Flow response commitment")]
+    }));
+  });
+
+  it.each([
+    ["wrong units", "Acknowledge a complete private report within 2 calendar days."],
+    ["negated commitment", "Do not acknowledge a complete private report within 2 business days."],
+    ["unrelated numbers", "We review 2 business days of acknowledgement statistics."],
+    ["commented example", "<!-- Acknowledge a complete private report within 2 business days. -->"],
+    ["fenced example", "```text\nAcknowledge a complete private report within 2 business days.\n```"],
+    ["indented example", "    Acknowledge a complete private report within 2 business days."],
+    ["quoted example", "> Acknowledge a complete private report within 2 business days."]
+  ])("rejects %s as a Flow response commitment", async (_name, replacement) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, document.replace(`- ${flowResponseCommitments[0]}`, replacement));
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+      evidence: [expect.stringContaining("verified Flow response commitment")]
+    }));
+  });
+
+  it.each([
+    ["missing field", undefined], ["string", "2"], ["zero", 0], ["negative", -1],
+    ["fractional", 1.5], ["unsafe integer", Number.MAX_SAFE_INTEGER + 1]
+  ])("rejects a verified policy with a %s response target", async (_name, value) => {
+    const { directory, manifest, bundle, policyPath } = await productSecurityFixture();
+    if (value === undefined) delete bundle.security.responseTargets.acknowledgePrivateReportBusinessDays;
+    else bundle.security.responseTargets.acknowledgePrivateReportBusinessDays = value;
+    await writeFile(policyPath, JSON.stringify(bundle));
+    const candidate = { ...manifest, policy: { flow: { ...manifest.policy!.flow, sha256: flowPolicyDigest(bundle) } } };
+
+    const report = await runConformance(candidate, directory);
+
+    expect(report.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+      evidence: [expect.stringContaining("declared Flow security response policy is invalid")]
+    }));
+  });
+
+  it.each(["digest mismatch", "incompatible version", "unknown target", "absent bundle", "malformed bundle", "mutable ref"])(
+    "does not fall back to generic clocks after a declared policy failure: %s",
+    async (failure) => {
+      const { directory, manifest, bundle, policyPath, documentPath } = await productSecurityFixture();
+      const generatedSecurity = (await import("../src/archetypes.js")).renderManagedFiles({
+        ...manifest, repo: { ...manifest.repo, docs: { ...manifest.repo.docs, security: true } }
+      }).find((file) => file.path === "SECURITY.md")!.contents;
+      await writeFile(documentPath, generatedSecurity);
+      if (failure === "digest mismatch") await writeFile(policyPath, JSON.stringify({ ...bundle, version: "1.0.1" }));
+      if (failure === "incompatible version") bundle.version = "2.0.0";
+      if (failure === "unknown target") bundle.security.responseTargets.mediumLowCalendarDays = 90;
+      if (failure === "absent bundle") await rm(policyPath);
+      if (failure === "malformed bundle") await writeFile(policyPath, "security: [");
+      const candidate = { ...manifest, policy: { flow: {
+        ...manifest.policy!.flow,
+        ...(failure === "mutable ref" ? { ref: "refs/heads/main" } : {}),
+        ...(["incompatible version", "unknown target"].includes(failure) ? { sha256: flowPolicyDigest(bundle) } : {})
+      } } };
+      if (["incompatible version", "unknown target"].includes(failure)) await writeFile(policyPath, JSON.stringify(bundle));
+
+      const report = await runConformance(candidate, directory);
+
+      expect(report.results).toContainEqual(expect.objectContaining({
+        ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+        evidence: [expect.stringContaining("declared Flow security response policy is invalid")]
+      }));
+    }
+  );
+
+  it("retains legacy clocks for unmanaged documents without a declared Flow policy and for managed documents", async () => {
+    const { directory, manifest, documentPath } = await productSecurityFixture();
+    const { policy: _declaredPolicy, ...unconfigured } = manifest;
+    for (const candidate of [unconfigured, { ...manifest, repo: { ...manifest.repo, docs: { ...manifest.repo.docs, security: true } } }]) {
+      const report = await runConformance(candidate, directory);
+      expect(report.results).toContainEqual(expect.objectContaining({
+        ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+        evidence: ["SECURITY.md does not define acknowledgement and status-update targets"]
+      }));
+      expect(report.results).toContainEqual(expect.objectContaining({
+        ruleId: "PRS-SECURITY-BASELINE-001", severity: "blocking",
+        evidence: ["SECURITY.md does not define all severity remediation and coordinated-disclosure targets"]
+      }));
+    }
+    const generatedSecurity = (await import("../src/archetypes.js")).renderManagedFiles({
+      ...manifest, repo: { ...manifest.repo, docs: { ...manifest.repo.docs, security: true } }
+    }).find((file) => file.path === "SECURITY.md")!.contents;
+    await writeFile(documentPath, generatedSecurity);
+    const report = await runConformance(unconfigured, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it("retains private routes, Dependabot, workflow isolation, fork checks, and remote observations for product-owned security", async () => {
+    const { directory, manifest, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, flowResponseCommitments.join("\n"));
+    await rm(path.join(directory, ".github/dependabot.yml"));
+    await rm(path.join(directory, ".github/workflows/security.yml"));
+
+    const report = await runConformance(manifest, directory);
+    const evidence = report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001").flatMap((entry) => entry.evidence);
+    expect(evidence).toEqual(expect.arrayContaining([
+      expect.stringContaining("private vulnerability reporting route"),
+      expect.stringContaining("detail-free fallback"), expect.stringContaining("Dependabot"),
+      ".github/workflows/security.yml is absent"
+    ]));
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-FORK-SAFETY-001", severity: "blocking" }));
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-CAPABILITY-001")).toHaveLength(7);
   });
 
   it("requires typed activation evidence for a supported dependency graph", async () => {
@@ -738,6 +917,48 @@ describe("runConformance", () => {
     expect(pinFailures.map((entry) => entry.evidence.join(" ")).join(" ")).not.toContain("ignored/example");
     expect(pinFailures.find((entry) => entry.evidence[0]?.includes("docker://alpine:latest"))?.remediation).toContain("64-character sha256 digest");
     expect(pinFailures.find((entry) => entry.evidence[0]?.includes("uses must be a string"))?.remediation).toContain("malformed uses value");
+  });
+
+  it("accepts immutable same-repository reusable workflows without third-party release metadata", async () => {
+    const directory = await fixtureDirectory();
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows"), { recursive: true }));
+    await writeFile(path.join(directory, ".github/workflows/ci.yml"), [
+      "jobs:",
+      "  trusted:",
+      "    uses: OMT-Global/flow/.github/workflows/trusted-flow.yml@92199ad3b33c4c1d3d0d70e1d5839bc799715e35",
+      "  alternate:",
+      `    uses: OMT-Global/flow/.github/workflows/trusted-flow.yaml@${"a".repeat(40)}`,
+      "  third-party:",
+      "    steps:",
+      `      - uses: actions/checkout@${"b".repeat(40)} # v4`
+    ].join("\n"));
+    const manifest = normalizeManifest({ project: { name: "flow", owner: "OMT-Global" }, archetype: { kind: "generic-empty" } });
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-ACTION-PIN-001")).toEqual([
+      expect.objectContaining({ severity: "pass", classification: "conformant" })
+    ]);
+  });
+
+  it.each([
+    ["mutable same-repository callee", "OMT-Global/flow/.github/workflows/trusted-flow.yml@main", "is not pinned to a 40-character SHA"],
+    ["other repository in the same organization", `OMT-Global/other/.github/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["repository prefix collision", `OMT-Global/flow-other/.github/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["same-repository action", `OMT-Global/flow/action@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["nested workflow path", `OMT-Global/flow/.github/workflows/nested/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["third-party action without metadata", `actions/checkout@${"a".repeat(40)}`, "lacks readable release metadata"]
+  ])("retains the action-pin guard for %s", async (_name, reference, diagnostic) => {
+    const directory = await fixtureDirectory();
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows"), { recursive: true }));
+    await writeFile(path.join(directory, ".github/workflows/ci.yml"), `jobs:\n  check:\n    uses: ${reference}\n`);
+    const manifest = normalizeManifest({ project: { name: "flow", owner: "OMT-Global" }, archetype: { kind: "generic-empty" } });
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-ACTION-PIN-001")).toEqual([
+      expect.objectContaining({ severity: "blocking", evidence: [expect.stringContaining(`${reference} ${diagnostic}`)] })
+    ]);
   });
 
   it("rejects a symlinked workflow root without reading outside the repository", async () => {

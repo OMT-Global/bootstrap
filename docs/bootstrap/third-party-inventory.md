@@ -1,6 +1,6 @@
 # Third-party inventory for the dogfood adoption review
 
-Governing issue: [#63](https://github.com/OMT-Global/bootstrap/issues/63). Status: factual preparation; inventory/distribution-scope and adoption approval pending.
+Governing issue: [#63](https://github.com/OMT-Global/bootstrap/issues/63). Status: owner-approved six-record adoption inventory; repository projection and complete dogfood migration pending.
 
 The inventory was captured from `package-lock.json` at `114149bc10a2a4c8da908bc5e6b2ed00f7abd5f9`, lockfile SHA-256 `427deeee262b41d70691d42b549c0d5e67c8ff881d3a327ea290128eeea51a92`. Its 135 package entries include four runtime dependencies, 57 installed development/build/test entries, and 74 entries not installed on the inspected platform. No dependency versions or legal files were changed.
 
@@ -13,13 +13,13 @@ The inventory was captured from `package-lock.json` at `114149bc10a2a4c8da908bc5
 | yaml 2.9.1 | ISC | `5bba27375d93e9119f76c1015f7672cf9ad5f70952296e0842fb2243d6376869` | [yaml](https://github.com/eemeli/yaml) |
 | zod 4.6.7 | MIT | `3f1189b28e3866e0d979968d466b78f813f76827cfdca1fbb124cc0a5c8841f8` | [zod](https://github.com/colinhacks/zod) |
 
-Actual legal files preserve the Commander/TJ Holowaychuk, YAML/Eemeli Aro, and Zod/Colin McDonnell notices and spdx-license-list's CC0 text. A prospective notices projection must retain the applicable texts and attribution; these package assertions are not an independent ownership or legal conclusion. Installed metadata for these four packages declares no runtime dependencies.
+Actual legal files preserve the Commander/TJ Holowaychuk, YAML/Eemeli Aro, and Zod/Colin McDonnell notices and spdx-license-list's CC0 text. The approved manifest notices projection retains the applicable texts and attribution; these package assertions are not an independent ownership or legal conclusion. Installed metadata for these four packages declares no runtime dependencies.
 
 ## Incorporated Flow source
 
 The policy snapshot comes from Flow release v1.0.1 at `504c79e59689f906a234e7145ee5752588b438b3`. That release tree has no LICENSE/NOTICE/COPYING file. Flow's current [MIT license](https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/LICENSE) names OMT Global; its exact hash is `e512083a9d1748e3956b62c6d15e9e3e0f882b86c2f92c1e892ea3182287f052`.
 
-The policy Git blob `0867c061fba5e689394030821e898abf9db7edcc` is unchanged between the release and that current licensed source, and the local snapshot is byte-identical. The [Flow manifest fixture](https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/project.bootstrap.yaml) reproduces current upstream with one source-attribution comment. Record both as incorporated-source inventory entries. The current assertion and byte identity are evidence for the owner's review; this document does not infer a historical license grant or copy Flow's repository-specific approvals to Bootstrap.
+The policy Git blob `0867c061fba5e689394030821e898abf9db7edcc` is unchanged between the release and that current licensed source, and the local snapshot is byte-identical. The [Flow manifest fixture](https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/project.bootstrap.yaml) reproduces current upstream with one source-attribution comment. Both are recorded as incorporated-source inventory entries. The current assertion and byte identity supported the owner's review; this document does not infer a historical license grant or copy Flow's repository-specific approvals to Bootstrap.
 
 ## Development and distribution scope
 
@@ -29,6 +29,6 @@ The package is private, builds with TypeScript, and declares no code bundler. Cu
 
 ## Adoption boundary
 
-The proposed production inventory has six records: the four runtime packages and the two Flow source records. A separate development/build/test inventory is available for distribution review. No empty inventory is approved, and this document does not apply a license policy or create `THIRD_PARTY_NOTICES.md`.
+The approved manifest inventory has six records: the four runtime packages and the two Flow source records. A separate development/build/test inventory is available for distribution review. The owner confirmed the prepared inventory and byte-identical MIT adoption on 2026-11-08 with “Yes confirmed”. No empty inventory or unknown future distribution is approved. This preparation does not apply the repository projection or create `THIRD_PARTY_NOTICES.md`.
 
-Finish the [byte-identical MIT adoption proposal](bootstrap-license-adoption-proposal.md) only after the owner supplies the template/adoption approver, ownership/contributor/distribution review, intended distribution scope, and the applicable Flow grant basis. Then review the exact emitted notices, run doctor and a repo-only plan, preserve LICENSE bytes, apply only the authorized projection, and verify idempotence/conformance.
+The [byte-identical MIT adoption record](bootstrap-license-adoption-proposal.md) documents the actual owner confirmation, exact approved license/template hashes, and Flow source attribution basis. Review the exact emitted notices, run doctor and a repo-only plan, preserve LICENSE bytes, apply only the authorized projection after the remaining ownership/config decisions, and verify idempotence/conformance. The Flow-first migration and live capability evidence remain required by #63.

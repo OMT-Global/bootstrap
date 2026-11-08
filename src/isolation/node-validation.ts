@@ -120,7 +120,7 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
       const storage = mode === "storage", memory = storage ? "64m" : "4g";
       await run(["create", "--name", name, "--label", `bootstrap.isolation=${id}`, "--workdir", working, ...common, ...mounts,
         "--cpus", storage ? "0.1" : "2", "--memory", memory, "--memory-swap", memory, "--pids-limit", storage ? "16" : "256",
-        ...tmpfs("/tmp", (storage ? 1 : 256) * 1024 ** 2), NODE_ISOLATION_IMAGE,
+        ...tmpfs("/tmp", (storage ? 1 : 256) * 1024 ** 2, mode === "hook" || mode === "check"), NODE_ISOLATION_IMAGE,
         ...(storage ? ["-e", `setTimeout(() => process.exit(1), Math.max(1, ${deadline} - Date.now()))`] : ["/input/setup.cjs", mode])]);
     };
     // A live, inert mount holder prevents the local driver's tmpfs data disappearing between operations.

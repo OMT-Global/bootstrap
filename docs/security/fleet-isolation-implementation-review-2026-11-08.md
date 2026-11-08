@@ -2,7 +2,7 @@
 
 Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62). This is the backend stage described by [ADR-0013](../decisions/ADR-0013-isolated-node-validation-backend.md); it enables no fleet CLI, signing, push, PR creation, or live rollout.
 
-On 2026-11-08 a separate software-architect reviewer who did not author these modules independently checked the implementation against the reviewed isolation design. No accepted/actionable source findings remained in that original snapshot or the later planned-identity/materialized-entry delta reviewed below. Those clean snapshots and the reviewed runtime storage/dependency/logging delta precede the executable-mount delta and its remaining runtime gate below. This records automated implementation review, not independent GitHub approval or successful Docker confinement.
+On 2026-11-08 a separate software-architect reviewer who did not author these modules independently checked the implementation against the reviewed isolation design. No accepted/actionable source findings remained in that original snapshot or the later planned-identity/materialized-entry delta reviewed below. Those clean snapshots and the reviewed runtime storage/dependency/logging delta precede the executable-mount refinements and their remaining runtime gate below. This records automated implementation review, not independent GitHub approval or successful Docker confinement.
 
 | Original reviewed artifact | SHA-256 |
 |---|---|
@@ -56,9 +56,9 @@ The revised Docker suite contains fourteen acceptance cases. The positive fixtur
 
 ## Installed dependency executable-mount delta
 
-Status: independent implemented-source delta review clean on 2026-11-08 at the exact hashes below. Actual direct compiler-bin execution, kernel mount-flag assertions, complete exact-head hosted acceptance, and final branch autoreview remain pending.
+Status: historical dependency-only implemented-source delta independently reviewed clean on 2026-11-08 at the exact hashes below. The subsequent hosted result and explicit temporary-helper amendment are recorded in the next section; complete runtime acceptance and final branch autoreview remain pending.
 
-| Current independently reviewed executable-mount artifact | SHA-256 |
+| Prior independently reviewed dependency-only artifact | SHA-256 |
 |---|---|
 | `src/isolation/node-profile.ts` | `585355fc0a51e60eff78ac83a45955564a19830ff89d8f3547c563029e563da4` |
 | `src/isolation/node-validation.ts` | `ff38857db0045c9a6e1fc081a0d26e24419571c9f9a3eeca74e2570705118ce5` |
@@ -67,3 +67,19 @@ Status: independent implemented-source delta review clean on 2026-11-08 at the e
 The diagnostic hosted [run 42513237799](https://github.com/OMT-Global/bootstrap/actions/runs/42513237799) at `6ee55af` reached Bootstrap's final-check target after successful hook replay, synthetic candidate construction, and offline dependency installation. Its remaining failure was `tsc: Permission denied`. This is partial evidence, not a passing runtime gate. The fixture's missing `.git/info` directory had been repaired explicitly, and test-only bounded pass-through spawn diagnostics preserved the real execution and failure while exposing the target error. The diagnostic regression passes using a real Node child with oversized output, ANSI/NUL, a fabricated redaction marker, and exit 23; it verifies bounded sanitized reporting and preservation of the original failure.
 
 The independently reviewed implemented source change is confined to executable support on the fixed hook/check dependency tmpfs. An internal helper boolean defaults to non-executable; its `node_modules` call site enables execution, and every other Docker `--tmpfs` remains explicitly `noexec`. Sizes, ownership, `nosuid`/`nodev`, read-only source/index, network, privileges, credentials, resource bounds, and timeouts are unchanged. The positive fixture uses existing committed public lock metadata for TypeScript 5.9.3 alongside picocolors 1.1.1 and directly invokes `./node_modules/.bin/tsc --version` in both phases. Actual held hook/check tests inspect configured tmpfs flags and kernel mountinfo to constrain execution to the dependency tmpfs among these mounts. No production fallback, public capability option, project dependency, or node-script execution bypass is introduced. Strict standalone integration TypeScript, generated-probe parsing, and whitespace checks pass. The local scoped suite passes its real-child diagnostic regression and explicitly skips fourteen Docker cases; the original reviewed proposal prefix remains exact. Exact-head hosted results remain pending, and the profile remains unproven until the complete hosted suite passes.
+
+## Bounded executable temporary-helper amendment
+
+Status: the coordinator adopted the explicit bounded amendment, and an independent architect confirmed the implemented-source delta clean on 2026-11-08 at the exact hashes below. Actual direct temporary-helper execution, updated kernel mount flags, complete exact-head hosted acceptance, and final branch autoreview remain pending.
+
+| Current independently reviewed temporary-helper artifact | SHA-256 |
+|---|---|
+| `src/isolation/node-profile.ts` | `585355fc0a51e60eff78ac83a45955564a19830ff89d8f3547c563029e563da4` |
+| `src/isolation/node-validation.ts` | `176bb99e19246280bbc25360428d7e33eeee2a80033cd45416ecdbbda6bea028` |
+| `src/isolation/setup.ts` | `62c0e15743108f70d8fe2dce33bc4be540cf5607077cf1a345d6712b330cf1fb` |
+
+The actual hosted [run 42514419157](https://github.com/OMT-Global/bootstrap/actions/runs/42514419157) at `3cd19549ab81eccdd23e6e311f84cc5f31847fef` executed all fourteen Docker cases, with thirteen passing and Bootstrap's full check failing. The diagnostic observer regression also passed, making fourteen passed and one failed of fifteen total. Direct locked compiler execution and the then-current dependency-only mount assertions passed. Bootstrap then reported fifty temporary-helper failures across six suites. Those partial results identify the next permission boundary; they do not establish readiness.
+
+The amendment permits execution on the existing 256 MiB `/tmp` only in actual hook/check containers, alongside the existing executable dependency mount. Preparation `/tmp` remains 256 MiB and `noexec`; keeper `/tmp` remains 1 MiB and `noexec`; installer/cache/build tmpfs remain `noexec`. There is no quota increase, TMPDIR change, new mount, frozen-check change, or timeout change. UID, ownership, `nosuid`/`nodev`, capabilities, network isolation, read-only source/index, resources, cleanup, and code-owned capability selection remain fixed.
+
+The shared positive probe now directly executes a fresh mode-0755 shebang helper under `/tmp` in both phases and verifies its phase argument and UID 1000, cleaning only its fresh directory in `finally`. It retains direct TypeScript-bin execution, package imports, lifecycle suppression, and host/source/index/socket/network canaries. Live Docker inspection and kernel mountinfo must show executable target `/tmp` and dependencies, non-executable target cache/build mounts, and non-executable keeper `/tmp`, with unchanged quotas and ownership. Strict standalone integration TypeScript, generated-probe/helper parsing, and whitespace checks pass. The scoped local suite passes the real-child diagnostic regression and explicitly skips fourteen Docker cases; the historical proposal prefix remains exact. New exact-head hosted acceptance remains pending, and the implementation remains unproven until the complete runtime gate passes.

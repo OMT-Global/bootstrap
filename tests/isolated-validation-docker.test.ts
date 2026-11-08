@@ -276,6 +276,15 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
   console.log('ISOLATED-LOCKED-DEPENDENCY-PASSED:' + process.argv[2]);
   assert.equal(cp.execFileSync('./node_modules/.bin/tsc', ['--version'], {encoding:'utf8'}).trim(), 'Version 5.9.3');
   console.log('ISOLATED-LOCKED-BIN-PASSED:' + process.argv[2]);
+  const temporaryHelperDir = fs.mkdtempSync('/tmp/isolation-helper-');
+  try {
+    const helper = temporaryHelperDir + '/helper';
+    fs.writeFileSync(helper, '#!' + process.execPath + String.fromCharCode(10) + 'process.stdout.write(JSON.stringify({phase:process.argv[2],uid:process.getuid()}));', {mode:0o755});
+    fs.chmodSync(helper, 0o755);
+    assert.equal(fs.statSync(helper).uid, 1000);
+    assert.deepEqual(JSON.parse(cp.execFileSync(helper, [process.argv[2]], {encoding:'utf8'})), {phase:process.argv[2],uid:1000});
+  } finally { fs.rmSync(temporaryHelperDir, {recursive:true,force:true}); }
+  console.log('ISOLATED-TEMPORARY-EXEC-PASSED:' + process.argv[2]);
   const capabilities = fs.readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10)).find(line => line.startsWith('CapEff:'));
   assert.equal(capabilities.split(':')[1].trim(), '0000000000000000');
   assert.equal(cp.execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], {encoding:'utf8'}).trim(), 'codex/isolation-fixture');
@@ -352,6 +361,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(report.checkOutput).toContain("ISOLATED-LOCKED-DEPENDENCY-PASSED:checks");
     expect(hook.hookOutput).toContain("ISOLATED-LOCKED-BIN-PASSED:hook");
     expect(report.checkOutput).toContain("ISOLATED-LOCKED-BIN-PASSED:checks");
+    expect(hook.hookOutput).toContain("ISOLATED-TEMPORARY-EXEC-PASSED:hook");
+    expect(report.checkOutput).toContain("ISOLATED-TEMPORARY-EXEC-PASSED:checks");
     expect(report.checkOutput).toContain(`ISOLATED-CHECK-COMMIT:${candidate.candidateCommit}`); expect("hookOutput" in report).toBe(false);
     expect(await readFile(canary, "utf8")).toBe("unchanged host fixture\n"); expect(connections).toBe(0);
     await expect(access(marker)).rejects.toThrow(); expect(freezeNodeValidation(input).sourceSha256).toBe(frozen.sourceSha256);
@@ -445,14 +456,23 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
       expect(Object.keys(keeper.HostConfig.Tmpfs)).toEqual(["/tmp"]);
       expect(keeper.HostConfig.Tmpfs["/tmp"].split(",")).toContain("noexec");
       expect(keeper.HostConfig.Tmpfs["/tmp"].split(",")).not.toContain("exec");
-      const executableMount = "/repo/project/node_modules";
+      expect(phase.HostConfig.NanoCpus).toBe(2_000_000_000);
+      expect(phase.HostConfig.Memory).toBe(4 * 1024 ** 3); expect(phase.HostConfig.MemorySwap).toBe(4 * 1024 ** 3);
+      expect(phase.HostConfig.PidsLimit).toBe(256); expect(phase.HostConfig.Tmpfs["/tmp"].split(",")).toContain("size=268435456");
+      const keeperMountinfo = (await dockerCommand(["exec", storage, "/usr/bin/cat", "/proc/self/mountinfo"])).trim().split("\n");
+      const keeperTemporary = keeperMountinfo.map((line) => line.split(" ")).find((fields) => fields[4] === "/tmp");
+      if (!keeperTemporary) throw new Error("Required keeper temporary mount is missing.");
+      expect(keeperTemporary[keeperTemporary.indexOf("-") + 1]).toBe("tmpfs");
+      expect(keeperTemporary[5]!.split(",")).toContain("noexec");
+      const executableMounts = new Set(["/tmp", "/repo/project/node_modules"]);
       const phaseTmpfs = phase.HostConfig.Tmpfs as Record<string, string>;
-      expect(Object.keys(phaseTmpfs).sort()).toEqual(["/tmp", "/npm-cache", executableMount, "/repo/project/dist"].sort());
+      expect(Object.keys(phaseTmpfs).sort()).toEqual([...executableMounts, "/npm-cache", "/repo/project/dist"].sort());
       const mountinfo = (await dockerCommand(["exec", active, "/usr/bin/cat", "/proc/self/mountinfo"])).trim().split("\n");
       for (const [target, options] of Object.entries(phaseTmpfs)) {
-        const flags = options.split(","), executable = target === executableMount;
+        const flags = options.split(","), executable = executableMounts.has(target);
         expect(flags).toContain(executable ? "exec" : "noexec"); expect(flags).not.toContain(executable ? "noexec" : "exec");
         expect(flags).toContain("nosuid"); expect(flags).toContain("nodev");
+        expect(flags).toContain("uid=1000"); expect(flags).toContain("gid=1000"); expect(flags).toContain("mode=0700");
         const row = mountinfo.map((line) => line.split(" ")).find((fields) => fields[4] === target);
         if (!row) throw new Error(`Required isolated tmpfs mount is missing: ${target}`);
         expect(row[row.indexOf("-") + 1]).toBe("tmpfs");

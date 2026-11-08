@@ -99,6 +99,15 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     expect(report.preparedTree).toBe("b".repeat(40)); expect(report.tools.node).toBe("v24.0.0");
     const calls = await fake.calls(); const creates = calls.filter(({ args }) => args[0] === "create");
     expect(creates).toHaveLength(6);
+    for (const { args } of creates.filter(({ args }) => args.at(-1) === "hook" || args.at(-1) === "check")) {
+      for (const target of ["/repo/project/node_modules", "/tmp"]) {
+        const mount = args.find((value: string, index: number) => args[index - 1] === "--tmpfs" && value.startsWith(`${target}:`));
+        expect(mount, `${args.at(-1)} ${target}: required execution mount`).toBeDefined();
+        const flags = mount.split(":")[1].split(",");
+        expect(flags, `${args.at(-1)} ${target}: executable mount policy`).toContain("exec");
+        expect(flags).not.toContain("noexec");
+      }
+    }
     for (const { args, environment } of creates) {
       for (const values of [["--network", "none"], ["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--user", "1000:1000"], ["--log-driver", "none"]]) {
         expect(args.slice(args.indexOf(values[0]), args.indexOf(values[0]) + 2)).toEqual(values);
@@ -117,9 +126,9 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
         const [target, options] = mount.split(":") as [string, string]; const flags = options.split(",");
         for (const required of ["rw", "nosuid", "nodev", "uid=1000", "gid=1000", "mode=0700"]) expect(flags).toContain(required);
         expect(flags.find((flag) => flag.startsWith("size="))).toBe(`size=${sizes[target]}`);
-        const dependencyExecutables = (phase === "hook" || phase === "check") && target === "/repo/project/node_modules";
-        expect.soft(flags, `${phase} ${target}: executable mount policy`).toContain(dependencyExecutables ? "exec" : "noexec");
-        expect(flags).not.toContain(dependencyExecutables ? "noexec" : "exec");
+        const executionAllowed = (phase === "hook" || phase === "check") && ["/tmp", "/repo/project/node_modules"].includes(target);
+        expect.soft(flags, `${phase} ${target}: executable mount policy`).toContain(executionAllowed ? "exec" : "noexec");
+        expect(flags).not.toContain(executionAllowed ? "noexec" : "exec");
       }
       expect(args.filter((value: string) => value.startsWith("type="))).not.toContainEqual(expect.stringContaining("type=bind"));
       expect(environment.BOOTSTRAP_SYNTHETIC_OPERATOR_CANARY).toBeUndefined(); expect(Object.keys(environment).filter((key) => !(platform.value === "darwin" && key === "__CF_USER_TEXT_ENCODING")).sort()).toEqual(["HOME", "PATH"]);

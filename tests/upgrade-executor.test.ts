@@ -220,6 +220,28 @@ describe("guarded Flow policy upgrade execution", () => {
     expect((await f.run()).results[1]!.reason).toContain("pilot failed");
   });
 
+  it.each([
+    ["owner", "other-owner"], ["name", "other-name"], ["visibility", "private"], ["defaultBranch", "trunk"]
+  ])("rejects a pilot target manifest with mismatched %s", async (field, value) => {
+    const f = await fixture();
+    const a = await f.add("acme/a", { version: "1.0.1" });
+    await f.add("acme/b");
+    const manifestPath = path.join(a, "project.bootstrap.yaml");
+    const document = YAML.parseDocument(await readFile(manifestPath, "utf8"));
+    document.setIn(["project", field], value);
+    await writeFile(manifestPath, document.toString());
+    await git(a, ["add", "project.bootstrap.yaml"]);
+    await git(a, ["commit", "-m", "fixture mismatched pilot target identity"]);
+    const representative = f.repos.get("acme/a")!;
+    representative.head = await git(a, ["rev-parse", "HEAD"]);
+    await git(a, ["reset", "--hard", representative.sourceHead]);
+    f.pilot("acme/a");
+    const report = await f.run();
+    expect(report.results[0]!.reason).toContain("live default branch");
+    expect(report.results[1]!.status).toBe("blocked");
+    expect(report.results[1]!.reason).toContain("Pilot target manifest does not match the verified public repository");
+  });
+
   it("rejects heterogeneous batch source paths", async () => {
     const f = await fixture("1.0.2");
     await f.add("acme/a", { version: "1.0.2", sourceVersion: "1.0.0" });

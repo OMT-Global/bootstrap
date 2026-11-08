@@ -239,8 +239,11 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
         const pilotFile = await api(cwd, `repos/${pilot.repo}/contents/project.bootstrap.yaml?ref=${pilot.commit}`);
         const pilotManifest = normalizeManifest(YAML.parse(Buffer.from(pilotFile.content, "base64").toString("utf8")));
         requireCondition(
+          pilotManifest.project.visibility === "public" &&
+          `${pilotManifest.project.owner}/${pilotManifest.project.name}` === pilot.repo &&
+          pilotManifest.project.defaultBranch === pilotRemote.default_branch &&
           pilotManifest.repo.class === repoClass && pilotManifest.policy?.flow.ref === input.target.ref && pilotManifest.policy.flow.sha256 === input.target.sha256,
-          "Pilot commit does not contain the target class and policy pin."
+          "Pilot target manifest does not match the verified public repository, default branch, class, and policy pin."
         );
         const pilotBundle = await api(cwd, `repos/${pilot.repo}/contents/${pilotManifest.policy!.flow.bundlePath.split("/").map(encodeURIComponent).join("/")}?ref=${pilot.commit}`);
         requireCondition(

@@ -261,6 +261,98 @@ describe("runConformance", () => {
     }));
   });
 
+  it.each([" \t", "  \t", "   \t"])("rejects tab-stop-indented code commitments with prefix %j", async (indent) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `${document.slice(0, document.indexOf("## Response Targets"))}\n${flowResponseCommitments.map((line) => indent + line).join("\n")}`);
+    const report = await runConformance(manifest, directory);
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001" &&
+      entry.evidence.some((evidence) => evidence.includes("verified Flow response commitment")))).toHaveLength(5);
+  });
+
+  it.each([" ", "  ", "   "])("keeps Markdown commitments indented only %j", async (indent) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, document.replaceAll("\n- ", `\n${indent}- `));
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it.each(["`", "~"].flatMap((character) => {
+    const fence = character.repeat(4);
+    const info = character === "`" ? "text" : "text `sample`";
+    const commitments = flowResponseCommitments.join("\n");
+    return [
+      [`${character} inline delimiter`, `${fence}${info}\nInline ${fence} example\n${commitments}\n${fence}`],
+      [`${character} short closing run`, `${fence}${info}\n${character.repeat(3)}\n${commitments}\n${fence}`],
+      [`${character} wrong delimiter`, `${fence}${info}\n${(character === "`" ? "~" : "`").repeat(4)}\n${commitments}\n${fence}`],
+      [`${character} over-indented false close`, `${fence}${info}\n    ${fence}\n${commitments}\n${fence}`],
+      [`${character} trailing-text false close`, `${fence}${info}\n${fence} example\n${commitments}\n${fence}`],
+      [`${character} unclosed fence`, `${fence}${info}\n${commitments}`],
+      [`${character} list-contained fence`, `- ${fence}${info}\n${flowResponseCommitments.map((line) => `  ${line}`).join("\n")}\n  ${fence}`],
+      [`${character} list-contained inline delimiter`, `1. ${fence}${info}\n   Inline ${fence} example\n${flowResponseCommitments.map((line) => `   ${line}`).join("\n")}\n   ${fence}`]
+    ];
+  }))("rejects %s as response commitments", async (_name, example) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `${document.slice(0, document.indexOf("## Response Targets"))}\n${example}`);
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001" &&
+      entry.evidence.some((evidence) => evidence.includes("verified Flow response commitment")))).toHaveLength(5);
+  });
+
+  it.each(["`", "~"])("keeps actual commitments after correctly closed %s fences", async (character) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    const fence = character.repeat(3);
+    const info = character === "`" ? "text example" : "text `example`";
+    await writeFile(documentPath, `${fence}${info}\nInline ${fence} example\n<pre>Code only\n   ${fence}${character} \t\n${document}`);
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it.each(["- ", "1. "])("keeps actual commitments after a closed %slist fence", async (marker) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    const indent = " ".repeat(marker.length);
+    await writeFile(documentPath, `${marker}\`\`\`text\n${indent}Example only\n${indent}\`\`\`\n\n${document}`);
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it.each([
+    ["over-indented opening", "    ```"],
+    ["literal comment in a closed fence", "\`\`\`text\n<!-- literal code\n\`\`\`"],
+    ["fence example inside a comment", "<!--\n\`\`\`text\n-->"],
+    ["invalid backtick info string", "```text `invalid`"],
+    ["ended list container", "- ```text\n  Example only"]
+  ])("keeps actual commitments after %s", async (_name, example) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `${example}\n${document}`);
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
+  it.each(["`", "``"])("rejects multiline %s code spans as response commitments", async (ticks) => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `${document.slice(0, document.indexOf("## Response Targets"))}\n${ticks}example\n${flowResponseCommitments.join("\n")}\n${ticks}`);
+    const report = await runConformance(manifest, directory);
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001" &&
+      entry.evidence.some((evidence) => evidence.includes("verified Flow response commitment")))).toHaveLength(5);
+  });
+
+  it("does not close a multiline code span on a larger backtick run", async () => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `${document.slice(0, document.indexOf("## Response Targets"))}\n\`\`example\nInline \`\`\` sample\n${flowResponseCommitments.join("\n")}\n\`\``);
+    const report = await runConformance(manifest, directory);
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-SECURITY-BASELINE-001" &&
+      entry.evidence.some((evidence) => evidence.includes("verified Flow response commitment")))).toHaveLength(5);
+  });
+
+  it("keeps actual commitments beside ordinary inline code and unmatched backticks", async () => {
+    const { directory, manifest, document, documentPath } = await productSecurityFixture();
+    await writeFile(documentPath, `Release \`v1.0.1\` uses \`policies/security-provenance-v1.json\`.\n\`unmatched example\n${document}`);
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-SECURITY-BASELINE-001", severity: "pass" }));
+  });
+
   it.each([
     ["pre/code", "<pre><code>", "</code></pre>"],
     ["CDATA", "<![CDATA[", "]]>"],

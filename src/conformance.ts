@@ -598,6 +598,65 @@ function yamlReferencesSecretContext(
   return false;
 }
 
+function withoutFencedCode(contents: string): string {
+  const visible: string[] = [];
+  let fence: { character: string; length: number; listIndent: number } | undefined;
+  let inComment = false;
+  for (const original of contents.split(/\r\n?|\n/)) {
+    let tabAdjustment = 0;
+    const line = original.replace(/\t/g, (_tab, offset: number) => {
+      const width = 4 - (offset + tabAdjustment) % 4;
+      tabAdjustment += width - 1;
+      return " ".repeat(width);
+    });
+    if (fence) {
+      if (fence.listIndent > 0 && line.trim() && !line.startsWith(" ".repeat(fence.listIndent))) {
+        fence = undefined;
+      } else {
+        const closing = line.slice(fence.listIndent).match(/^ {0,3}(`+|~+)[ ]*$/);
+        if (closing && closing[1]![0] === fence.character && closing[1]!.length >= fence.length) fence = undefined;
+        continue;
+      }
+    }
+    const opening = !inComment && line.match(/^( {0,3})((?:[-+*]|[0-9]{1,9}[.)]) {1,4})?(`{3,}|~{3,})(.*)$/);
+    if (opening && (opening[3]![0] !== "`" || !opening[4]!.includes("`"))) {
+      fence = { character: opening[3]![0]!, length: opening[3]!.length, listIndent: opening[2] ? opening[1]!.length + opening[2].length : 0 };
+      continue;
+    }
+    for (const marker of original.matchAll(/<!--|-->/g)) inComment = marker[0] === "<!--";
+    visible.push(original);
+  }
+  return visible.join("\n");
+}
+
+function withoutInlineCode(contents: string): string {
+  return contents.split(/(\n[ \t]*\n)/).map((paragraph) => {
+    const runs = [...paragraph.matchAll(/`+/g)];
+    const nextByLength = new Map<number, number>();
+    const closers = new Array<[number | undefined, number | undefined]>(runs.length);
+    for (let index = runs.length - 1; index >= 0; index -= 1) {
+      const length = runs[index]![0].length;
+      closers[index] = [nextByLength.get(length), nextByLength.get(length - 1)];
+      nextByLength.set(length, index);
+    }
+    let visible = "";
+    let offset = 0;
+    for (let index = 0; index < runs.length; index += 1) {
+      const opening = runs[index]!;
+      let escaped = 0;
+      for (let before = opening.index - 1; before >= 0 && paragraph[before] === "\\"; before -= 1) escaped += 1;
+      const length = opening[0].length - escaped % 2;
+      if (length === 0) continue;
+      const closing = closers[index]![escaped % 2];
+      if (closing === undefined) continue;
+      visible += paragraph.slice(offset, opening.index + escaped % 2) + "\n";
+      offset = runs[closing]!.index + runs[closing]![0].length;
+      index = closing;
+    }
+    return visible + paragraph.slice(offset);
+  }).join("");
+}
+
 function withoutHtmlContainers(contents: string): string {
   contents = contents.replace(/<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<\?[\s\S]*?(?:\?>|$)|<![A-Z][\s\S]*?(?:>|$)/g, "\n");
   const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -649,10 +708,10 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       const { policy } = await loadResolvedFlowPolicy(manifest, targetDir);
       const { responseTargets: targets } = z.object({ responseTargets: flowResponseTargetsSchema }).parse(policy.security);
       const deadline = (days: number, unit: "business" | "calendar"): string => `${days} ${unit} day${days === 1 ? "" : "s"}`;
-      const responseText = withoutHtmlContainers((securityDoc ?? "")
-        .replace(/<!--[\s\S]*?(?:-->|$)|(`{3,}|~{3,})[\s\S]*?(?:\1|$)/g, ""));
+      const responseText = withoutInlineCode(withoutHtmlContainers(withoutFencedCode(securityDoc ?? "")
+        .replace(/<!--[\s\S]*?(?:-->|$)/g, "")));
       const commitmentLines = new Set(responseText.split(/\r?\n/)
-        .filter((line) => !/^(?: {4}|\t)/.test(line))
+        .filter((line) => !/^(?: {4}| {0,3}\t)/.test(line))
         .map((line) => line.trim().replace(/^[-*+]\s+/, "").replace(/\.$/, "").toLowerCase()));
       for (const commitment of [
         `Acknowledge a complete private report within ${deadline(targets.acknowledgePrivateReportBusinessDays, "business")}`,

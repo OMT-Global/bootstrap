@@ -9,7 +9,7 @@ notes_file="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bootstrap-release-notes.XX
 trap 'rm -f "$notes_file"' EXIT
 source_commit="$(git rev-parse --verify HEAD)"
 git show "$source_commit:$notes" >"$notes_file" || { echo "Committed, reviewed release notes are required: $notes" >&2; exit 1; }
-[[ -s "$notes_file" ]] || { echo "Reviewed release notes cannot be empty." >&2; exit 1; }
+node -e 'if (!require("node:fs").readFileSync(process.argv[1], "utf8").trim()) process.exit(1)' "$notes_file" || { echo "Reviewed release notes cannot be empty." >&2; exit 1; }
 if grep -qF "Generated placeholder release notes." "$notes_file"; then
   echo "Placeholder notes cannot be published." >&2
   exit 1

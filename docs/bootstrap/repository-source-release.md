@@ -6,7 +6,7 @@ Bootstrap's product-owned prep/build/postpublish hooks prepare a repository-sour
 
 For the selected `vMAJOR.MINOR.PATCH` version (optionally `-rc.N` or `-beta.N`), generate and review the release notes, then commit them as `release-notes/<version>.md`. Reconcile the notes' generation basis with the final reviewed source. The repository intentionally contains no fabricated candidate notes or approved release target in this hook preparation change.
 
-The preflight wrapper passes its existing `VERSION`, `CHANNEL`, `GITHUB_REPOSITORY` and `ARTIFACT_DIR` environment. Prep reads notes from the checked-out commit, ignoring uncommitted replacements, and rejects absent, empty or placeholder text. Build checks that the prepared notes still equal that same commit's versioned notes and archives the checked-out commit with `git archive`.
+The preflight wrapper passes its existing `VERSION`, `CHANNEL`, `GITHUB_REPOSITORY` and `ARTIFACT_DIR` environment. Prep reads notes from the checked-out commit, ignoring uncommitted replacements, and rejects absent, empty, whitespace-only (including Unicode whitespace) or placeholder text. Build checks that the prepared notes still equal that same commit's versioned notes and archives the checked-out commit with `git archive`.
 
 The four custom release assets are:
 
@@ -19,7 +19,7 @@ The existing reusable preflight adds its standard `SHA256SUMS` and `release-evid
 
 ## Verify the selected approved package
 
-The publish reusable already provides `PREFLIGHT_RUN_ID` and `CHANNEL` to the postpublish hook. The hook resolves the exact version tag, downloads that selected run's `release-package`, and verifies the evidence's run/repository/version/channel/target identity and successful prep/preflight/build checks. It requires all four published asset byte streams to equal the approved package before checking the manifest's own inventory, source tree, hashes and sizes. A release-side manifest recomputed around substituted bytes cannot supply approval.
+The publish reusable already provides `PREFLIGHT_RUN_ID` and `CHANNEL` to the postpublish hook. The hook resolves the exact version tag, downloads that selected run's `release-package`, and verifies the evidence's run/repository/version/channel/target identity and successful prep/preflight/build checks. The complete GitHub Release custom-asset inventory must contain exactly the four approved names, with no extra, missing or duplicate asset. GitHub's automatically generated source archive links are separate from that uploaded asset inventory. The hook then requires all four published asset byte streams to equal the approved package before checking the manifest's own inventory, source tree, hashes and sizes. A release-side manifest recomputed around substituted bytes cannot supply approval.
 
 A missing or unavailable selected package blocks verification. Verification failure is reported after a release may have been created/uploaded; it does not roll back an already published release. The existing workflow promotes aliases only after successful verification.
 

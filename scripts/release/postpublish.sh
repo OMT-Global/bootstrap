@@ -17,6 +17,7 @@ trap 'rm -rf "$verification_dir"' EXIT
 approved_dir="$verification_dir/approved-preflight"
 mkdir -p "$approved_dir"
 gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$approved_dir"
+gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name]' >"$verification_dir/published-asset-names.json"
 gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$verification_dir" \
   --pattern "$archive" --pattern "$archive.sha256" \
   --pattern artifact-manifest.json --pattern RELEASE_NOTES.md
@@ -28,7 +29,10 @@ const [directory, repository, version, sourceCommit, archive, approvedDirectory,
 const evidence = JSON.parse(fs.readFileSync(path.join(approvedDirectory, 'release-evidence.json'), 'utf8'));
 if (evidence.schema_version !== 1 || evidence.preflight_run_id !== preflightRunId || evidence.repo !== repository || evidence.version !== version || evidence.channel !== channel || evidence.target_sha !== sourceCommit) throw new Error('Approved preflight evidence does not match the requested run, repository, version or target commit.');
 if (['prep', 'preflight', 'build'].some(check => evidence.checks?.[check] !== 'passed')) throw new Error('Approved preflight package does not record successful source-release checks.');
-for (const name of [archive, archive + '.sha256', 'artifact-manifest.json', 'RELEASE_NOTES.md']) {
+const approvedAssets = [archive, archive + '.sha256', 'artifact-manifest.json', 'RELEASE_NOTES.md'];
+const publishedAssets = JSON.parse(fs.readFileSync(path.join(directory, 'published-asset-names.json'), 'utf8'));
+if (!Array.isArray(publishedAssets) || publishedAssets.some(name => typeof name !== 'string') || JSON.stringify(publishedAssets.sort()) !== JSON.stringify([...approvedAssets].sort())) throw new Error('Published release asset inventory does not match the approved source distribution.');
+for (const name of approvedAssets) {
   if (!fs.readFileSync(path.join(directory, name)).equals(fs.readFileSync(path.join(approvedDirectory, name)))) throw new Error('Release asset digest or size mismatch against approved preflight package: ' + name);
 }
 const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'artifact-manifest.json'), 'utf8'));

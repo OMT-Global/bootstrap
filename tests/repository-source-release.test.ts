@@ -10,6 +10,7 @@ import YAML from "yaml";
 const version = "v1.1.0";
 const archive = `bootstrap-${version}-source.tar.gz`;
 const repository = "OMT-Global/bootstrap";
+const releaseAssets = [archive, `${archive}.sha256`, "artifact-manifest.json", "RELEASE_NOTES.md"];
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 class ReleaseFixture {
@@ -82,7 +83,9 @@ class ReleaseFixture {
     await cp(this.package, this.approved, { recursive: true });
   }
 
-  async remoteFixture() {
+  async remoteFixture(inventory: unknown = releaseAssets) {
+    const assetNames = path.join(this.directory, "remote-asset-names.json");
+    await writeFile(assetNames, JSON.stringify(inventory));
     const bin = path.join(this.directory, "bin");
     await mkdir(bin);
     const gh = path.join(bin, "gh");
@@ -90,7 +93,15 @@ class ReleaseFixture {
 set -euo pipefail
 printf '%s %s\\n' "$1" "$2" >> "$REMOTE_EVENTS"
 case "$1 $2" in
-  "release view") [[ "$3" == "v1.1.0" ]] || exit 90; printf '4\\n'; exit 0 ;;
+  "release view")
+    [[ "$3" == "v1.1.0" && "$4" == "--repo" && "$5" == "OMT-Global/bootstrap" ]] || exit 90
+    if [[ "$#" == "9" && "$6" == "--json" && "$7" == "assets" && "$8" == "--jq" && "$9" == '[.assets[].name]' ]]; then
+      cat "$REMOTE_ASSET_NAMES_FIXTURE"
+    elif [[ "$#" == "5" || ( "$#" == "9" && "$6" == "--json" && "$7" == "assets" && "$8" == "--jq" && "$9" == '.assets | length' ) ]]; then
+      printf '4\\n'
+    else exit 90; fi
+    exit 0
+    ;;
   "release download") [[ "$3" == "v1.1.0" ]] || exit 90; source="$PACKAGE_FIXTURE" ;;
   "run download")
     [[ "$3" == "101" && "\${NO_APPROVED_PREFLIGHT:-0}" != "1" ]] || exit 44
@@ -111,6 +122,7 @@ cp "$source"/* "$destination"/
     this.env.PACKAGE_FIXTURE = this.package;
     this.env.APPROVED_PACKAGE_FIXTURE = this.approved;
     this.env.REMOTE_EVENTS = path.join(this.directory, "remote-events");
+    this.env.REMOTE_ASSET_NAMES_FIXTURE = assetNames;
   }
 
   async recomputeReleaseManifest() {
@@ -190,6 +202,15 @@ describe("repository-source release hooks", () => {
     expect(f.hook("prep").stderr).toContain("cannot be empty");
   }));
 
+  it.each([" ", "\t", "\r\n", "\u00a0\u3000\n"])("rejects whitespace-only committed notes %j before creating artifacts", notes => fixture(async f => {
+    await writeFile(path.join(f.directory, `release-notes/${version}.md`), notes);
+    f.commit();
+    const result = f.hook("prep");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot be empty");
+    await expect(readFile(path.join(f.package, "RELEASE_NOTES.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  }));
+
   it("requires successful preparation before building", () => fixture(async f => {
     expect(f.hook("build").stderr).toContain("Run release prep");
   }));
@@ -216,6 +237,27 @@ describe("repository-source release hooks", () => {
     await f.build();
     await f.remoteFixture();
     expect(f.requireHook("postpublish").stdout).toContain(f.sourceCommit);
+  }));
+
+  it("accepts the exact custom asset inventory in a different order", () => fixture(async f => {
+    await f.build();
+    await f.remoteFixture([...releaseAssets].reverse());
+    expect(f.requireHook("postpublish").stdout).toContain(f.sourceCommit);
+  }));
+
+  it.each([
+    ["extra", [...releaseAssets, "stale.zip"]],
+    ["missing", releaseAssets.slice(0, -1)],
+    ["replacement", [...releaseAssets.slice(0, -1), "unapproved.zip"]],
+    ["duplicate", [...releaseAssets.slice(0, -1), archive]],
+    ["malformed", { assets: releaseAssets }]
+  ])("rejects %s published release asset inventory", (kind, inventory) => fixture(async f => {
+    await f.build();
+    if (kind === "extra") await writeFile(path.join(f.package, "stale.zip"), "Unapproved retained asset");
+    await f.remoteFixture(inventory);
+    const result = f.hook("postpublish");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Published release asset inventory");
   }));
 
   it("runs the strict hook through the compatible standalone reusable workflow shell", () => fixture(async f => {

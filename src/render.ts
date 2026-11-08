@@ -1,6 +1,8 @@
 import path from "node:path";
 
 import { renderManagedFiles } from "./archetypes.js";
+import { loadResolvedFlowPolicy, type ResolvedPolicyContract } from "./policy.js";
+import { flowResponseCommitments, POLICY_SOURCE_FAILURE } from "./security-response-policy.js";
 import { sha256 } from "./lib/hash.js";
 import { readTextIfExists, removeFileIfExists, writeTextFile } from "./lib/fs.js";
 import { resolveLanguageProfiles, type LanguageProfileResolution } from "./language-profiles.js";
@@ -233,8 +235,22 @@ function validateManagedPathDependencies(files: RenderedFile[]): void {
   );
 }
 
-export async function planRepo(manifest: BootstrapManifest, targetDir: string): Promise<RepoPlan> {
-  const selectedManagedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+// bundlePath is resolved against the repository target, including for external manifests.
+export async function resolveRepositoryProjection(manifest: BootstrapManifest, targetDir: string, resolvedPolicy?: ResolvedPolicyContract): Promise<{ files: RenderedFile[]; policy: ResolvedPolicyContract | undefined }> {
+  let policy: ResolvedPolicyContract | undefined;
+  if (manifest.policy?.flow) {
+    try {
+      policy = resolvedPolicy ?? await loadResolvedFlowPolicy(manifest, targetDir);
+      flowResponseCommitments(manifest, policy);
+    } catch {
+      throw new Error(POLICY_SOURCE_FAILURE);
+    }
+  }
+  return { files: selectManagedFiles(manifest, renderManagedFiles(manifest, policy)), policy };
+}
+
+export async function planRepo(manifest: BootstrapManifest, targetDir: string, resolvedPolicy?: ResolvedPolicyContract): Promise<RepoPlan> {
+  const { files: selectedManagedFiles } = await resolveRepositoryProjection(manifest, targetDir, resolvedPolicy);
   const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
   if (
     !manifest.license &&

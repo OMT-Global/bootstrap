@@ -9,6 +9,7 @@ import YAML from "yaml";
 
 import { renderManagedFiles } from "../src/archetypes.js";
 import { loadManifest } from "../src/manifest.js";
+import { loadResolvedFlowPolicy } from "../src/policy.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
@@ -52,7 +53,7 @@ describe("Bootstrap's own fast CI", () => {
 
   it("projects the script and source/test/package filters from the manifest", async () => {
     const manifest = await loadManifest(path.join(repoRoot, "project.bootstrap.yaml"));
-    const rendered = renderManagedFiles(manifest);
+    const rendered = renderManagedFiles(manifest, await loadResolvedFlowPolicy(manifest, repoRoot));
     expect(await readFile(scriptPath, "utf8")).toBe(rendered.find((file) => file.path === "scripts/ci/run-fast-checks.sh")?.contents);
     const live = YAML.parse(await readFile(path.join(repoRoot, ".github/workflows/pr-fast-ci.yml"), "utf8"));
     const projected = YAML.parse(rendered.find((file) => file.path === ".github/workflows/pr-fast-ci.yml")!.contents);

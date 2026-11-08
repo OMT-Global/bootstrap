@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
 
@@ -77,6 +78,38 @@ export function resolveFlowPolicy(
   return { manifest, license: manifest.license, policy, source: { ...source, sha256: source.sha256.toLowerCase() }, unknownManifestSettings: [...unknownManifestSettings].sort() };
 }
 
+export const MAX_FLOW_POLICY_BYTES = 1_048_576;
+
+async function readRepositoryPolicyBundle(repositoryRoot: string, bundlePath: string): Promise<unknown> {
+  try {
+    if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0 ||
+        typeof constants.O_NONBLOCK !== "number" || constants.O_NONBLOCK === 0) throw new Error();
+    const root = await realpath(repositoryRoot);
+    const parent = await realpath(path.dirname(bundlePath));
+    const relativeParent = path.relative(root, parent);
+    if (relativeParent === ".." || relativeParent.startsWith(`..${path.sep}`) || path.isAbsolute(relativeParent)) throw new Error();
+    // The repository root is trusted; concurrent replacement of path components is outside this boundary.
+    const handle = await open(bundlePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error();
+      const bytes = Buffer.alloc(MAX_FLOW_POLICY_BYTES + 1);
+      let used = 0;
+      while (used < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, used, bytes.length - used, null);
+        if (bytesRead === 0) break;
+        used += bytesRead;
+      }
+      if (used > MAX_FLOW_POLICY_BYTES) throw new Error();
+      return YAML.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, used)));
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    throw new Error("Flow policy bundle must be a bounded regular, singly linked UTF-8 file within the repository root.");
+  }
+}
+
 export async function loadResolvedFlowPolicy(manifest: BootstrapManifest, manifestDir: string): Promise<ResolvedPolicyContract> {
   if (!manifest.policy?.flow) {
     throw new Error("Manifest does not declare a Flow policy bundle.");
@@ -90,6 +123,6 @@ export async function loadResolvedFlowPolicy(manifest: BootstrapManifest, manife
   if (relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
     throw new Error("Flow policy bundle path must stay within the manifest directory.");
   }
-  const bundle = YAML.parse(await readFile(bundlePath, "utf8"));
+  const bundle = await readRepositoryPolicyBundle(manifestDir, bundlePath);
   return resolveFlowPolicy(manifest, bundle, source, manifest.unknownSettings);
 }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadManifest } from "../src/manifest.js";
+import { loadResolvedFlowPolicy } from "../src/policy.js";
 import { renderManagedFiles } from "../src/archetypes.js";
 import { NODE_ISOLATION_IMAGE } from "../src/isolation/node-profile.js";
 const execute = promisify(execFile);
@@ -30,7 +31,7 @@ async function fixture(profile: string, failure = "") {
 describe("registered full-validation isolation entry point", () => {
   it("matches the supported manifest projection exactly", async () => {
     const manifest = await loadManifest("project.bootstrap.yaml");
-    const projection = renderManagedFiles(manifest).find((file) => file.path === "scripts/ci/run-extended-validation.sh");
+    const projection = renderManagedFiles(manifest, await loadResolvedFlowPolicy(manifest, process.cwd())).find((file) => file.path === "scripts/ci/run-extended-validation.sh");
     expect(projection?.contents).toBe(await readFile("scripts/ci/run-extended-validation.sh", "utf8"));
   });
   it.each(["", "smoke", "standard"])("keeps profile %s cheap and explicitly reports Docker tests were not run", async (profile) => {

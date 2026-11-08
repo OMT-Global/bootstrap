@@ -12,6 +12,12 @@ import {
 const archive = Buffer.from("fabricated public package archive");
 const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
 const archiveUrl = "https://registry.npmjs.org/example/-/example-1.0.0.tgz";
+function withUserInfo(base: string, username: string, password: string): string {
+  const url = new URL(base);
+  url.username = username;
+  url.password = password;
+  return url.href;
+}
 const file = (name: string, text: string, executable = false): IsolatedSourceFile => ({
   path: name, mode: executable ? "100755" : "100644", bytes: Buffer.from(text)
 });
@@ -201,7 +207,7 @@ describe("frozen Node isolation profile", () => {
 
   it.each(["file:../local.tgz", "git+https://github.com/example/project.git", "http://registry.npmjs.org/example.tgz",
     "https://private.example.com/example.tgz", "https://registry.npmjs.org.example.com/example.tgz",
-    "https://fixture:example@registry.npmjs.org/example.tgz", "https://registry.npmjs.org/example.tgz?authorization=example",
+    withUserInfo("https://registry.npmjs.org/example.tgz", "fixture", "example"), "https://registry.npmjs.org/example.tgz?authorization=example",
     "https://registry.npmjs.org/example.tgz#fragment", "https://registry.npmjs.org/example.json", "https://registry.npmjs.org:8443/example.tgz"])("rejects unsupported archive source %s", (resolved) => {
     const input = fixture(); dependency(input, { resolved }); expect(() => freezeNodeValidation(input)).toThrow();
   });
@@ -306,7 +312,7 @@ describe("bounded integrity-bound public archive data", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it.each(["https://private.example.com/archive.tgz", "file:/archive.tgz", "https://user:password@registry.npmjs.org/archive.tgz"])("rejects unsupported direct downloader input %s before opening a connection", async (url) => {
+  it.each(["https://private.example.com/archive.tgz", "file:/archive.tgz", withUserInfo("https://registry.npmjs.org/archive.tgz", "user", "password")])("rejects unsupported direct downloader input %s before opening a connection", async (url) => {
     const get = vi.spyOn(https, "get");
     await expect(downloadArchive({ url, integrity })).rejects.toThrow(); expect(get).not.toHaveBeenCalled();
   });

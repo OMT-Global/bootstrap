@@ -274,6 +274,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
   assert.equal(fs.existsSync('/npm-cache/installer-lifecycle-ran'), false);
   assert.equal(require('picocolors').createColors(false).red('fixture'), 'fixture');
   console.log('ISOLATED-LOCKED-DEPENDENCY-PASSED:' + process.argv[2]);
+  assert.equal(cp.execFileSync('./node_modules/.bin/tsc', ['--version'], {encoding:'utf8'}).trim(), 'Version 5.9.3');
+  console.log('ISOLATED-LOCKED-BIN-PASSED:' + process.argv[2]);
   const capabilities = fs.readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10)).find(line => line.startsWith('CapEff:'));
   assert.equal(capabilities.split(':')[1].trim(), '0000000000000000');
   assert.equal(cp.execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], {encoding:'utf8'}).trim(), 'codex/isolation-fixture');
@@ -316,11 +318,15 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     const publicLock = JSON.parse(await readFile(path.join(checkout, "package-lock.json"), "utf8"));
     const dependency = publicLock.packages["node_modules/picocolors"];
     expect(dependency.version).toBe("1.1.1");
-    packageData.dependencies = { picocolors: dependency.version };
+    const compiler = publicLock.packages["node_modules/typescript"];
+    expect(compiler.version).toBe("5.9.3");
+    packageData.dependencies = { picocolors: dependency.version, typescript: compiler.version };
     const lockData = JSON.parse(Buffer.from(input.files.find((entry) => entry.path === "package-lock.json")!.bytes).toString());
     lockData.packages[""].dependencies = packageData.dependencies;
     lockData.packages["node_modules/picocolors"] = { version: dependency.version, resolved: dependency.resolved,
       integrity: dependency.integrity, license: dependency.license };
+    lockData.packages["node_modules/typescript"] = { version: compiler.version, resolved: compiler.resolved,
+      integrity: compiler.integrity, license: compiler.license, bin: compiler.bin, engines: compiler.engines };
     replace(input, file("package-lock.json", JSON.stringify(lockData)));
     packageData.scripts = { postinstall: "node -e \"require('node:fs').writeFileSync('/pristine-cache/installer-lifecycle-ran', 'unexpected lifecycle')\"" };
     replace(input, file("package.json", JSON.stringify(packageData)));
@@ -344,6 +350,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(hook.hookOutput).toContain("ISOLATED-HOOK-CONTEXT-PASSED");
     expect(hook.hookOutput).toContain("ISOLATED-LOCKED-DEPENDENCY-PASSED:hook");
     expect(report.checkOutput).toContain("ISOLATED-LOCKED-DEPENDENCY-PASSED:checks");
+    expect(hook.hookOutput).toContain("ISOLATED-LOCKED-BIN-PASSED:hook");
+    expect(report.checkOutput).toContain("ISOLATED-LOCKED-BIN-PASSED:checks");
     expect(report.checkOutput).toContain(`ISOLATED-CHECK-COMMIT:${candidate.candidateCommit}`); expect("hookOutput" in report).toBe(false);
     expect(await readFile(canary, "utf8")).toBe("unchanged host fixture\n"); expect(connections).toBe(0);
     await expect(access(marker)).rejects.toThrow(); expect(freezeNodeValidation(input).sourceSha256).toBe(frozen.sourceSha256);
@@ -434,6 +442,22 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
       expect(keeper.HostConfig.NanoCpus).toBe(100_000_000);
       expect(keeper.HostConfig.Memory).toBe(64 * 1024 ** 2); expect(keeper.HostConfig.MemorySwap).toBe(64 * 1024 ** 2);
       expect(keeper.HostConfig.PidsLimit).toBe(16); expect(keeper.HostConfig.Tmpfs["/tmp"]).toContain("size=1048576");
+      expect(Object.keys(keeper.HostConfig.Tmpfs)).toEqual(["/tmp"]);
+      expect(keeper.HostConfig.Tmpfs["/tmp"].split(",")).toContain("noexec");
+      expect(keeper.HostConfig.Tmpfs["/tmp"].split(",")).not.toContain("exec");
+      const executableMount = "/repo/project/node_modules";
+      const phaseTmpfs = phase.HostConfig.Tmpfs as Record<string, string>;
+      expect(Object.keys(phaseTmpfs).sort()).toEqual(["/tmp", "/npm-cache", executableMount, "/repo/project/dist"].sort());
+      const mountinfo = (await dockerCommand(["exec", active, "/usr/bin/cat", "/proc/self/mountinfo"])).trim().split("\n");
+      for (const [target, options] of Object.entries(phaseTmpfs)) {
+        const flags = options.split(","), executable = target === executableMount;
+        expect(flags).toContain(executable ? "exec" : "noexec"); expect(flags).not.toContain(executable ? "noexec" : "exec");
+        expect(flags).toContain("nosuid"); expect(flags).toContain("nodev");
+        const row = mountinfo.map((line) => line.split(" ")).find((fields) => fields[4] === target);
+        if (!row) throw new Error(`Required isolated tmpfs mount is missing: ${target}`);
+        expect(row[row.indexOf("-") + 1]).toBe("tmpfs");
+        expect(row[5]!.split(",").includes("noexec")).toBe(!executable);
+      }
       const mounted = (container: typeof keeper) => container.Mounts.filter((mount: { Type: string }) => mount.Type === "volume") as Array<{
         Name: string; Destination: string; Driver: string; RW: boolean;
       }>;

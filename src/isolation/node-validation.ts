@@ -62,7 +62,7 @@ const environment = ["PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/tmp/home", "CI=
   "NPM_CONFIG_CACHE=/npm-cache", "NPM_CONFIG_USERCONFIG=/tmp/empty-npmrc", "NPM_CONFIG_GLOBALCONFIG=/tmp/empty-global-npmrc",
   "NPM_CONFIG_AUDIT=false", "NPM_CONFIG_FUND=false", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null",
   "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1", "GIT_OPTIONAL_LOCKS=0", "GIT_EDITOR=:", "GIT_TERMINAL_PROMPT=0"];
-const tmpfs = (target: string, size: number) => ["--tmpfs", `${target}:rw,nosuid,nodev,size=${size},uid=1000,gid=1000,mode=0700`];
+const tmpfs = (target: string, size: number, executable = false) => ["--tmpfs", `${target}:rw,nosuid,nodev,${executable ? "exec" : "noexec"},size=${size},uid=1000,gid=1000,mode=0700`];
 const volume = (name: string, target: string, readonly = true) => ["--mount", `type=volume,src=${name},dst=${target}${readonly ? ",readonly" : ""}`];
 
 /** Backend only: public frozen bytes in; validation evidence out. Never signs or publishes a repository. */
@@ -158,8 +158,9 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
     const phase = async (mode: "check" | "hook") => {
       await storageAlive();
       const name = `${id}-${mode}`;
+      // npm's shebang and native dependency tools execute only from this writable dependency mount.
       await create(name, [...volume(data, "/input"), ...volume(source, "/repo"), ...volume(cache, "/pristine-cache"),
-        ...tmpfs("/npm-cache", 512 * 1024 ** 2), ...tmpfs("/repo/project/node_modules", 512 * 1024 ** 2), ...tmpfs("/repo/project/dist", 128 * 1024 ** 2)], mode);
+        ...tmpfs("/npm-cache", 512 * 1024 ** 2), ...tmpfs("/repo/project/node_modules", 512 * 1024 ** 2, true), ...tmpfs("/repo/project/dist", 128 * 1024 ** 2)], mode);
       const output = await run(["start", "--attach", name]);
       await stopped(name);
       await run(["rm", "--force", name]); containers.splice(containers.indexOf(name), 1);

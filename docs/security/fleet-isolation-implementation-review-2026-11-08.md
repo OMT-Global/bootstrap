@@ -2,7 +2,7 @@
 
 Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62). This is the backend stage described by [ADR-0013](../decisions/ADR-0013-isolated-node-validation-backend.md); it enables no fleet CLI, signing, push, PR creation, or live rollout.
 
-On 2026-11-08 a separate software-architect reviewer who did not author these modules independently checked the implementation against the reviewed isolation design. No accepted/actionable source findings remained in that original snapshot or the later planned-identity/materialized-entry delta reviewed below. Those clean snapshots precede the pending runtime storage/dependency/logging delta below. This records automated implementation review, not independent GitHub approval or successful Docker confinement.
+On 2026-11-08 a separate software-architect reviewer who did not author these modules independently checked the implementation against the reviewed isolation design. No accepted/actionable source findings remained in that original snapshot or the later planned-identity/materialized-entry delta reviewed below. Those clean snapshots and the reviewed runtime storage/dependency/logging delta precede the executable-mount delta and its remaining runtime gate below. This records automated implementation review, not independent GitHub approval or successful Docker confinement.
 
 | Original reviewed artifact | SHA-256 |
 |---|---|
@@ -44,7 +44,7 @@ Twelve actual Docker acceptance cases are now collected. The positive case check
 
 Status: independent implemented source delta review clean on 2026-11-08 at the exact hashes below; actual hosted Docker proof and final branch autoreview remain pending.
 
-| Current independently reviewed frozen delta artifact | SHA-256 |
+| Prior independently reviewed frozen delta artifact | SHA-256 |
 |---|---|
 | `src/isolation/node-profile.ts` | `585355fc0a51e60eff78ac83a45955564a19830ff89d8f3547c563029e563da4` |
 | `src/isolation/node-validation.ts` | `fae9ff0f16f1e9a71cfab2eeb96e689c0c41d535a27f8c1bb70edbed6e2ef8c1` |
@@ -53,3 +53,17 @@ Status: independent implemented source delta review clean on 2026-11-08 at the e
 The controller starts a trusted inert `-storage` container before data copy and keeps all three local-driver tmpfs volumes mounted through preparation and target execution. It checks keeper liveness before preparation, each phase, and successful evidence; workers are removed before the keeper and volumes. Both the keeper timer and host watchdog use the same absolute 60-minute backend-call deadline. Every created container explicitly disables daemon logs; the supervisor retains bounded attached output. Writable preparation creates reserved mount directories. Each fresh hook/check phase copies the pristine cache and performs its own locked offline install with lifecycle scripts disabled before invoking target code. The [design addendum](fleet-isolation-design.md#runtime-storage-dependency-and-logging-refinement) cites the relevant Docker/Moby contracts.
 
 The revised Docker suite contains fourteen acceptance cases. The positive fixture imports the real locked public `picocolors` dependency in both phases without a repository install command, while its lifecycle sentinel remains absent. Two new short cases inspect the actual keeper/worker configuration and named local tmpfs volumes, kill the keeper while a hook/check is held, release the otherwise successful target, and require rejection plus complete cleanup. They prove storage-death handling once run, not natural 60-minute expiry. Actual Docker remains unavailable locally; no runtime or VM was installed or started. The integration file passes strict standalone TypeScript; local collection reports fourteen explicitly skipped Docker cases with the required runtime flag unset. The generated Node probe parses and the historical proposal prefix remains exact. Full local validation passes 520 tests, typecheck, build, 43 action pins, secret scanning, and whitespace checks. The independent reviewer confirmed the implemented delta clean after reading the old-controller four-failure negative control and the corrected keeper, expiry, logging, dependency, and cleanup checks. A committed WIP branch may now be handed off solely for exact-head hosted proof. A PR/readiness claim requires the actual hosted run and final autoreview to succeed.
+
+## Installed dependency executable-mount delta
+
+Status: independent implemented-source delta review clean on 2026-11-08 at the exact hashes below. Actual direct compiler-bin execution, kernel mount-flag assertions, complete exact-head hosted acceptance, and final branch autoreview remain pending.
+
+| Current independently reviewed executable-mount artifact | SHA-256 |
+|---|---|
+| `src/isolation/node-profile.ts` | `585355fc0a51e60eff78ac83a45955564a19830ff89d8f3547c563029e563da4` |
+| `src/isolation/node-validation.ts` | `ff38857db0045c9a6e1fc081a0d26e24419571c9f9a3eeca74e2570705118ce5` |
+| `src/isolation/setup.ts` | `62c0e15743108f70d8fe2dce33bc4be540cf5607077cf1a345d6712b330cf1fb` |
+
+The diagnostic hosted [run 42513237799](https://github.com/OMT-Global/bootstrap/actions/runs/42513237799) at `6ee55af` reached Bootstrap's final-check target after successful hook replay, synthetic candidate construction, and offline dependency installation. Its remaining failure was `tsc: Permission denied`. This is partial evidence, not a passing runtime gate. The fixture's missing `.git/info` directory had been repaired explicitly, and test-only bounded pass-through spawn diagnostics preserved the real execution and failure while exposing the target error. The diagnostic regression passes using a real Node child with oversized output, ANSI/NUL, a fabricated redaction marker, and exit 23; it verifies bounded sanitized reporting and preservation of the original failure.
+
+The independently reviewed implemented source change is confined to executable support on the fixed hook/check dependency tmpfs. An internal helper boolean defaults to non-executable; its `node_modules` call site enables execution, and every other Docker `--tmpfs` remains explicitly `noexec`. Sizes, ownership, `nosuid`/`nodev`, read-only source/index, network, privileges, credentials, resource bounds, and timeouts are unchanged. The positive fixture uses existing committed public lock metadata for TypeScript 5.9.3 alongside picocolors 1.1.1 and directly invokes `./node_modules/.bin/tsc --version` in both phases. Actual held hook/check tests inspect configured tmpfs flags and kernel mountinfo to constrain execution to the dependency tmpfs among these mounts. No production fallback, public capability option, project dependency, or node-script execution bypass is introduced. Strict standalone integration TypeScript, generated-probe parsing, and whitespace checks pass. The local scoped suite passes its real-child diagnostic regression and explicitly skips fourteen Docker cases; the original reviewed proposal prefix remains exact. Exact-head hosted results remain pending, and the profile remains unproven until the complete hosted suite passes.

@@ -104,6 +104,23 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
         expect(args.slice(args.indexOf(values[0]), args.indexOf(values[0]) + 2)).toEqual(values);
       }
       expect(args).toContain("--read-only"); expect(args).toContain("--no-healthcheck");
+      const keeper = args[args.indexOf("--name") + 1].endsWith("-storage");
+      const phase = keeper ? "storage" : args.at(-1);
+      const sizes: Record<string, number> = { "/tmp": (keeper ? 1 : 256) * 1024 ** 2 };
+      if (phase === "prepare") sizes["/install"] = 512 * 1024 ** 2;
+      if (phase === "hook" || phase === "check") Object.assign(sizes, {
+        "/npm-cache": 512 * 1024 ** 2, "/repo/project/node_modules": 512 * 1024 ** 2, "/repo/project/dist": 128 * 1024 ** 2
+      });
+      const mounts = args.flatMap((value: string, index: number) => value === "--tmpfs" ? [args[index + 1] as string] : []);
+      expect(mounts.map((mount: string) => mount.split(":")[0]).sort()).toEqual(Object.keys(sizes).sort());
+      for (const mount of mounts) {
+        const [target, options] = mount.split(":") as [string, string]; const flags = options.split(",");
+        for (const required of ["rw", "nosuid", "nodev", "uid=1000", "gid=1000", "mode=0700"]) expect(flags).toContain(required);
+        expect(flags.find((flag) => flag.startsWith("size="))).toBe(`size=${sizes[target]}`);
+        const dependencyExecutables = (phase === "hook" || phase === "check") && target === "/repo/project/node_modules";
+        expect.soft(flags, `${phase} ${target}: executable mount policy`).toContain(dependencyExecutables ? "exec" : "noexec");
+        expect(flags).not.toContain(dependencyExecutables ? "noexec" : "exec");
+      }
       expect(args.filter((value: string) => value.startsWith("type="))).not.toContainEqual(expect.stringContaining("type=bind"));
       expect(environment.BOOTSTRAP_SYNTHETIC_OPERATOR_CANARY).toBeUndefined(); expect(Object.keys(environment).filter((key) => !(platform.value === "darwin" && key === "__CF_USER_TEXT_ENCODING")).sort()).toEqual(["HOME", "PATH"]);
     }
@@ -220,8 +237,8 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     const hook = calls.find(({ args }) => args[0] === "create" && args.at(-1) === "hook").args;
     expect(check[check.indexOf("--name") + 1]).not.toBe(hook[hook.indexOf("--name") + 1]);
     expect(calls.findIndex(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-hook"))).toBeLessThan(calls.findIndex(({ args }) => args[0] === "create" && args.at(-1) === "check"));
-    expect(check).toContainEqual(expect.stringContaining("/npm-cache:rw,nosuid,nodev,size="));
-    expect(hook).toContainEqual(expect.stringContaining("/npm-cache:rw,nosuid,nodev,size="));
+    expect(check).toContainEqual(expect.stringContaining("/npm-cache:rw,nosuid,nodev,noexec,size="));
+    expect(hook).toContainEqual(expect.stringContaining("/npm-cache:rw,nosuid,nodev,noexec,size="));
   }, 15_000);
   it("kills the active client and removes the actual named resource on cancellation", async () => {
     const fake = await fakeDocker({ hangAt: "start:check" }); const controller = new AbortController();

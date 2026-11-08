@@ -1067,7 +1067,8 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     const setup = scanning?.defaultSetup;
     const usesDefaultSetup = manifest.ci.codeqlSetup === "default";
     if (usesDefaultSetup || setup?.state === "configured") {
-      const missingProof = usesDefaultSetup && setup === undefined;
+      const missingProof = usesDefaultSetup && setup === undefined &&
+        (scanning === undefined || scanning.status === "supported");
       const validDefaultSetup = usesDefaultSetup && scanning?.status === "supported" &&
         setup?.state === "configured" && setup.githubHosted && manifest.ci.codeqlLanguages.length > 0 &&
         manifest.ci.codeqlLanguages.every((language) => setup.languages.includes(language));

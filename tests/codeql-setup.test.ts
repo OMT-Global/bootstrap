@@ -135,6 +135,17 @@ describe("explicit CodeQL setup mode", () => {
     expect(securityFailures(report)).toContainEqual(expect.objectContaining({ severity: "blocking", classification }));
   });
 
+  it.each(["unsupported", "misconfigured"])("preserves known scanning %s classification when proof is absent", async (status) => {
+    const f = await fixture();
+    const snapshot = capabilities();
+    const scanning = snapshot.observations.find((entry) => entry.control === "code-scanning")!;
+    scanning.status = status;
+    delete scanning.defaultSetup;
+    const report = await runConformance(f.manifest, f.directory, { githubCapabilities: snapshot });
+    const modeResult = report.results.find((entry) => entry.evidence.some((line) => line.startsWith("CodeQL default setup:")));
+    expect(modeResult).toMatchObject({ severity: "blocking", classification: "misconfigured" });
+  });
+
   it("does not treat absent capability observations as default-setup proof", async () => {
     const f = await fixture();
     const report = await runConformance(f.manifest, f.directory);

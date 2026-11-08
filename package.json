@@ -21,11 +21,13 @@
   },
   "dependencies": {
     "commander": "^14.0.2",
+    "commonmark": "0.31.2",
     "spdx-license-list": "6.12.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/commonmark": "0.27.10",
     "@types/node": "^24.19.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",

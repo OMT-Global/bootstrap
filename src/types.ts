@@ -1,6 +1,8 @@
 export type ProjectVisibility = "private" | "public" | "internal";
 export type ArchetypeKind = "nextjs-web" | "node-ts-service" | "python-service" | "generic-empty";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "python";
+export type CodeqlSetup = "advanced" | "default";
+export type CodeqlLanguage = "actions" | "javascript-typescript" | "python" | "ruby" | "c-cpp" | "csharp" | "rust" | "go" | "swift";
 export type RunnerPolicy = "hybrid-safe" | "self-hosted-first" | "github-hosted-first";
 export type DefaultRepositoryPermission = "read" | "write" | "admin" | "none";
 export type RepoClass =
@@ -298,7 +300,8 @@ export interface BootstrapManifest {
     fastChecks: string[];
     extendedChecks: string[];
     nightlyCron: string;
-    codeqlLanguages: Array<"javascript-typescript" | "python" | "ruby" | "c-cpp" | "csharp" | "rust" | "go" | "swift">;
+    codeqlSetup?: CodeqlSetup;
+    codeqlLanguages: CodeqlLanguage[];
     prGovernance?: {
       enforceAfter: string;
     };

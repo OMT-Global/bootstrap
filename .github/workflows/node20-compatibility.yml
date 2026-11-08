@@ -1,0 +1,32 @@
+# Project-owned compatibility proof; this file is not a Bootstrap-generated asset.
+name: Node 20 Compatibility
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-response:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20.20.2'
+      - name: Assert the supported minimum major
+        run: node -e 'if (process.versions.node.split(".")[0] !== "20") process.exit(1)'
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Exercise AST, reader, policy, and baseline conformance on Node 20
+        run: npm test -- --run tests/security-response-markdown.test.ts tests/security-response-policy.test.ts tests/conformance.test.ts tests/policy.test.ts --maxWorkers=2 --minWorkers=1
+      - name: Load the built CLI and CommonMark entry
+        run: |
+          node dist/cli.js --help >/dev/null
+          node --input-type=module -e 'const { extractPolicyStatements } = await import("./dist/security-response-markdown.js"); if (extractPolicyStatements("- Acknowledge a complete private report within 2 business days.").kind !== "supported") process.exit(1)'

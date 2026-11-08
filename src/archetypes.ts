@@ -6,6 +6,12 @@ import { stringifyManifest } from "./manifest.js";
 import { formatRunsOn, resolveRunsOn } from "./runners.js";
 import type { BootstrapManifest, RenderedFile } from "./types.js";
 
+const actionPins = {
+  pathsFilter: "ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3",
+  codeQl: "1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2",
+  sbom: "66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3"
+} as const;
+
 function repoUrl(manifest: BootstrapManifest): string {
   return `https://github.com/${manifest.project.owner}/${manifest.project.name}`;
 }
@@ -1585,7 +1591,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
             with:
               fail-on-severity: high
 
-      codeql:
+${manifest.ci.codeqlSetup === "default" ? "" : `      codeql:
         if: github.event_name == 'push' || github.event_name == 'schedule'
         runs-on: \${{ matrix.runner }}
         strategy:
@@ -1598,22 +1604,22 @@ ${indentBlock(codeQlMatrix(manifest), 12)}
           security-events: write
         steps:
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-          - uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+          - uses: github/codeql-action/init@${actionPins.codeQl}
             with:
               languages: \${{ matrix.language }}
               build-mode: \${{ matrix.build-mode }}
-          - uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+          - uses: github/codeql-action/analyze@${actionPins.codeQl}
             with:
               category: "/language:\${{ matrix.language }}"
 
-      sbom:
+`}      sbom:
         if: github.event_name == 'push' || github.event_name == 'schedule'
         runs-on: ubuntu-latest
         permissions:
-          contents: write
+          contents: read
         steps:
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-          - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+          - uses: anchore/sbom-action@${actionPins.sbom}
             with:
               path: .
               format: spdx-json
@@ -2566,7 +2572,7 @@ function prWorkflow(manifest: BootstrapManifest): string {
           app: \${{ steps.filter.outputs.app }}
           ci: \${{ steps.filter.outputs.ci }}
         steps:
-          - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+          - uses: dorny/paths-filter@${actionPins.pathsFilter}
             id: filter
             with:
               filters: |
@@ -2912,7 +2918,7 @@ function extendedWorkflow(manifest: BootstrapManifest): string {
               extended=true
               EOF
 
-          - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+          - uses: dorny/paths-filter@${actionPins.pathsFilter}
             id: filter
             if: github.event_name == 'push'
             with:
@@ -3010,6 +3016,8 @@ ${indentBlock(projectIdentityLines(manifest), 4)}
     - Confirm \`AGENTS.md\` requires the \`autoreview\` skill against the intended PR diff before an agent opens or updates a PR, and that the PR template records the final command and result.
     - Confirm the pull request template is present and PR Fast CI validates the required PR description sections before ${primaryRequiredStatusCheck(manifest)} can pass.
     ${manifest.github.repoFeatures.hasIssues ? "- Confirm `Issue Hygiene Report` runs weekly with read-only issue permission and retains its JSON evidence artifact." : ""}
+    - Confirm PR Fast CI uses the fork-safe \`pull_request\` event with only read permissions. It must validate Conventional titles, contributed-commit DCO trailers, changed-line accounting, and material-change ADR/reviewer evidence without accessing repository secrets.
+    - Confirm every third-party \`uses:\` entry is a 40-character commit SHA followed by readable tag metadata. The \`Validate Action Pins\` check fails closed on mutable references and silently ignores local or Bootstrap-owned reusable workflows.
     - ${autoMergeOnboardingConfirmation()}
     - Fallback merge readiness requires passing or intentionally skipped required checks, satisfied approvals, resolved conversations, no blocking review state, and a manual maintainer merge.
 
@@ -3305,14 +3313,18 @@ function securityModelDoc(manifest: BootstrapManifest): string {
     ## Trust Boundaries
 
     - Pull requests, including forks, are untrusted input. The pull-request lane runs on GitHub-hosted isolation with read-only repository permissions, does not read GitHub Actions secrets, and runs only dependency review after GitHub provisioning enables the dependency graph and sets \`DEPENDENCY_REVIEW_ENABLED=true\`.
-    - Code scanning and SBOM generation run only for trusted default-branch pushes and schedules on GitHub-hosted isolation.
+    - ${manifest.ci.codeqlSetup === "default"
+      ? "GitHub default setup uses provider-managed triggers and separately verified GitHub-hosted execution. The generated SBOM job remains limited to trusted default-branch pushes and schedules."
+      : "Code scanning and SBOM generation run only for trusted default-branch pushes and schedules on GitHub-hosted isolation."}
     - GitHub-hosted security capabilities are evaluated from a versioned capability snapshot so unsupported plan features remain distinct from repository misconfiguration.
 
     ## Required Controls
 
     - Dependency graph, Dependabot alerts and security updates, secret scanning, push protection, code scanning, and private vulnerability reporting are required capability observations for public repositories. The dependency-graph observation must also record \`dependencyReviewEnabled: true\` after provisioning verifies \`DEPENDENCY_REVIEW_ENABLED=true\`.
     - \`.github/dependabot.yml\` keeps both dependency and GitHub Actions pins updateable.
-    - \`.github/workflows/security.yml\` performs dependency review, CodeQL analysis for \`${codeQlLanguages(manifest)}\`, and SPDX JSON SBOM generation using immutable action SHAs.
+    - ${manifest.ci.codeqlSetup === "default"
+      ? `GitHub default setup supplies CodeQL analysis for ${codeQlLanguages(manifest)} from separately observed provider-managed execution; .github/workflows/security.yml retains dependency review and SPDX JSON SBOM generation using immutable action SHAs.`
+      : `\`.github/workflows/security.yml\` performs dependency review, CodeQL analysis for \`${codeQlLanguages(manifest)}\`, and SPDX JSON SBOM generation using immutable action SHAs.`}
     - \`SECURITY.md\` directs reporters to a private advisory and defines acknowledgement, update, remediation, and coordinated-disclosure targets.
 
     ## Fork Safety

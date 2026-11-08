@@ -18,6 +18,8 @@ import {
 import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, selectManagedFiles } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
+import { loadResolvedFlowPolicy } from "./policy.js";
+import { extractPolicyStatements, readPolicyMarkdown } from "./security-response-markdown.js";
 import type { BootstrapManifest, PolicyException } from "./types.js";
 
 export const CONFORMANCE_SCHEMA_VERSION = 2;
@@ -41,7 +43,12 @@ export const githubCapabilitySnapshotSchema = z.object({
     status: z.enum(["supported", "unsupported", "misconfigured"]),
     evidence: capabilityReportTextSchema,
     remediation: capabilityReportTextSchema,
-    dependencyReviewEnabled: z.boolean().optional()
+    dependencyReviewEnabled: z.boolean().optional(),
+    defaultSetup: z.object({
+      state: z.enum(["configured", "not-configured"]),
+      languages: z.array(z.enum(["actions", "javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust", "go", "swift"])),
+      githubHosted: z.boolean()
+    }).strict().optional()
   }))
 }).superRefine((snapshot, context) => {
   const seen = new Set<string>();
@@ -55,6 +62,9 @@ export const githubCapabilitySnapshotSchema = z.object({
         path: ["observations", index, "dependencyReviewEnabled"],
         message: "dependencyReviewEnabled is valid only for the dependency-graph observation."
       });
+    }
+    if (observation.defaultSetup !== undefined && observation.control !== "code-scanning") {
+      context.addIssue({ code: "custom", path: ["observations", index, "defaultSetup"], message: "defaultSetup is valid only for the code-scanning observation." });
     }
     seen.add(observation.control);
   });
@@ -94,6 +104,14 @@ const publicSecurityCapabilityControls = [
 
 const trustedSecurityJobCondition = "github.event_name == 'push' || github.event_name == 'schedule'";
 const dependencyReviewJobCondition = "github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'";
+
+const responseTargetDaysSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const flowResponseTargetsSchema = z.object({
+  acknowledgePrivateReportBusinessDays: responseTargetDaysSchema,
+  triageCalendarDays: responseTargetDaysSchema,
+  criticalRemediateOrContainCalendarDays: responseTargetDaysSchema,
+  highRemediateCalendarDays: responseTargetDaysSchema
+}).strict();
 
 function result(
   ruleId: string,
@@ -589,6 +607,10 @@ function yamlReferencesSecretContext(
   return false;
 }
 
+function hasProductSecurityPolicy(manifest: BootstrapManifest): boolean {
+  return manifest.project.visibility === "public" && manifest.repo.docs?.security === false && manifest.policy?.flow !== undefined;
+}
+
 async function publicSecurityResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   if (manifest.project.visibility !== "public") {
     return [
@@ -599,7 +621,17 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 
   const baselineFailures: { evidence: string; remediation: string }[] = [];
   const forkFailures: { evidence: string; remediation: string }[] = [];
-  const securityDoc = await readTextIfExists(path.join(targetDir, "SECURITY.md"));
+  const productPolicy = hasProductSecurityPolicy(manifest);
+  const productInput = productPolicy ? await readPolicyMarkdown(targetDir) : undefined;
+  const securityDoc = productPolicy
+    ? (productInput?.kind === "supported" ? productInput.text : undefined)
+    : await readTextIfExists(path.join(targetDir, "SECURITY.md"));
+  if (productInput && productInput.kind !== "supported") {
+    baselineFailures.push({
+      evidence: `SECURITY.md product policy input is ${productInput.kind === "missing" ? "missing" : `unsupported: ${productInput.reason}`}.`,
+      remediation: "Provide a regular, singly linked UTF-8 SECURITY.md within the documented response-policy input limits."
+    });
+  }
   const expectedAdvisoryUrl = `https://github.com/${manifest.project.owner}/${manifest.project.name}/security/advisories/new`;
   if (!securityDoc?.includes(expectedAdvisoryUrl)) {
     baselineFailures.push({
@@ -613,17 +645,56 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       remediation: "Restore the managed fallback that requests a confidential channel without publishing vulnerability details."
     });
   }
-  if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define acknowledgement and status-update targets",
-      remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
-    });
-  }
-  if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
-      remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
-    });
+  if (productPolicy) {
+    let targets: z.infer<typeof flowResponseTargetsSchema> | undefined;
+    try {
+      const { policy } = await loadResolvedFlowPolicy(manifest, targetDir);
+      targets = z.object({ responseTargets: flowResponseTargetsSchema }).parse(policy.security).responseTargets;
+    } catch {
+      baselineFailures.push({
+        evidence: "The declared Flow security response policy is invalid.",
+        remediation: "Restore an immutable, digest-verified compatible Flow bundle with four positive safe-integer response targets."
+      });
+    }
+    if (targets && productInput?.kind === "supported") {
+      const extracted = extractPolicyStatements(productInput.text);
+      if (extracted.kind === "unsupported") {
+        baselineFailures.push({
+          evidence: `SECURITY.md product policy Markdown is unsupported: ${extracted.reason}.`,
+          remediation: "Use the documented HTML-free CommonMark statement grammar within its input and tree limits."
+        });
+      } else {
+        const deadline = (days: number, unit: "business" | "calendar"): string => `${days} ${unit} day${days === 1 ? "" : "s"}`;
+        const statements = new Set(extracted.statements.map((statement) => statement.text));
+        for (const commitment of [
+          `Acknowledge a complete private report within ${deadline(targets.acknowledgePrivateReportBusinessDays, "business")}`,
+          `Triage a confirmed report within ${deadline(targets.triageCalendarDays, "calendar")}`,
+          `Remediate or contain critical findings within ${deadline(targets.criticalRemediateOrContainCalendarDays, "calendar")}`,
+          `Remediate high findings within ${deadline(targets.highRemediateCalendarDays, "calendar")}`,
+          "Coordinate public disclosure with the reporter after remediation"
+        ]) {
+          if (!statements.has(commitment.toLowerCase())) {
+            baselineFailures.push({
+              evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
+              remediation: "Restore the complete response commitment in an eligible plain paragraph or list paragraph."
+            });
+          }
+        }
+      }
+    }
+  } else {
+    if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define acknowledgement and status-update targets",
+        remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
+      });
+    }
+    if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
+        remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
+      });
+    }
   }
 
   const dependabot = await readTextIfExists(path.join(targetDir, ".github/dependabot.yml"));
@@ -661,6 +732,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 
     const root = asYamlNode(document.contents);
     const jobs = resolveYamlNode(yamlMappingEntry(root, "jobs", document)?.valueNode, document);
+    const advancedCodeql = manifest.ci.codeqlSetup !== "default";
     const requiredJobActionSequences = [
       {
         job: "dependency-review",
@@ -684,7 +756,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
           { prefix: "anchore/sbom-action@", requiredInputs: ["path", "format", "artifact-name", "upload-release-assets"], optionalInputs: ["upload-artifact"] }
         ]
       }
-    ];
+    ].filter((requirement) => advancedCodeql || requirement.job !== "codeql");
     const requiredJobNames = new Set(requiredJobActionSequences.map((requirement) => requirement.job));
     for (const requirement of requiredJobActionSequences) {
       if (!workflowValid || !jobHasExactActionSequence(jobs, requirement.job, requirement.actions, document)) {
@@ -765,27 +837,27 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
     const codeqlBuildModeMatch = includedCodeqlMatrix
       ? codeqlBuildMode === "${{ matrix.build-mode }}"
       : codeqlBuildMode === "none";
-    if (!codeqlLanguagesMatch || codeqlMatrixHasUnexpectedAxes ||
-      jobActionField(jobs, "codeql", "github/codeql-action/init@", "languages", document) !== "${{ matrix.language }}") {
+    if (advancedCodeql && (!codeqlLanguagesMatch || codeqlMatrixHasUnexpectedAxes ||
+      jobActionField(jobs, "codeql", "github/codeql-action/init@", "languages", document) !== "${{ matrix.language }}")) {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL languages do not match ci.codeqlLanguages`,
         remediation: "Configure the repository CodeQL languages explicitly and restore the managed per-language matrix and init step."
       });
     }
-    if (!codeqlBuildModeMatch) {
+    if (advancedCodeql && !codeqlBuildModeMatch) {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL build modes do not match the managed per-language contract`,
         remediation: "Restore build-mode: none for no-build languages and autobuild for Go or Swift."
       });
     }
-    if (jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "category", document) !== "/language:${{ matrix.language }}") {
+    if (advancedCodeql && jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "category", document) !== "/language:${{ matrix.language }}") {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL analysis category does not preserve per-language evidence`,
         remediation: "Restore the managed /language:${{ matrix.language }} analysis category."
       });
     }
     const codeqlUpload = jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "upload", document);
-    if (codeqlUpload !== undefined && codeqlUpload !== true) {
+    if (advancedCodeql && codeqlUpload !== undefined && codeqlUpload !== true) {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL analysis upload is disabled`,
         remediation: "Remove upload: false from the managed CodeQL analyze step so default-branch results remain verifiable."
@@ -859,7 +931,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
     if (!mappingPermissionsAreReadOnly(dependencyPermissions, document)) {
       forkFailures.push({ evidence: "dependency-review job permissions are not read-only", remediation: "Restrict the pull-request job to read-only contents and pull-request permissions." });
     }
-    for (const trustedJob of ["codeql", "sbom"]) {
+    for (const trustedJob of advancedCodeql ? ["codeql", "sbom"] : ["sbom"]) {
       if (jobCondition(jobs, trustedJob, document) !== trustedSecurityJobCondition) {
         forkFailures.push({ evidence: `${trustedJob} is not restricted to approved trusted events`, remediation: `Restrict ${trustedJob} to push and schedule events.` });
       }
@@ -868,12 +940,12 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       }
     }
     const codeqlPermissions = jobField(jobs, "codeql", "permissions", document);
-    if (!mappingHasPermission(codeqlPermissions, "contents", "read", document) || !mappingHasPermission(codeqlPermissions, "security-events", "write", document)) {
+    if (advancedCodeql && (!mappingHasPermission(codeqlPermissions, "contents", "read", document) || !mappingHasPermission(codeqlPermissions, "security-events", "write", document))) {
       baselineFailures.push({ evidence: "codeql lacks contents: read or security-events: write", remediation: "Grant the trusted CodeQL job contents: read and security-events: write so it can upload analysis." });
     }
     const sbomPermissions = jobField(jobs, "sbom", "permissions", document);
-    if (!mappingHasPermission(sbomPermissions, "contents", "write", document)) {
-      baselineFailures.push({ evidence: "sbom lacks contents: write", remediation: "Grant the trusted SBOM job contents: write so the pinned action can upload its workflow artifact." });
+    if (!mappingHasPermission(sbomPermissions, "contents", "read", document) || !mappingPermissionsAreReadOnly(sbomPermissions, document)) {
+      baselineFailures.push({ evidence: "sbom lacks read-only contents permission", remediation: "Grant only contents: read; the pinned SBOM action uploads an Actions artifact without release or dependency-snapshot writes." });
     }
     if (isMap(jobs)) {
       for (const pair of jobs.items) {
@@ -914,6 +986,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 async function actionPinResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   const shaPattern = /^[0-9a-f]{40}$/;
   const inventory = await workflowFiles(targetDir);
+  const sameRepositorySlug = `${manifest.project.owner}/${manifest.project.name}`.toLowerCase();
   const internalWorkflowRepos = new Set([
     manifest.release.reusableWorkflowRepo,
     manifest.ci.aiAttestation.reusableWorkflowRepo
@@ -976,7 +1049,11 @@ async function actionPinResults(manifest: BootstrapManifest, targetDir: string):
       const action = reference.value.slice(0, separator);
       const ref = reference.value.slice(separator + 1);
       if (action.startsWith("./")) continue;
-      const isInternalWorkflow = [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
+      const actionSegments = action.split("/");
+      const isSameRepositoryWorkflow = actionSegments.slice(0, 2).join("/").toLowerCase() === sameRepositorySlug &&
+        /^\.github\/workflows\/[^/]+\.ya?ml$/.test(actionSegments.slice(2).join("/"));
+      const isInternalWorkflow = isSameRepositoryWorkflow ||
+        [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
       checked += 1;
       if (!shaPattern.test(ref)) {
         addFailure(
@@ -1033,6 +1110,22 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
       validExceptionIds.has(entry.id)
   );
   const selectedManagedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const productSecurityPolicy = hasProductSecurityPolicy(manifest);
+  let productSecurityOwnershipBlocked = false;
+  if (productSecurityPolicy) {
+    try {
+      const { state, ownership } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
+      productSecurityOwnershipBlocked = Object.hasOwn(state?.managedFiles ?? {}, "SECURITY.md") || Object.hasOwn(ownership.hashes, "SECURITY.md");
+      if (productSecurityOwnershipBlocked) {
+        results.push(result("PRS-OWNERSHIP-001", "blocking", ["Product-owned SECURITY.md requires a manual ownership migration before generic planning."],
+          "Review and back up the ownership migration, preserving the product policy bytes; do not delete claims or transfer ownership implicitly."));
+      }
+    } catch {
+      productSecurityOwnershipBlocked = true;
+      results.push(result("PRS-OWNERSHIP-001", "blocking", ["Product-owned SECURITY.md ownership metadata could not be verified."],
+        "Resolve ownership metadata through a reviewed, backed-up migration before generic planning."));
+    }
+  }
   const missingRequiredFiles: string[] = [];
   for (const file of selectedManagedFiles) {
     if (await readTextIfExists(path.join(targetDir, file.path)) === undefined) missingRequiredFiles.push(file.path);
@@ -1048,6 +1141,33 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
   results.push(...(await publicSecurityResults(manifest, targetDir)).map((entry) => applyWaiver(entry, securityBaselineWaiver)));
 
   const githubCapabilities = githubCapabilitySnapshotSchema.parse(options.githubCapabilities ?? { schemaVersion: 1, observations: [] });
+  if (manifest.project.visibility === "public") {
+    const scanning = githubCapabilities.observations.find((entry) => entry.control === "code-scanning");
+    const setup = scanning?.defaultSetup;
+    const usesDefaultSetup = manifest.ci.codeqlSetup === "default";
+    if (usesDefaultSetup || setup?.state === "configured") {
+      const missingProof = usesDefaultSetup && setup === undefined &&
+        (scanning === undefined || scanning.status === "supported");
+      const validDefaultSetup = usesDefaultSetup && scanning?.status === "supported" &&
+        setup?.state === "configured" && setup.githubHosted && manifest.ci.codeqlLanguages.length > 0 &&
+        manifest.ci.codeqlLanguages.every((language) => setup.languages.includes(language));
+      const setupResult = result(
+        "PRS-CODEQL-SETUP-001",
+        validDefaultSetup ? "pass" : "blocking",
+        [validDefaultSetup
+          ? `CodeQL default setup: authorized GitHub-hosted analyzed coverage for ${manifest.ci.codeqlLanguages.join(", ")}`
+          : !usesDefaultSetup
+            ? "CodeQL advanced mode conflicts with observed configured default setup; GitHub rejects advanced uploads."
+            : missingProof
+              ? "CodeQL default setup: no authorized configured, analyzed-language, and GitHub-hosted execution proof provided."
+              : "CodeQL default setup: observed state, successful language coverage, status, or hosted execution does not satisfy the declared contract."],
+        "Verify configured default setup, successful analysis for every declared language, and actual GitHub-hosted execution; record that authorized observation without changing modes implicitly.",
+        validDefaultSetup ? "conformant" : missingProof ? "unverified" : "misconfigured"
+      );
+      // Replacement proof and mode consistency are separate from capability availability exceptions.
+      results.push(setupResult);
+    }
+  }
   if (manifest.project.visibility === "public") {
     const observedControls = new Set(githubCapabilities.observations.map((entry) => entry.control));
     for (const control of publicSecurityCapabilityControls) {
@@ -1149,6 +1269,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     try {
       const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
       for (const [managedPath, managedHash] of Object.entries(effectiveState?.managedFiles ?? {})) {
+        if (productSecurityPolicy && managedPath === "SECURITY.md") continue;
         const existing = managedPath === LICENSE_PATH || managedPath === THIRD_PARTY_NOTICES_PATH
           ? await readManagedLegalOutputTextIfExists(targetDir, managedPath)
           : await readTextIfExists(path.join(targetDir, managedPath));
@@ -1264,15 +1385,17 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     }
   }
 
-  try {
-    await planRepo(manifest, targetDir);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
-    pushUnique(
-      results,
-      result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
-    );
+  if (!productSecurityOwnershipBlocked) {
+    try {
+      await planRepo(manifest, targetDir);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
+      pushUnique(
+        results,
+        result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
+      );
+    }
   }
 
   const sorted = results.sort((left, right) => compareCodePoints(left.ruleId, right.ruleId) || compareCodePoints(left.evidence.join("\n"), right.evidence.join("\n")));

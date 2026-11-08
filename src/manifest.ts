@@ -515,6 +515,7 @@ const manifestSchema = z.object({
       updateMinorTag: z.boolean().optional(),
       reusableWorkflowRepo: z.string().min(1).optional(),
       reusableWorkflowRef: z.string().min(1).optional(),
+      postpublishRequiresPreflight: z.boolean().optional(),
       changelog: releaseChangelogSchema.optional(),
       versions: z.array(releaseVersionSchema).optional(),
       artifacts: releaseArtifactSchema.optional(),
@@ -1005,6 +1006,9 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       updateMinorTag: parsed.release?.updateMinorTag ?? true,
       reusableWorkflowRepo: parsed.release?.reusableWorkflowRepo ?? `${parsed.project.owner}/bootstrap`,
       reusableWorkflowRef: parsed.release?.reusableWorkflowRef ?? "refs/heads/main",
+      ...(parsed.release?.postpublishRequiresPreflight !== undefined
+        ? { postpublishRequiresPreflight: parsed.release.postpublishRequiresPreflight }
+        : {}),
       changelog: {
         enabled: parsed.release?.changelog?.enabled ?? true,
         mode: parsed.release?.changelog?.mode ?? "github-generated-notes",

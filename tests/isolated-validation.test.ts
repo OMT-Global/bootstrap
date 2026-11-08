@@ -43,7 +43,7 @@ function fixture(hook = false, phase: "prepared-hook" | "final-check" = "final-c
       file("package-lock.json", '{"lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}'),
       file("scripts/ci/run-fast-checks.sh", "#!/bin/bash\nexit 0\n", true), ...(hook ? [file(".githooks/pre-commit", "#!/bin/bash\nexit 0\n", true)] : [])] };
 }
-interface FakeOptions { failAt?: string; exitCode?: number; hangAt?: string; cleanupFailure?: boolean; excessiveOutput?: boolean; platform?: string; invalidEvidence?: boolean; untrustedUid?: number; untrustedMode?: number; untrustedAncestor?: boolean; storageNotRunning?: boolean; storageLostAfterPhase?: boolean; missingJq?: boolean }
+interface FakeOptions { failAt?: string; exitCode?: number; hangAt?: string; cleanupFailure?: boolean; holdCleanup?: boolean; excessiveOutput?: boolean; platform?: string; invalidEvidence?: boolean; untrustedUid?: number; untrustedMode?: number; untrustedAncestor?: boolean; storageNotRunning?: boolean; storageLostAfterPhase?: boolean; missingJq?: boolean }
 async function fakeDocker(options: FakeOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-docker-control-")); directories.push(directory);
   const log = path.join(directory, "calls.jsonl"); const config = path.join(directory, "options.json");
@@ -71,13 +71,16 @@ function proceed() {
   else if(command==='cp') { const transfer=args[1].slice(0,-2); fs.writeFileSync(${JSON.stringify(path.join(directory, "transferred.json"))},fs.readFileSync(transfer+'/manifest.json')); }
   else if(command==='create'||command==='volume') console.log(name);
 }
-proceed();
+if(cfg.holdCleanup && command==='rm' && phase==='storage') {
+  const waiting=setInterval(()=>{if(fs.existsSync(${JSON.stringify(path.join(directory, "release-cleanup"))})){clearInterval(waiting);proceed();}},10);
+} else proceed();
 `);
   await chmod(executable, 0o755);
   transport.executable = executable; transport.unavailable = false; transport.uid = options.untrustedUid ?? 0; transport.mode = options.untrustedMode ?? 0o100755; transport.badAncestor = options.untrustedAncestor ?? false;
   process.env.PATH = `${path.dirname(executable)}${path.delimiter}${originalPath}`;
   Object.defineProperty(process, "platform", { value: "linux" }); Object.defineProperty(process, "arch", { value: "x64" });
-  return { directory, calls: async () => (await readFile(log, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; })).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) };
+  return { directory, releaseCleanup: () => writeFile(path.join(directory, "release-cleanup"), "released"),
+    calls: async () => (await readFile(log, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; })).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) };
 }
 afterEach(async () => {
   Object.defineProperty(process, "platform", platform); Object.defineProperty(process, "arch", architecture);
@@ -312,6 +315,48 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
       expect(calls.some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"))).toBe(true);
       expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(3);
     } finally { controller.abort(); await operation; }
+  }, 15_000);
+  it.each(["caller cancellation", "watchdog expiry", "elapsed deadline"] as const)("rejects %s during cleanup while attempting every removal", async (event) => {
+    const schedule = globalThis.setTimeout, clear = globalThis.clearTimeout;
+    let watchdog: ReturnType<typeof setTimeout> | undefined, active = false, expire: (() => void) | undefined;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+      const timer = schedule(callback, delay, ...args);
+      if (delay !== undefined && delay > ISOLATION_LIMITS.phaseMs) {
+        watchdog = timer; active = true; expire = () => { if (active) callback(...args); };
+      }
+      return timer;
+    }) as typeof setTimeout);
+    vi.spyOn(globalThis, "clearTimeout").mockImplementation(((timer: Parameters<typeof clearTimeout>[0]) => {
+      if (timer === watchdog) active = false;
+      return clear(timer);
+    }) as typeof clearTimeout);
+    const start = Date.now();
+    const clock = event === "elapsed deadline" ? vi.spyOn(Date, "now").mockReturnValue(start) : undefined;
+    const fake = await fakeDocker({ holdCleanup: true }); const controller = new AbortController();
+    const operation = validateIsolatedNode(fixture(), { signal: controller.signal })
+      .then(() => ({ passed: true, error: undefined }), (error: unknown) => ({ passed: false, error }));
+    try {
+      let cleaning = false; const until = performance.now() + 5000;
+      while (performance.now() < until) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        cleaning = (await fake.calls()).some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"));
+        if (cleaning) break;
+      }
+      expect(cleaning).toBe(true); const guardedDuringCleanup = active;
+      if (event === "caller cancellation") controller.abort();
+      else if (event === "watchdog expiry") { expect(expire).toBeTypeOf("function"); expire!(); }
+      else clock!.mockReturnValue(start + ISOLATION_LIMITS.operationMs);
+      await fake.releaseCleanup();
+      const outcome = await operation;
+      expect(outcome.passed).toBe(false); expect(outcome.error).toBeInstanceOf(Error);
+      expect((outcome.error as Error).message).toMatch(event === "caller cancellation" ? /cancelled/ : /operation.*timed out/i);
+      expect(guardedDuringCleanup).toBe(true); expect(active).toBe(false);
+      const calls = await fake.calls();
+      const created = calls.filter(({ args }) => args[0] === "create").map(({ args }) => args[args.indexOf("--name") + 1]);
+      expect(calls.filter(({ args }) => args[0] === "rm").map(({ args }) => args.at(-1))).toEqual(expect.arrayContaining(created));
+      expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(3);
+      await expect(access(calls[0]!.cwd)).rejects.toThrow();
+    } finally { await fake.releaseCleanup(); controller.abort(); await operation; }
   }, 15_000);
   it("keeps the original failure when Docker cleanup also fails", async () => {
     await fakeDocker({ failAt: "start:check", cleanupFailure: true });

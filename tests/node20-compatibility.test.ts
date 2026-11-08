@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { loadManifest } from "../src/manifest.js";
+import { loadResolvedFlowPolicy } from "../src/policy.js";
 import { renderManagedFiles } from "../src/archetypes.js";
 
 const workflowPath = ".github/workflows/node20-compatibility.yml";
@@ -27,13 +28,14 @@ describe("project-owned Node 20 compatibility proof", () => {
     expect(commands).toEqual(expect.arrayContaining([
       expect.stringContaining('process.versions.node.split(".")[0] !== "20"'),
       "npm ci --ignore-scripts", "npm run typecheck", "npm run build",
-      expect.stringContaining("tests/security-response-markdown.test.ts tests/security-response-policy.test.ts tests/conformance.test.ts tests/policy.test.ts"),
+      expect.stringContaining("tests/security-response-markdown.test.ts tests/security-response-policy.test.ts tests/conformance.test.ts tests/policy.test.ts tests/managed-security-policy.test.ts"),
       expect.stringContaining("node dist/cli.js --help")
     ]));
     expect(readFileSync(workflowPath, "utf8")).not.toContain("secrets.");
   });
 
   it("keeps the new workflow outside the generated asset projection", async () => {
-    expect(renderManagedFiles(await loadManifest("project.bootstrap.yaml")).some((file) => file.path === workflowPath)).toBe(false);
+    const manifest = await loadManifest("project.bootstrap.yaml");
+    expect(renderManagedFiles(manifest, await loadResolvedFlowPolicy(manifest, process.cwd())).some((file) => file.path === workflowPath)).toBe(false);
   });
 });

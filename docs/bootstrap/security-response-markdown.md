@@ -1,8 +1,8 @@
-# Product-owned security response statements
+# Verified Flow security response statements
 
-Governing issue: [Bootstrap #63](https://github.com/OMT-Global/bootstrap/issues/63). Decision: [ADR-0014](../decisions/ADR-0014-commonmark-security-response-statements.md).
+Governing issue: [Bootstrap #63](https://github.com/OMT-Global/bootstrap/issues/63). Decisions: [ADR-0014](../decisions/ADR-0014-commonmark-security-response-statements.md) and [ADR-0015](../decisions/ADR-0015-managed-flow-security-projection.md).
 
-Bootstrap can check response statements in an existing product-owned `SECURITY.md` when `repo.docs.security: false` and `policy.flow` are both declared. It verifies the immutable policy reference, local bundle digest, compatible policy version, and four positive safe-integer response targets before comparing statements. The ordinary managed-document and no-policy checks retain their existing behavior. This setting does not waive reporting, dependency, workflow, fork, CodeQL, SBOM, or capability checks.
+Bootstrap checks public response statements against `policy.flow` for both managed and product-owned `SECURITY.md`. `repo.docs.security: false` preserves the product-owned document; managed selection renders the same verified commitments. It verifies the immutable policy reference, local bundle digest, compatible policy version, and four positive safe-integer response targets before comparing statements. No-policy document output and legacy checks retain their existing behavior. Managed Flow output additionally preserves the separate Bootstrap ten-business-day status update and ninety-day moderate target. This setting does not waive reporting, dependency, workflow, fork, CodeQL, SBOM, or capability checks.
 
 This check recognizes a documented statement grammar. It does not establish prose intent, legal promises, operational response performance, or an SLA. Maintainers still review the policy and operate the response process. It neither changes Flow's published security policy nor applies repository settings.
 
@@ -30,7 +30,7 @@ The response document must be HTML-free CommonMark: any `html_inline` or `html_b
 
 ## File and resource boundary
 
-The product-owned branch chooses its reader before any legacy `SECURITY.md` read. It opens the final file component with no-follow and nonblocking flags, inspects that opened handle, and requires a regular file with one link. A symlink, dangling link, hard link, directory, FIFO, device, or unsupported reader is rejected without a fallback reader. The containing repository directory remains the existing trusted target boundary.
+Declared-Flow conformance chooses its reader before any generic `SECURITY.md` byte read. Supported text is reused for required-file presence and managed ownership hashes; unsupported or missing input blocks and withholds final generic planning. It opens the final file component with no-follow and nonblocking flags, inspects that opened handle, and requires a regular file with one link. A symlink, dangling link, hard link, directory, FIFO, device, or unsupported reader is rejected without a fallback reader. The containing repository directory remains the existing trusted target boundary.
 
 The reader holds at most one 65,537-byte input buffer, accepts at most 65,536 bytes, and requires EOF within that limit. UTF-8 decoding is fatal on invalid bytes. Handles close on every success or failure path. File-size claims do not determine allocation, and oversized data is never truncated into an accepted document.
 
@@ -47,7 +47,7 @@ The complete document must satisfy every bound:
 
 An exceeded bound, invalid UTF-8, unsupported file, parser error, or raw HTML produces a fixed blocking diagnostic. No partial statement set is accepted, and diagnostics do not expose document contents, absolute paths, OS errors, or stacks. These resource limits do not promise a hard execution deadline. Source line positions describe whole candidate paragraphs; inline source spans are not reconstructed.
 
-A declared policy that fails verification blocks independently of document parsing; the checker does not fall back to generic clocks. Existing unrelated security checks and the reviewed exception policy continue to run. No new manifest field, CLI option, public module export, or exception is introduced.
+A declared policy that fails verification blocks independently of document parsing; the checker does not fall back to generic clocks. Existing unrelated security checks and the reviewed exception policy continue to run. No new manifest field, CLI option, dependency, or exception is introduced. Pure `renderManagedFiles(manifest, resolvedPolicy)` callers must provide matching runtime-verified context when rendering managed SECURITY for a declared pin. Repository planning resolves the local bundle against `targetDir`, even with an external manifest path; invalid sources fail before application writes. Conformance reports unavailable dependent projections while independent controls continue. The shared declared-policy loader requires a relative path with lexical and resolved-parent containment inside the repository root, a no-follow/nonblocking opened regular singly linked file, fatal UTF-8, and at most 1 MiB with no truncation. Missing, malformed, unsafe, or oversized sources produce fixed sanitized errors. Direct plan/apply managed-file I/O retains its existing contract and is not a general special-file or filesystem-race defense.
 
 ## Runtime and attribution
 

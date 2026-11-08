@@ -31,7 +31,7 @@ describe("dogfood policy migration", () => {
   it.each([
     ["Bootstrap", "project.bootstrap.yaml"],
     ["Flow", "tests/fixtures/dogfood/flow.bootstrap.yaml"]
-  ])("pins the %s migration fixture without expanding artifact or legal ownership", async (_name, manifestPath) => {
+  ])("binds the %s migration fixture without expanding artifact or legal ownership", async (_name, manifestPath) => {
     const raw = YAML.parse(await readFile(manifestPath, "utf8"));
     const { policy: _existingPolicy, ...unconfigured } = raw;
     const before = normalizeManifest(unconfigured);
@@ -44,10 +44,11 @@ describe("dogfood policy migration", () => {
     expect(afterContract).toEqual(beforeContract);
 
     const beforeFiles = selectManagedFiles(before, renderManagedFiles(before));
-    const afterFiles = selectManagedFiles(after, renderManagedFiles(after));
+    const afterFiles = selectManagedFiles(after, renderManagedFiles(after, await loadResolvedFlowPolicy(after, process.cwd())));
     expect(afterFiles.map((file) => file.path)).toEqual(beforeFiles.map((file) => file.path));
-    expect(afterFiles.filter((file) => file.path !== "project.bootstrap.yaml"))
-      .toEqual(beforeFiles.filter((file) => file.path !== "project.bootstrap.yaml"));
+    const bindingChanges = _name === "Bootstrap" ? ["project.bootstrap.yaml", "SECURITY.md"] : ["project.bootstrap.yaml"];
+    expect(afterFiles.filter((file) => !bindingChanges.includes(file.path)))
+      .toEqual(beforeFiles.filter((file) => !bindingChanges.includes(file.path)));
     expect(after.license).toEqual(before.license);
     if (_name === "Flow") {
       expect(after.repo.managedPaths).toEqual([

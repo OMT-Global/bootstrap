@@ -165,7 +165,8 @@ describe("product-owned security response policy", () => {
 
   it.each(["digest", "version", "extra target", "absent", "malformed", "mutable"])("blocks invalid declared policy (%s) without a generic fallback", async (failure) => {
     const { directory, manifest, bundle, policyPath, documentPath } = await fixture();
-    const generic = renderManagedFiles({ ...manifest, repo: { ...manifest.repo, docs: { ...manifest.repo.docs, security: true } } }).find((file) => file.path === "SECURITY.md")!;
+    const { policy: _pin, ...unconfigured } = manifest;
+    const generic = renderManagedFiles({ ...unconfigured, repo: { ...manifest.repo, docs: { ...manifest.repo.docs, security: true } } }).find((file) => file.path === "SECURITY.md")!;
     await writeFile(documentPath, generic.contents);
     if (failure === "digest") await writeFile(policyPath, JSON.stringify({ ...bundle, version: "1.0.1" }));
     if (failure === "version") bundle.version = "2.0.0";
@@ -180,15 +181,16 @@ describe("product-owned security response policy", () => {
     expectBaselineBlock(await runConformance(candidate, directory));
   });
 
-  it("retains the generic baseline for managed and no-policy security documents", async () => {
+  it("validates declared targets for both ownership modes and retains the no-policy generic baseline", async () => {
     const { directory, manifest, documentPath } = await fixture();
     const { policy: _flow, ...unconfigured } = manifest;
     const managed = { ...manifest, repo: { ...manifest.repo, docs: { ...manifest.repo.docs, security: true } } };
     expectBaselineBlock(await runConformance(unconfigured, directory));
-    expectBaselineBlock(await runConformance(managed, directory));
-    await writeFile(documentPath, renderManagedFiles(managed).find((file) => file.path === "SECURITY.md")!.contents);
-    expectBaselinePass(await runConformance(unconfigured, directory));
     expectBaselinePass(await runConformance(managed, directory));
+    const generic = { ...unconfigured, repo: managed.repo };
+    await writeFile(documentPath, renderManagedFiles(generic).find((file) => file.path === "SECURITY.md")!.contents);
+    expectBaselinePass(await runConformance(unconfigured, directory));
+    expectBaselineBlock(await runConformance(managed, directory));
   });
 
   it("continues private routes, fallback, Dependabot, workflow, forks, and remote controls", async () => {

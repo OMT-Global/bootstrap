@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { dedent, indentBlock, yamlList } from "./lib/text.js";
 import { stringifyManifest } from "./manifest.js";
 import { formatRunsOn, resolveRunsOn } from "./runners.js";
+import type { ResolvedPolicyContract } from "./policy.js";
+import { flowResponseCommitments } from "./security-response-policy.js";
 import type { BootstrapManifest, RenderedFile } from "./types.js";
 
 const actionPins = {
@@ -3276,9 +3278,19 @@ function claudeEnabled(manifest: BootstrapManifest): boolean {
   );
 }
 
-function securityDoc(manifest: BootstrapManifest): string {
+function securityDoc(manifest: BootstrapManifest, commitments?: string[]): string {
   const dependabot = manifest.github.security?.dependabot ?? manifest.ci.dependabot.enabled;
   const secretHints = manifest.github.security?.secretScanningHints ?? true;
+  const responseTargets = commitments ? [
+    ...commitments.map((commitment) => `- ${commitment}.`),
+    "- Provide a status update within 10 business days, even when investigation is ongoing.",
+    "- Bootstrap additionally targets remediation within 90 days for moderate findings. Low-severity findings are scheduled by maintainers."
+  ] : [
+    "- Acknowledge a complete report within 3 business days.",
+    "- Provide a status update within 10 business days, even when investigation is ongoing.",
+    "- Target remediation within 7 days for critical findings, 30 days for high findings, and 90 days for moderate findings. Low-severity findings are scheduled by maintainers.",
+    "- Coordinate disclosure timing with the reporter after a fix or documented mitigation is available."
+  ];
 
   return dedent`
     # Security Policy
@@ -3293,10 +3305,7 @@ function securityDoc(manifest: BootstrapManifest): string {
 
     ## Response Targets
 
-    - Acknowledge a complete report within 3 business days.
-    - Provide a status update within 10 business days, even when investigation is ongoing.
-    - Target remediation within 7 days for critical findings, 30 days for high findings, and 90 days for moderate findings. Low-severity findings are scheduled by maintainers.
-    - Coordinate disclosure timing with the reporter after a fix or documented mitigation is available.
+    ${responseTargets.join("\n    ")}
 
     ## Baseline
 
@@ -3550,7 +3559,7 @@ function filterRenderedFiles(manifest: BootstrapManifest, files: RenderedFile[])
   });
 }
 
-export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] {
+export function renderManagedFiles(manifest: BootstrapManifest, resolvedPolicy?: ResolvedPolicyContract): RenderedFile[] {
   const releaseIsGoverned = manifest.release.maturity === "governed" || manifest.release.maturity === "regulated";
   const files: RenderedFile[] = [
     {
@@ -3578,7 +3587,7 @@ export function renderManagedFiles(manifest: BootstrapManifest): RenderedFile[] 
           {
             path: "SECURITY.md",
             reason: "Security reporting policy",
-            contents: `${securityDoc(manifest)}\n`
+            contents: `${securityDoc(manifest, flowResponseCommitments(manifest, resolvedPolicy))}\n`
           }
         ]
       : []),

@@ -17,7 +17,7 @@ async function fixture(profile: string, failure = "") {
   await writeFile(path.join(target, "scripts/ci/run-fast-checks.sh"), '#!/bin/bash\nset -eu\nprintf "fast:%s\\n" "${BOOTSTRAP_REQUIRE_ISOLATION_TESTS:-unset}" >> "$ENTRY_LOG"\n[[ "${ENTRY_FAIL:-}" != fast ]] || exit 13\n');
   for (const name of ["docker", "npm"]) {
     const file = path.join(target, "bin", name);
-    await writeFile(file, `#!/bin/bash\nset -eu\nprintf '${name}:%s:%s\\n' "$*" "\${BOOTSTRAP_REQUIRE_ISOLATION_TESTS:-unset}" >> "$ENTRY_LOG"\n[[ "\${ENTRY_FAIL:-}" != ${name} ]] || exit 17\n`);
+    await writeFile(file, `#!/bin/bash\nset -eu\nprintf '${name}:%s:%s:%s\\n' "$*" "\${BOOTSTRAP_REQUIRE_ISOLATION_TESTS:-unset}" "\${BOOTSTRAP_REQUIRE_HOST_BROKER_TESTS:-unset}" >> "$ENTRY_LOG"\n[[ "\${ENTRY_FAIL:-}" != ${name} ]] || exit 17\n[[ "\${ENTRY_FAIL:-}" != host || "\${BOOTSTRAP_REQUIRE_HOST_BROKER_TESTS:-}" != 1 ]] || exit 19\n`);
     await chmod(file, 0o755);
   }
   const script = await readFile("scripts/ci/run-extended-validation.sh", "utf8");
@@ -42,8 +42,13 @@ describe("registered full-validation isolation entry point", () => {
   it("requires actual Docker tests only after normal checks and the immutable image pull", async () => {
     const result = await fixture("full");
     expect(result.status).toBe(0);
-    expect(result.events).toEqual(["fast:unset", `docker:pull --platform linux/amd64 ${NODE_ISOLATION_IMAGE}:unset`,
-      "npm:test -- tests/isolated-validation-docker.test.ts --maxWorkers=1 --minWorkers=1:1"]);
+    expect(result.events).toEqual(["fast:unset", `docker:pull --platform linux/amd64 ${NODE_ISOLATION_IMAGE}:unset:unset`,
+      "npm:test -- tests/isolated-validation-docker.test.ts --maxWorkers=1 --minWorkers=1:1:unset",
+      "npm:test -- tests/upgrade-host-linux.test.ts tests/upgrade-transport-linux.test.ts tests/upgrade-brokers-integration-linux.test.ts tests/upgrade-publication.test.ts --maxWorkers=1 --minWorkers=1:unset:1"]);
+  });
+  it("fails the full route when the mandatory host proof fails after Docker validation", async () => {
+    const result = await fixture("full", "host");
+    expect(result.status).toBe(19); expect(result.events).toHaveLength(4);
   });
   it.each(["fast", "docker", "npm"])("fails instead of passing a full run when %s fails", async (failure) => {
     const result = await fixture("full", failure);

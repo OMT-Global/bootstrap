@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,7 +17,7 @@ const file = (name: string, text: string, executable = false): IsolatedSourceFil
   path: name, mode: executable ? "100755" : "100644", bytes: Buffer.from(text)
 });
 
-async function fixture(extra: IsolatedSourceFile[] = []) {
+async function fixture(extra: IsolatedSourceFile[] = [], ignore = "ignored/\n*.log\n") {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "bootstrap-checkout-test-")); directories.push(workspace);
   const root = path.join(workspace, "original"); const scratch = path.join(workspace, "scratch");
   const template = path.join(workspace, "empty-template"); await Promise.all([root, scratch, template].map((dir) => mkdir(dir)));
@@ -32,7 +32,7 @@ async function fixture(extra: IsolatedSourceFile[] = []) {
   git(["config", "remote.origin.url", origin]);
   await mkdir(path.join(root, ".git/info"), { recursive: true }); await mkdir(path.join(root, ".git/hooks"), { recursive: true });
   const files = [file("README.md", "approved public source\n"), file("src/source.txt", "tracked public text\n"),
-    file(".gitignore", "ignored/\n*.log\n"), ...extra];
+    file(".gitignore", ignore), ...extra];
   const records: Buffer[] = [];
   for (const entry of files) {
     await mkdir(path.dirname(path.join(root, entry.path)), { recursive: true });
@@ -163,6 +163,62 @@ describe("original checkout eligibility is a read-only data audit", () => {
     await writeFile(path.join(data.root, ".git/hooks/post-checkout"), `#!/bin/sh\n: > '${marker}'\n`, { mode: 0o755 });
     await blocked(data);
     await expect(lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["executable", "symlink"])("rejects a private ignored %s in the configured public hook directory", async (kind) => {
+    const data = await fixture([file(".githooks/pre-commit", "#!/bin/sh\nexit 0\n", true)], "ignored/\n*.log\n.githooks/post-checkout\n");
+    data.git(["config", "core.hooksPath", ".githooks"]);
+    const marker = path.join(data.workspace, "configured-hook-executed");
+    const hook = path.join(data.root, ".githooks/post-checkout");
+    const script = `#!/bin/sh\n: > '${marker}'\n`;
+    if (kind === "symlink") {
+      const outside = path.join(data.workspace, "outside-hook"); await writeFile(outside, script, { mode: 0o755 }); await symlink(outside, hook);
+    } else await writeFile(hook, script, { mode: 0o755 });
+    await blocked(data);
+    await expect(lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("accepts public effective hooks and ignored nonexecutable hook files without reading their contents", async () => {
+    const data = await fixture([file(".githooks/pre-commit", "#!/bin/sh\nexit 0\n", true)], "ignored/\n*.log\n.githooks/post-checkout\n");
+    data.git(["config", "core.hooksPath", ".githooks"]);
+    await writeFile(path.join(data.root, ".githooks/post-checkout"), "inert ignored hook fixture\n", { mode: 0o600 });
+    const before = await inventory(data.root);
+    expect((await auditCheckout(data.root, data.snapshot, origin)).baseCommit).toBe(data.baseCommit);
+    expect(await inventory(data.root)).toEqual(before);
+  });
+
+  it.each([["case", "Folder", "folder"], ["normalization", "caf\u00e9", "cafe\u0301"]])
+    ("rejects a raw tracked directory %s rename even when its new spelling is publicly ignored", async (_kind, before, after) => {
+      const data = await fixture([file(`${before}/file`, "tracked alias fixture\n")], `ignored/\n*.log\n${after}/\n`);
+      await rename(path.join(data.root, before!), path.join(data.root, after!));
+      const aliases = await lstat(path.join(data.root, before!, "file")).then(() => true, () => false);
+      if (aliases) expect((await readFile(path.join(data.root, before!, "file"))).toString()).toBe("tracked alias fixture\n");
+      await blocked(data);
+    });
+
+  it("does not enumerate a public directory-only ignored tree with private Git metadata", async () => {
+    const data = await fixture([], "ignored/\n*.log\ncache/\n"); const privateGit = path.join(data.root, "cache/.git");
+    await mkdir(privateGit, { recursive: true }); await writeFile(path.join(privateGit, "HEAD"), "private ignored metadata fixture\n");
+    const before = await inventory(data.root);
+    expect((await auditCheckout(data.root, data.snapshot, origin)).baseCommit).toBe(data.baseCommit);
+    expect(await inventory(data.root)).toEqual(before);
+  });
+
+  it.each([
+    ["unsupported format", "[core]\n repositoryFormatVersion = 999\n"],
+    ["unsupported ref storage", "[core]\n repositoryFormatVersion = 1\n[extensions]\n refStorage = reftable\n"],
+    ["unknown extension", "[core]\n repositoryFormatVersion = 1\n[extensions]\n unsupportedFixture = true\n"]
+  ])("rejects %s metadata instead of certifying an ordinary supported layout", async (_kind, extension) => {
+    const data = await fixture(); const config = path.join(data.root, ".git/config");
+    await writeFile(config, Buffer.concat([await readFile(config), Buffer.from(extension!)]));
+    await writeFile(path.join(data.root, ".git/HEAD"), data.baseCommit + "\n");
+    await blocked(data);
+  });
+
+  it("accepts the explicitly supported format-one SHA-1 extension", async () => {
+    const data = await fixture(); const config = path.join(data.root, ".git/config");
+    await writeFile(config, Buffer.concat([await readFile(config), Buffer.from("[core]\n repositoryFormatVersion = 1\n[extensions]\n objectFormat = sha1\n")]));
+    expect((await auditCheckout(data.root, data.snapshot, origin)).baseCommit).toBe(data.baseCommit);
   });
 
   it.each(["tracked-leaf", "tracked-parent", "metadata"])("rejects an outside-file symlink at %s", async (kind) => {

@@ -52,12 +52,24 @@ async function absent(root: string, relative: string): Promise<void> {
 async function untracked(root: string, repository: DataRepository, tracked: Set<string>): Promise<void> {
   const parents = new Set<string>();
   for (const name of tracked) { const parts = name.split("/"); for (let end = 1; end < parts.length; end++) parents.add(parts.slice(0, end).join("/")); }
+  const expectedComponents = new Map<string, Set<string>>();
+  for (const name of [...tracked, ...parents]) {
+    const separator = name.lastIndexOf("/"); const directory = separator < 0 ? "" : name.slice(0, separator);
+    if (!expectedComponents.has(directory)) expectedComponents.set(directory, new Set());
+    expectedComponents.get(directory)!.add(name.slice(separator + 1));
+  }
   let count = 0;
   const walk = async (relative: string): Promise<void> => {
     const children = await entries(root, relative);
     count += children.length; demand(count <= ISOLATION_LIMITS.entries);
+    const actualComponents = new Set(children.map(({ name }) => name));
+    // Filesystem aliases must not turn a renamed tracked component into an ignored entry.
+    for (const name of expectedComponents.get(relative) ?? []) demand(actualComponents.has(name));
     const paths = children.map(({ name }) => relative ? relative + "/" + name : name);
-    const unknown = paths.filter((name) => !tracked.has(name) && !parents.has(name)); const ignored = await repository.ignored(unknown);
+    const unknown = children.flatMap(({ directory }, index) => {
+      const name = paths[index]!; return tracked.has(name) || parents.has(name) ? [] : [name + (directory ? "/" : "")];
+    });
+    const ignored = await repository.ignored(unknown);
     for (let index = 0; index < children.length; index++) {
       const entry = children[index]!; const name = paths[index]!;
       if (tracked.has(name) || ignored.has(name)) continue;
@@ -109,7 +121,8 @@ export async function auditCheckout(root: string, snapshot: VerifiedGitSnapshot,
       const lower = key.toLowerCase();
       demand(!lower.startsWith("include.") && !lower.startsWith("includeif.") && !["core.worktree", "extensions.worktreeconfig", "core.sparsecheckout", "core.sparsecheckoutcone", "extensions.sparseindex", "core.splitindex", "core.excludesfile", "core.attributesfile"].includes(lower));
       if (lower === "core.bare") demand(value === "false");
-      if (lower === "extensions.objectformat") demand(value === "sha1");
+      if (lower === "core.repositoryformatversion") demand(value === "0" || value === "1");
+      if (lower.startsWith("extensions.")) demand(lower === "extensions.objectformat" && value === "sha1");
       if (lower === "core.hookspath") demand(value === ".githooks");
       if (lower.startsWith("remote.")) demand(key.startsWith("remote.origin."));
     }
@@ -127,12 +140,20 @@ export async function auditCheckout(root: string, snapshot: VerifiedGitSnapshot,
     const files = copySnapshotFiles(snapshot); const indexed = await repository.readIndex(index);
     demand(indexed.length === files.length);
     const expected = new Map(files.map((file) => [file.path, file])); const seen = new Set<string>();
+    if (settings.some(([key]) => key.toLowerCase() === "core.hookspath")) {
+      try {
+        const hooks = await entries(root, ".githooks");
+        demand(hooks.every(({ name, directory, mode }) => expected.has(".githooks/" + name) ||
+          !directory && (name.endsWith(".sample") || !(mode & 0o111))));
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    // Verify raw spellings before reading paths that a filesystem alias could redirect.
+    await untracked(root, repository, new Set(expected.keys()));
     for (const entry of indexed) {
       const file = expected.get(entry.path); demand(file && !seen.has(entry.path) && entry.stage === 0 && entry.mode === file.mode); seen.add(entry.path);
       demand(entry.oid === createHash("sha1").update(`blob ${file.bytes.byteLength}\0`).update(file.bytes).digest("hex"));
       const actual = await regular(root, entry.path, file.bytes.byteLength); demand(actual && actual.bytes.equals(Buffer.from(file.bytes)) && (actual.mode & 0o100 ? "100755" : "100644") === file.mode);
     }
-    await untracked(root, repository, new Set(expected.keys()));
     for (const item of metadata) { const after = await regular(root, item.path, item.path.endsWith("/index") ? ISOLATION_LIMITS.lockBytes : ISOLATION_LIMITS.manifestBytes); demand(after && digest(after.bytes) === item.sha256); }
     options.signal?.throwIfAborted(); await repository.ignored([]);
     return { baseCommit: snapshot.baseCommit, tree: snapshot.tree, sourceSha256: snapshot.sourceSha256,

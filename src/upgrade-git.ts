@@ -34,7 +34,7 @@ export function verifyGitSnapshot(input: GitSnapshotInput): VerifiedGitSnapshot 
     demand(Array.isArray(input.files) && input.files.length > 0 && input.files.length <= ISOLATION_LIMITS.files);
     const names = new Set<string>(); const directories = new Set<string>(); let size = 0;
     const files: FrozenFile[] = input.files.map((file) => {
-      demand(typeof file.path === "string" && relativePath(file.path) && !["node_modules", "dist"].includes(file.path.split("/")[0]!) && !names.has(file.path));
+      demand(typeof file.path === "string" && relativePath(file.path) && !["node_modules", "dist"].includes(file.path.split("/")[0]!.toLowerCase()) && !names.has(file.path));
       demand((file.mode === "100644" || file.mode === "100755") && file.bytes instanceof Uint8Array);
       names.add(file.path); size += file.bytes.byteLength; demand(size <= ISOLATION_LIMITS.sourceBytes);
       const bytes = Buffer.from(file.bytes); return { path: file.path, mode: file.mode, bytes, oid: objectId("blob", bytes), sha256: digest(bytes) };
@@ -163,11 +163,13 @@ export async function openDataRepository(snapshot: VerifiedGitSnapshot, options:
       }),
       ignored: (paths: readonly string[]): Promise<Set<string>> => protect(async () => {
         demand(!closed && !signal.aborted);
-        demand(paths.length <= ISOLATION_LIMITS.entries && paths.every(relativePath));
+        demand(paths.length <= ISOLATION_LIMITS.entries && paths.every((name) => relativePath(name.endsWith("/") ? name.slice(0, -1) : name)));
         if (!paths.length) return new Set();
         const output = await run(["check-ignore", "--no-index", "-z", "--stdin"], Buffer.from(paths.join("\0") + "\0"), undefined, [0, 1]);
         demand(!output.length || output.at(-1) === 0);
-        return new Set(!output.length ? [] : output.subarray(0, -1).toString("binary").split("\0").map((entry) => decodeGitPath(Buffer.from(entry, "binary"))));
+        return new Set(!output.length ? [] : output.subarray(0, -1).toString("binary").split("\0").map((entry) => {
+          const raw = Buffer.from(entry, "binary"); return decodeGitPath(raw.at(-1) === 47 ? raw.subarray(0, -1) : raw);
+        }));
       }),
       dispose: () => protect(async () => { closed = true; cancellation.abort(); await Promise.allSettled(active); if (!removed) { await rm(directory, { recursive: true, force: true }); removed = true; } })
     });

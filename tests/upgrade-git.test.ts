@@ -116,6 +116,17 @@ describe("private verified Git data", () => {
         files: [source(name)] })).toThrow();
     });
 
+  it.each(["Node_Modules", "NODE_MODULES", "Dist", "DIST"])
+    ("rejects reserved dependency-root case variant %s in a valid Git tree", async (root) => {
+      const data = await fixture([source(`${root}/fixture`)]);
+      expect(() => data.snapshot()).toThrow("Governed upgrade Git data is unsupported.");
+    });
+
+  it("retains ordinary roots beside reserved dependency-root rejection", async () => {
+    const data = await fixture([source("src/fixture"), source("distribution/fixture")]);
+    expect(data.snapshot()).toMatchObject({ baseCommit: data.baseCommit, tree: data.tree });
+  });
+
   it("counts directory expansion in the exact 10,000-entry boundary", async () => {
     const shared = Array.from({ length: 9999 }, (_, index) => source(`folder/file-${index}`, ""));
     const data = await fixture(shared);
@@ -173,6 +184,27 @@ describe("private verified Git data", () => {
       await expect(repository.readIndex(Buffer.alloc(16 * 1024 ** 2 + 1))).rejects.toThrow();
     } finally { await repository.dispose(); }
   });
+
+  it("classifies unknown directory ignores without materializing their contents", async () => {
+    const data = await fixture([source("README.md"), source(".gitignore", "cache/\n*.log\n")]);
+    const repository = await openDataRepository(data.snapshot());
+    try {
+      await expect(lstat(path.join(repository.root, "cache"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await repository.ignored(["cache"])).toEqual(new Set());
+      expect(await repository.ignored(["cache/", "unignored/", "build.log"]))
+        .toEqual(new Set(["cache", "build.log"]));
+      await expect(lstat(path.join(repository.root, "cache"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(lstat(path.join(repository.root, "unignored"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await repository.dispose(); }
+  });
+
+  it.each(["/cache/", "../cache/", "cache//", "cache/../other/"])
+    ("rejects unsafe directory-aware ignore path %s", async (name) => {
+      const data = await fixture([source("README.md"), source(".gitignore", "cache/\n")]);
+      const repository = await openDataRepository(data.snapshot());
+      try { await expect(repository.ignored([name])).rejects.toThrow("Governed upgrade Git data is unsupported."); }
+      finally { await repository.dispose(); }
+    });
 
   it("ignores ambient Git configuration, tracing and PATH command canaries", async () => {
     const data = await fixture();

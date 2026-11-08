@@ -33,30 +33,39 @@ async function fixture(targetVersion = "1.0.1") {
     generatorCommit,
     target: { ref: `refs/tags/v${targetVersion}`, sha256: flowPolicyDigest(target), bundlePath },
     evidence: [] as ReturnType<typeof evidence>[],
-    pilots: [] as { repo: string; repoClass: string; currentPolicy: string; targetPolicy: string; commit: string; outcome: "passed" | "failed"; validationWorkflow: string; evidence: string }[]
+    pilots: [] as { repo: string; repoClass: string; currentPolicy: string; targetPolicy: string; commit: string; sourceCommit: string; outcome: "passed" | "failed"; validationWorkflow: string; evidence: string }[]
   };
-  const repos = new Map<string, { cwd: string; head: string; visibility: string; repoClass: "cli" | "service" }>();
+  const repos = new Map<string, { cwd: string; head: string; sourceHead: string; sourceVersion: string; visibility: string; repoClass: "cli" | "service" }>();
   const calls: { command: string; args: string[]; cwd?: string }[] = [];
   const bodies: string[] = [];
   const faults = { commit: false, push: false, restore: false, review: false, checks: false, status: false, validation: false, missingUrl: false, untrustedRun: false };
   let githubUnavailable = false;
-  async function add(repo: string, options: { version?: string; repoClass?: "cli" | "service"; visibility?: "public" | "private" } = {}) {
+  async function add(repo: string, options: { version?: string; sourceVersion?: string; repoClass?: "cli" | "service"; visibility?: "public" | "private" } = {}) {
     const cwd = path.join(workspaceRoot, repo.split("/")[1]!);
     const currentVersion = options.version ?? "1.0.0";
     const repoClass = options.repoClass ?? "cli";
+    const seedVersion = options.sourceVersion ?? (currentVersion === targetVersion ? "1.0.0" : currentVersion);
     await mkdir(path.join(cwd, "scripts/ci"), { recursive: true });
-    const manifest = normalizeManifest({ version: 2, project: { name: repo.split("/")[1]!, owner: repo.split("/")[0]!, visibility: options.visibility ?? "public", defaultBranch: "main" }, repo: { class: repoClass, managedPaths: ["project.bootstrap.yaml"] }, archetype: { kind: "generic-empty" }, ci: { codeqlLanguages: ["javascript-typescript"] }, policy: { flow: { ref: `refs/tags/v${currentVersion}`, sha256: flowPolicyDigest(policy(currentVersion)), bundlePath: "flow-policy.yaml" } } });
+    const manifest = normalizeManifest({ version: 2, project: { name: repo.split("/")[1]!, owner: repo.split("/")[0]!, visibility: options.visibility ?? "public", defaultBranch: "main" }, repo: { class: repoClass, managedPaths: ["project.bootstrap.yaml"] }, archetype: { kind: "generic-empty" }, ci: { codeqlLanguages: ["javascript-typescript"] }, policy: { flow: { ref: `refs/tags/v${seedVersion}`, sha256: flowPolicyDigest(policy(seedVersion)), bundlePath: "flow-policy.yaml" } } });
     await git(cwd, ["init", "-b", "main"]);
     await git(cwd, ["config", "user.name", "Synthetic Test"]);
     await git(cwd, ["config", "user.email", "synthetic@example.invalid"]);
     await git(cwd, ["config", "commit.gpgsign", "false"]);
     await git(cwd, ["remote", "add", "origin", `https://github.com/${repo}.git`]);
-    await writeFile(path.join(cwd, "flow-policy.yaml"), YAML.stringify(policy(currentVersion)));
+    await writeFile(path.join(cwd, "flow-policy.yaml"), YAML.stringify(policy(seedVersion)));
     await writeFile(path.join(cwd, "scripts/ci/run-fast-checks.sh"), "#!/usr/bin/env bash\nset -euo pipefail\ntest -f flow-policy.yaml\n");
     await applyRepo(manifest, cwd);
     await git(cwd, ["add", "--all"]);
     await git(cwd, ["commit", "-m", "test fixture"]);
-    repos.set(repo, { cwd, head: await git(cwd, ["rev-parse", "HEAD"]), visibility: options.visibility ?? "public", repoClass });
+    const sourceHead = await git(cwd, ["rev-parse", "HEAD"]);
+    if (currentVersion !== seedVersion) {
+      const upgraded = { ...manifest, policy: { flow: { ...manifest.policy!.flow, ref: `refs/tags/v${currentVersion}`, sha256: flowPolicyDigest(policy(currentVersion)) } } };
+      await writeFile(path.join(cwd, "flow-policy.yaml"), YAML.stringify(policy(currentVersion)));
+      await applyRepo(upgraded, cwd);
+      await git(cwd, ["add", "--all"]);
+      await git(cwd, ["commit", "-m", "fixture governed policy upgrade"]);
+    }
+    repos.set(repo, { cwd, head: await git(cwd, ["rev-parse", "HEAD"]), sourceHead, sourceVersion: seedVersion, visibility: options.visibility ?? "public", repoClass });
     input.evidence.push(evidence(repo));
     return cwd;
   }
@@ -80,12 +89,19 @@ async function fixture(targetVersion = "1.0.1") {
         const name = endpoint.split("/").slice(1, 3).join("/");
         const repo = repos.get(name)!;
         if (endpoint === `repos/${name}`) return ok(JSON.stringify({ full_name: name, visibility: repo.visibility, private: repo.visibility === "private", archived: false, default_branch: "main" }));
+        if (endpoint.includes("/compare/")) {
+          const [source, targetCommit] = endpoint.split("/compare/")[1]!.split("...");
+          const ancestor = await execRunner("git", ["merge-base", "--is-ancestor", source!, targetCommit!], { cwd: repo.cwd });
+          const valid = ancestor.exitCode === 0 && source !== targetCommit;
+          return ok(JSON.stringify({ status: valid ? "ahead" : "diverged", base_commit: { sha: source }, merge_base_commit: { sha: valid ? source : "0".repeat(40) } }));
+        }
         if (endpoint.endsWith("/commits/main")) return ok(JSON.stringify({ sha: repo.head }));
         if (endpoint.includes("/actions/runs/")) return ok(JSON.stringify({ repository: { full_name: name }, head_sha: repo.head, status: "completed", conclusion: "success", event: faults.untrustedRun ? "pull_request" : "workflow_dispatch", path: ".github/workflows/extended-validation.yml" }));
         if (endpoint.includes("/contents/")) {
           if (endpoint.includes(".github/workflows/extended-validation.yml")) return ok(JSON.stringify({ type: "file", path: ".github/workflows/extended-validation.yml" }));
           const file = endpoint.split("/contents/")[1]!.split("?")[0]!;
-          return ok(JSON.stringify({ content: Buffer.from(await git(repo.cwd, ["show", `${repo.head}:${file}`])).toString("base64") }));
+          const ref = endpoint.split("?ref=")[1] ?? repo.head;
+          return ok(JSON.stringify({ content: Buffer.from(await git(repo.cwd, ["show", `${ref}:${file}`])).toString("base64") }));
         }
         if (endpoint.endsWith("/status")) return ok(JSON.stringify({ total_count: 1, state: faults.status ? "failure" : "success" }));
         if (endpoint.includes("/check-runs?")) return ok(JSON.stringify({ total_count: 1, check_runs: [{ name: "Validation", status: faults.checks ? "in_progress" : "completed", conclusion: faults.checks ? null : "success" }] }));
@@ -101,7 +117,7 @@ async function fixture(targetVersion = "1.0.1") {
   };
   function pilot(repo: string) {
     const candidate = repos.get(repo)!;
-    input.pilots.push({ repo, repoClass: candidate.repoClass, currentPolicy: "1.0.0", targetPolicy: targetVersion, commit: candidate.head, outcome: "passed", validationWorkflow: ".github/workflows/extended-validation.yml", evidence: `https://github.com/${repo}/actions/runs/123` });
+    input.pilots.push({ repo, repoClass: candidate.repoClass, currentPolicy: candidate.sourceVersion, targetPolicy: targetVersion, commit: candidate.head, sourceCommit: candidate.sourceHead, outcome: "passed", validationWorkflow: ".github/workflows/extended-validation.yml", evidence: `https://github.com/${repo}/actions/runs/123` });
   }
   return { workspaceRoot, input, repos, add, runner, calls, faults, bodies, pilot, unavailable: () => { githubUnavailable = true; }, run: (apply = false, maxBatchSize = 1) => executeFleetPolicyUpgrades({ workspaceRoot, repos: [...repos.keys()], input, runner, apply, maxBatchSize }) };
 }
@@ -196,10 +212,30 @@ describe("guarded Flow policy upgrade execution", () => {
     await f.add("acme/b");
     f.pilot("acme/a");
     f.input.pilots[0]!.currentPolicy = "0.9.0";
-    expect((await f.run()).results[1]!.reason).toContain("not bound");
+    expect((await f.run()).results[1]!.reason).toContain("Declared pilot source version differs");
     f.input.pilots[0]!.currentPolicy = "1.0.0";
     f.input.pilots[0]!.outcome = "failed";
     expect((await f.run()).results[1]!.reason).toContain("pilot failed");
+  });
+
+  it("rejects heterogeneous batch source paths", async () => {
+    const f = await fixture("1.0.2");
+    await f.add("acme/a", { version: "1.0.2", sourceVersion: "1.0.0" });
+    await f.add("acme/b", { version: "1.0.1" });
+    f.pilot("acme/a");
+    expect((await f.run()).results[1]!.reason).toContain("Batch source policy does not match");
+  });
+
+  it("rejects forged pilot source versions and non-ancestor source commits", async () => {
+    const f = await fixture("1.0.2");
+    await f.add("acme/a", { version: "1.0.2", sourceVersion: "1.0.0" });
+    await f.add("acme/b", { version: "1.0.1" });
+    f.pilot("acme/a");
+    f.input.pilots[0]!.currentPolicy = "1.0.1";
+    expect((await f.run()).results[1]!.reason).toContain("Declared pilot source version differs");
+    f.input.pilots[0]!.currentPolicy = "1.0.0";
+    f.input.pilots[0]!.sourceCommit = f.repos.get("acme/b")!.head;
+    expect((await f.run()).results[1]!.reason).toContain("not a verified ancestor");
   });
 
   it("creates a validated, reviewed draft on a new branch and restores main without enabling merge", async () => {

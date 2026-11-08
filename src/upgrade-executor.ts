@@ -27,6 +27,7 @@ const inputSchema = z.object({
     currentPolicy: version,
     targetPolicy: version,
     commit: sha,
+    sourceCommit: sha,
     outcome: z.enum(["passed", "failed"]),
     validationWorkflow: z.string().regex(/^\.github\/workflows\/[a-zA-Z0-9_-]+\.ya?ml$/),
     evidence: link
@@ -193,7 +194,7 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
       let passed = false;
       if (pilot) {
         requireCondition(
-          pilot.repo === representative && pilot.targetPolicy === target.version && (pilot.currentPolicy === current.policy.version || (repo === representative && current.policy.version === target.version)),
+          pilot.repo === representative && pilot.targetPolicy === target.version,
           "Pilot evidence is not bound to this representative, source version, and target version."
         );
         requireCondition(
@@ -206,6 +207,25 @@ export async function executeFleetPolicyUpgrades(options: FleetPolicyUpgradeOpti
         requireCondition(
           (await api(cwd, `repos/${pilot.repo}/commits/${encodeURIComponent(pilotRemote.default_branch)}`)).sha === pilot.commit,
           "Pilot commit differs from its live default branch."
+        );
+        const comparison = await api(cwd, `repos/${pilot.repo}/compare/${pilot.sourceCommit}...${pilot.commit}`);
+        requireCondition(
+          comparison.status === "ahead" && comparison.base_commit?.sha === pilot.sourceCommit && comparison.merge_base_commit?.sha === pilot.sourceCommit,
+          "Pilot source commit is not a verified ancestor of its validated target commit."
+        );
+        const sourceFile = await api(cwd, `repos/${pilot.repo}/contents/project.bootstrap.yaml?ref=${pilot.sourceCommit}`);
+        const sourceManifest = normalizeManifest(YAML.parse(Buffer.from(sourceFile.content, "base64").toString("utf8")));
+        requireCondition(
+          sourceManifest.project.visibility === "public" && `${sourceManifest.project.owner}/${sourceManifest.project.name}` === pilot.repo && sourceManifest.repo.class === repoClass && sourceManifest.policy?.flow,
+          "Pilot source commit does not contain the verified public representative class and policy."
+        );
+        const sourceBundlePath = sourceManifest.policy.flow.bundlePath.split("/").map(encodeURIComponent).join("/");
+        const sourceBundle = await api(cwd, `repos/${pilot.repo}/contents/${sourceBundlePath}?ref=${pilot.sourceCommit}`);
+        const source = resolveFlowPolicy(sourceManifest, YAML.parse(Buffer.from(sourceBundle.content, "base64").toString("utf8")), sourceManifest.policy.flow);
+        requireCondition(source.policy.version === pilot.currentPolicy, "Declared pilot source version differs from its verified immutable source commit.");
+        requireCondition(
+          current.policy.version === source.policy.version && current.source.ref === source.source.ref && current.source.sha256 === source.source.sha256,
+          "Batch source policy does not match the proven pilot source version and pin; validate a matching representative migration."
         );
         const pilotFile = await api(cwd, `repos/${pilot.repo}/contents/project.bootstrap.yaml?ref=${pilot.commit}`);
         const pilotManifest = normalizeManifest(YAML.parse(Buffer.from(pilotFile.content, "base64").toString("utf8")));

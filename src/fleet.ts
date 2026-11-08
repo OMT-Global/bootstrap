@@ -249,7 +249,7 @@ async function reconcileOneRepo(
   const repoDrift = hasRepoDrift(plannedRepo.changes);
   let githubActions: PlannedGitHubAction[] = [];
 
-  if (options.applyRepo && !(await isCleanWorktree(options.runner, repo.path))) {
+  if ((options.applyRepo || options.applyGitHub) && !(await isCleanWorktree(options.runner, repo.path))) {
     return {
       repo: `${manifest.project.owner}/${manifest.project.name}`,
       path: repo.path,

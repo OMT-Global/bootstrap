@@ -44,11 +44,14 @@ Repositories are sorted by full name; the first verified public repository of ea
   "currentPolicy": "1.0.0",
   "targetPolicy": "1.0.1",
   "commit": "0000000000000000000000000000000000000000",
+  "sourceCommit": "0000000000000000000000000000000000000000",
   "outcome": "passed",
   "validationWorkflow": ".github/workflows/extended-validation.yml",
   "evidence": "https://github.com/owner/first/actions/runs/1"
 }
 ```
+
+`sourceCommit` must identify an immutable pre-upgrade representative commit that is an ancestor of the validated target commit. Its public identity, class, policy version, immutable pin, and bundle digest are fetched and verified; the declared source version alone is never trusted. Later class members must have that same proven source version and pin. Heterogeneous source paths stay blocked until a matching representative migration is supplied.
 
 A passing declaration alone does not unlock rollout. The executor verifies the representative identity/class, source and target versions, current default-branch commit, committed target pin and bundle digest, and the named Actions run's repository, exact commit, successful completion, trusted `push` or `workflow_dispatch` event, and approved checked-in workflow path. Every returned check and status must also pass; incomplete pagination fails closed. PR-only `CI Gate` is not required on the squash commit. Refresh evidence when the representative default branch advances. Failed pilots and failed class execution stop later class members with remediation. Patch eligibility is reported only after this proof; minor PRs explicitly require independent review before merge. Exception-bearing and major migrations remain human-governed manual work.
 

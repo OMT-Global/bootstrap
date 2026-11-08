@@ -9,9 +9,10 @@ import { CONTAINER_SETUP } from "./setup.js";
 import { downloadArchive, freezeNodeValidation, ISOLATION_LIMITS, NODE_ISOLATION_IMAGE, NODE_ISOLATION_PROFILE,
   type NodeValidationInput } from "./node-profile.js";
 
+export interface NodeToolVersions { bash: string; git: string; python: string; node: string; npm: string; jq: string }
 interface NodeValidationEvidence {
   profile: typeof NODE_ISOLATION_PROFILE; image: string; sourceSha256: string; commitPlanSha256: string; baseCommit: string;
-  preparedTree: string; hook: "none" | ".githooks/pre-commit"; tools: Record<string, string>;
+  preparedTree: string; hook: "none" | ".githooks/pre-commit"; tools: NodeToolVersions;
 }
 export type NodeValidationReport = NodeValidationEvidence & (
   { phase: "prepared-hook"; hookOutput: string } | { phase: "final-check"; candidateCommit: string; checkOutput: string });
@@ -151,8 +152,8 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
     await storageAlive();
     const preparedText = await run(["start", "--attach", prepare]);
     await stopped(prepare);
-    const prepared = JSON.parse(preparedText.trim().split("\n").at(-1)!) as { tools: Record<string, string>; tree: string };
-    demand(/^[a-f0-9]{40}$/.test(prepared.tree) && ["bash", "git", "python", "node", "npm"].every((name) => typeof prepared.tools[name] === "string" && prepared.tools[name]!.length <= 512), "Toolchain preparation evidence is invalid.");
+    const prepared = JSON.parse(preparedText.trim().split("\n").at(-1)!) as { tools: NodeToolVersions; tree: string };
+    demand(/^[a-f0-9]{40}$/.test(prepared.tree) && (["bash", "git", "python", "node", "npm", "jq"] as const).every((name) => typeof prepared.tools[name] === "string" && prepared.tools[name].length > 0 && prepared.tools[name].length <= 512) && prepared.tools.jq.startsWith("jq-"), "Toolchain preparation evidence is invalid.");
     await run(["rm", "--force", prepare]); containers.splice(containers.indexOf(prepare), 1);
     await storageAlive();
     const phase = async (mode: "check" | "hook") => {

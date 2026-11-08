@@ -267,6 +267,15 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     const probe = `const assert = require('node:assert/strict'), fs = require('node:fs'), net = require('node:net'), dns = require('node:dns'), cp = require('node:child_process');
 (async () => {
   assert.equal(process.getuid(), 1000);
+  assert.match(cp.execFileSync('jq', ['--version'], {encoding:'utf8'}).trim(), /^jq-/);
+  assert.deepEqual(JSON.parse(cp.execFileSync('jq', ['-c', '{sum:(.values|add),ok:.ok}'], {encoding:'utf8',input:'{"values":[2,3],"ok":true}'})), {sum:5,ok:true});
+  console.log('ISOLATED-JQ-PASSED:' + process.argv[2]);
+  const noNewPrivileges = fs.readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10)).find(line => line.startsWith('NoNewPrivs:'));
+  assert.equal(noNewPrivileges.split(':')[1].trim(), '1');
+  const escalation = cp.spawnSync('sudo', ['-n', 'id', '-u'], {encoding:'utf8',timeout:5000,maxBuffer:1024*1024});
+  assert.equal(escalation.error, undefined);
+  assert.notEqual(escalation.status, null); assert.notEqual(escalation.status, 0); assert.notEqual(escalation.stdout.trim(), '0');
+  console.log('ISOLATED-PRIVILEGE-BLOCK-PASSED:' + process.argv[2]);
   for (const name of ['GH_TOKEN', 'SSH_AUTH_SOCK', 'BOOTSTRAP_FLEET_CANARY', 'BOOTSTRAP_REQUIRE_ISOLATION_TESTS']) assert.equal(process.env[name], undefined);
   for (const name of [${JSON.stringify(canary)}, ${JSON.stringify(socket)}, '/var/run/docker.sock']) assert.throws(() => fs.readFileSync(name));
   assert.throws(() => fs.writeFileSync(${JSON.stringify(canary)}, 'changed'));
@@ -353,7 +362,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(hook.preparedTree).toBe(report.preparedTree);
     expect(hook).toMatchObject({ profile: report.profile, image: report.image, sourceSha256: report.sourceSha256, baseCommit: report.baseCommit, hook: report.hook });
     expect(hook.commitPlanSha256).toBe(frozen.commitPlanSha256); expect(report.commitPlanSha256).toBe(frozen.commitPlanSha256);
-    expect(Object.keys(report.tools).sort()).toEqual(["bash", "git", "node", "npm", "python"]);
+    expect(Object.keys(report.tools).sort()).toEqual(["bash", "git", "jq", "node", "npm", "python"]);
+    expect(report.tools.jq).toMatch(/^jq-/);
     expect(report.tools.node).toMatch(/^v24\./); for (const value of Object.values(report.tools)) expect(value.length).toBeGreaterThan(0);
     expect(report.checkOutput).toContain("ISOLATED-PROBE-PASSED:checks"); expect(hook.hookOutput).toContain("ISOLATED-PROBE-PASSED:hook");
     expect(hook.hookOutput).toContain("ISOLATED-HOOK-CONTEXT-PASSED");
@@ -363,6 +373,9 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(report.checkOutput).toContain("ISOLATED-LOCKED-BIN-PASSED:checks");
     expect(hook.hookOutput).toContain("ISOLATED-TEMPORARY-EXEC-PASSED:hook");
     expect(report.checkOutput).toContain("ISOLATED-TEMPORARY-EXEC-PASSED:checks");
+    expect(hook.hookOutput).toContain("ISOLATED-JQ-PASSED:hook"); expect(report.checkOutput).toContain("ISOLATED-JQ-PASSED:checks");
+    expect(hook.hookOutput).toContain("ISOLATED-PRIVILEGE-BLOCK-PASSED:hook");
+    expect(report.checkOutput).toContain("ISOLATED-PRIVILEGE-BLOCK-PASSED:checks");
     expect(report.checkOutput).toContain(`ISOLATED-CHECK-COMMIT:${candidate.candidateCommit}`); expect("hookOutput" in report).toBe(false);
     expect(await readFile(canary, "utf8")).toBe("unchanged host fixture\n"); expect(connections).toBe(0);
     await expect(access(marker)).rejects.toThrow(); expect(freezeNodeValidation(input).sourceSha256).toBe(frozen.sourceSha256);
@@ -522,7 +535,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     for (const name of ["src/isolation/node-profile.ts", "src/isolation/node-validation.ts", "src/isolation/setup.ts",
       "tests/isolation-profile.test.ts", "tests/isolated-validation.test.ts", "tests/isolation-hook-context.test.ts", "tests/isolated-validation-docker.test.ts",
       ".github/workflows/fleet-isolation-validation.yml", "docs/security/fleet-isolation-design.md",
-      "docs/decisions/ADR-0013-isolated-node-validation-backend.md", "docs/bootstrap/fleet-isolation-backend.md"]) {
+      "docs/decisions/ADR-0013-isolated-node-validation-backend.md", "docs/bootstrap/fleet-isolation-backend.md",
+      "docs/security/node-npm-linux-v1-image.md"]) {
       try { await access(path.join(checkout, name)); if (!modes.has(name)) modes.set(name, "100644"); } catch { /* Only already-created explicit sources are included. */ }
     }
     const files: IsolatedSourceFile[] = [];

@@ -72,7 +72,7 @@ The independently reviewed implemented source change is confined to executable s
 
 Status: the coordinator adopted the explicit bounded amendment, and an independent architect confirmed the implemented-source delta clean on 2026-11-08 at the exact hashes below. Actual direct temporary-helper execution, updated kernel mount flags, complete exact-head hosted acceptance, and final branch autoreview remain pending.
 
-| Current independently reviewed temporary-helper artifact | SHA-256 |
+| Prior independently reviewed temporary-helper artifact | SHA-256 |
 |---|---|
 | `src/isolation/node-profile.ts` | `585355fc0a51e60eff78ac83a45955564a19830ff89d8f3547c563029e563da4` |
 | `src/isolation/node-validation.ts` | `176bb99e19246280bbc25360428d7e33eeee2a80033cd45416ecdbbda6bea028` |
@@ -83,3 +83,18 @@ The actual hosted [run 42514419157](https://github.com/OMT-Global/bootstrap/acti
 The amendment permits execution on the existing 256 MiB `/tmp` only in actual hook/check containers, alongside the existing executable dependency mount. Preparation `/tmp` remains 256 MiB and `noexec`; keeper `/tmp` remains 1 MiB and `noexec`; installer/cache/build tmpfs remain `noexec`. There is no quota increase, TMPDIR change, new mount, frozen-check change, or timeout change. UID, ownership, `nosuid`/`nodev`, capabilities, network isolation, read-only source/index, resources, cleanup, and code-owned capability selection remain fixed.
 
 The shared positive probe now directly executes a fresh mode-0755 shebang helper under `/tmp` in both phases and verifies its phase argument and UID 1000, cleaning only its fresh directory in `finally`. It retains direct TypeScript-bin execution, package imports, lifecycle suppression, and host/source/index/socket/network canaries. Live Docker inspection and kernel mountinfo must show executable target `/tmp` and dependencies, non-executable target cache/build mounts, and non-executable keeper `/tmp`, with unchanged quotas and ownership. Strict standalone integration TypeScript, generated-probe/helper parsing, and whitespace checks pass. The scoped local suite passes the real-child diagnostic regression and explicitly skips fourteen Docker cases; the historical proposal prefix remains exact. New exact-head hosted acceptance remains pending, and the implementation remains unproven until the complete runtime gate passes.
+
+## Six-tool immutable image amendment
+
+Status: independent implemented source/config/test delta review clean at the exact hashes below after the coordinator adopted the material Microsoft-image/six-tool design. Actual new-image acceptance and final full-branch autoreview remain pending.
+
+| Current reviewed artifact | SHA-256 |
+|---|---|
+| `src/isolation/node-profile.ts` | `faaba43ef0656d907fd217feb17fb424b8ae28969340ff7895a629d4ee88e0f3` |
+| `src/isolation/node-validation.ts` | `bc69470ff0e3100bc39ddd5cf6af477382a176f0fa20f2d57b9194dc001f8a16` |
+| `src/isolation/setup.ts` | `7b38153cb286a36cdd595f02bdf16d0b3cb45c77c55fd9ffc896949f7e4a4d3f` |
+| `tests/isolated-validation-docker.test.ts` | `ac6bd4548eb0acfbcb5f72a207149c588b8ba0f22a551832262a649e6ab5a75e` |
+
+The prior hosted [run 42515442371](https://github.com/OMT-Global/bootstrap/actions/runs/42515442371) at `bd9adb4` executed the compiler, temporary helpers, and Bootstrap checks; its remaining twelve failures were the real verifier's missing jq. This is partial evidence at the old image, not runtime acceptance of the new candidate. The amendment selects `mcr.microsoft.com/devcontainers/javascript-node@sha256:447fa75fbc7123952284b50229148e933ea756c40718601fa0ec46edd29fd0c6` and adds explicit jq version/functional preflight alongside Bash/Git/Python/Node/npm. The [image record](node-npm-linux-v1-image.md) retains the observed Node patch difference, root/passwordless-development defaults, inherited public environment, OCI identities, and incomplete feature-material/signature limits.
+
+The shared positive hook/check probe executes jq version and fixed JSON behavior, verifies kernel `NoNewPrivs=1`, and requires an actual `sudo -n id -u` process to fail without reporting UID 0. It keeps all compiler, temporary-helper, package-import, host/source/index/socket/network, mount, cleanup, and full Bootstrap cases. The report must include exactly six version fields. The manual workflow pulls the same immutable new image; action pins, permissions, and runtime boundaries are unchanged. Strict standalone integration TypeScript, generated-probe/helper parsing, manual-workflow structural checks, and whitespace checks pass. The scoped suite passes its real-child diagnostic unit and explicitly skips fourteen actual Docker cases. The original proposal prefix and four recorded source-snapshot hashes are verified; public OCI config inventory agrees with the research record. The independent reviewer checked the exact image agreement, six-tool/preflight ordering, failure regressions, documented image defaults/provenance limits, and bounded scoped renderer repair and found no remaining actionable delta issue. Local Docker remains unavailable; no runtime or VM is installed or started, and the new image is not yet proven.

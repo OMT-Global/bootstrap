@@ -43,7 +43,7 @@ function fixture(hook = false, phase: "prepared-hook" | "final-check" = "final-c
       file("package-lock.json", '{"lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}'),
       file("scripts/ci/run-fast-checks.sh", "#!/bin/bash\nexit 0\n", true), ...(hook ? [file(".githooks/pre-commit", "#!/bin/bash\nexit 0\n", true)] : [])] };
 }
-interface FakeOptions { failAt?: string; exitCode?: number; hangAt?: string; cleanupFailure?: boolean; excessiveOutput?: boolean; platform?: string; invalidEvidence?: boolean; untrustedUid?: number; untrustedMode?: number; untrustedAncestor?: boolean; storageNotRunning?: boolean; storageLostAfterPhase?: boolean }
+interface FakeOptions { failAt?: string; exitCode?: number; hangAt?: string; cleanupFailure?: boolean; excessiveOutput?: boolean; platform?: string; invalidEvidence?: boolean; untrustedUid?: number; untrustedMode?: number; untrustedAncestor?: boolean; storageNotRunning?: boolean; storageLostAfterPhase?: boolean; missingJq?: boolean }
 async function fakeDocker(options: FakeOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-docker-control-")); directories.push(directory);
   const log = path.join(directory, "calls.jsonl"); const config = path.join(directory, "options.json");
@@ -59,7 +59,7 @@ function proceed() {
   if(cfg.failAt===command || cfg.failAt===command+':'+phase) process.exit(23);
   if(cfg.hangAt===command+':'+phase) setInterval(()=>{},1000);
   else if(command==='version' || command==='image') console.log(cfg.platform||'linux/amd64');
-  else if(command==='start' && phase==='prepare') console.log(JSON.stringify(cfg.invalidEvidence?{}:{tree:'b'.repeat(40),tools:{bash:'GNU bash',git:'git',python:'Python 3',node:'v24.0.0',npm:'11'}}));
+  else if(command==='start' && phase==='prepare') console.log(JSON.stringify(cfg.invalidEvidence?{}:{tree:'b'.repeat(40),tools:{bash:'GNU bash',git:'git',python:'Python 3',node:'v24.0.0',npm:'11',...(cfg.missingJq?{}:{jq:'jq-1.6'})}}));
   else if(command==='start' && ['check','hook'].includes(phase) && cfg.excessiveOutput) process.stdout.write('x'.repeat(9*1024*1024));
   else if(command==='inspect') {
     const prefix=String(name).replace(/-storage$/,'');
@@ -97,6 +97,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     expect(report.phase).toBe("final-check");
     expect(report.phase === "final-check" && report.candidateCommit).toBe("c".repeat(40));
     expect(report.preparedTree).toBe("b".repeat(40)); expect(report.tools.node).toBe("v24.0.0");
+    expect(report.tools.jq).toBe("jq-1.6");
     const calls = await fake.calls(); const creates = calls.filter(({ args }) => args[0] === "create");
     expect(creates).toHaveLength(6);
     for (const { args } of creates.filter(({ args }) => args.at(-1) === "hook" || args.at(-1) === "check")) {
@@ -321,6 +322,19 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     await expect(validateIsolatedNode(fixture())).rejects.toThrow("output exceeded");
     expect((await fake.calls()).some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-check"))).toBe(true);
   });
+  it("rejects missing jq evidence before either repository-controlled phase and cleans resources", async () => {
+    for (const phase of ["prepared-hook", "final-check"] as const) {
+      const fake = await fakeDocker({ missingJq: true });
+      await expect(validateIsolatedNode(fixture(true, phase))).rejects.toThrow("Toolchain preparation evidence is invalid");
+      const calls = await fake.calls();
+      expect(calls.some(({ args }) => args[0] === "start" && /-(hook|check)$/.test(args.at(-1)))).toBe(false);
+      const prepareRemoved = calls.findIndex(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-prepare"));
+      const keeperRemoved = calls.findIndex(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"));
+      const volumeRemovals = calls.flatMap(({ args }, index) => args[0] === "volume" && args[1] === "rm" ? [index] : []);
+      expect(prepareRemoved).toBeGreaterThanOrEqual(0); expect(keeperRemoved).toBeGreaterThan(prepareRemoved);
+      expect(volumeRemovals).toHaveLength(3); expect(Math.min(...volumeRemovals)).toBeGreaterThan(keeperRemoved);
+    }
+  }, 15_000);
   it("rejects invalid setup evidence and incompatible Docker platforms", async () => {
     await fakeDocker({ platform: "linux/arm64" });
     await expect(validateIsolatedNode(fixture())).rejects.toThrow("supported platform");

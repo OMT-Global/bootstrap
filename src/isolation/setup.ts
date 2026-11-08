@@ -13,8 +13,11 @@ try {
   writable();
   if (process.argv[2] === 'prepare') {
     const tools = { bash: run('bash', ['--version'], '/input').split('\n')[0], git: run('git', ['--version'], '/input').trim(),
-      python: run('python3', ['--version'], '/input').trim(), node: process.version, npm: run('npm', ['--version'], '/input').trim() };
-    if (!tools.node.startsWith('v24.') || Object.values(tools).some(v => !v || v.length > 512)) throw Error();
+      python: run('python3', ['--version'], '/input').trim(), node: process.version, npm: run('npm', ['--version'], '/input').trim(), jq: run('jq', ['--version'], '/input').trim() };
+    if (!tools.node.startsWith('v24.') || !tools.jq.startsWith('jq-') || Object.values(tools).some(v => !v || v.length > 512)) throw Error();
+    if (cp.execFileSync('jq', ['-ce', '.[] | select(.enabled) | .items | map(. + 1) == [2,3]'], {
+      cwd: '/input', encoding: 'utf8', input: '[{"enabled":true,"items":[1,2]}]', maxBuffer: 1024
+    }).trim() !== 'true') throw Error();
     fs.mkdirSync('/install', { recursive: true });
     for (const name of ['package.json', 'package-lock.json']) fs.copyFileSync('/input/files/' + name, '/install/' + name);
     for (const name of fs.readdirSync('/input/archives')) run('npm', ['cache', 'add', '/input/archives/' + name, '--cache', '/pristine-cache', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], '/install');

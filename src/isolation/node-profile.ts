@@ -4,7 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 export const NODE_ISOLATION_PROFILE = "node-npm-linux-v1";
-export const NODE_ISOLATION_IMAGE = "docker.io/library/node@sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0";
+export const NODE_ISOLATION_IMAGE = "mcr.microsoft.com/devcontainers/javascript-node@sha256:447fa75fbc7123952284b50229148e933ea756c40718601fa0ec46edd29fd0c6";
 export const ISOLATION_LIMITS = Object.freeze({ files: 10_000, entries: 10_000, pathDepth: 32, sourceBytes: 512 * 1024 ** 2, bundleBytes: 64 * 1024 ** 2,
   archiveBytes: 64 * 1024 ** 2, downloadBytes: 512 * 1024 ** 2, archives: 1000, outputBytes: 8 * 1024 ** 2,
   phaseMs: 15 * 60_000, operationMs: 60 * 60_000, downloadMs: 30_000, manifestBytes: 1024 ** 2, lockBytes: 16 * 1024 ** 2 });

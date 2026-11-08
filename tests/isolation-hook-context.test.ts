@@ -50,3 +50,32 @@ it("replays the declared no-editor all-staged hook context observed from real Gi
     expect(replay.committer).toBe(`${committer.name} <${committer.email}> ${committer.date}`);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+it.each(["missing", "version", "functional", "success"])("requires jq preflight before dependency/source work: %s", (result) => {
+  const events: string[] = [];
+  const virtualProcess = { argv: ["node", "setup.cjs", "prepare"], version: "v24.22.1", exitCode: 0 };
+  const outputs: Record<string, string> = { bash: "GNU bash fixture\n", git: "git version fixture\n", python3: "Python 3 fixture\n", npm: "11.19.1\n" };
+  const fsAdapter = {
+    readFileSync: (name: string) => { expect(name).toBe("/input/manifest.json"); return "{}"; },
+    mkdirSync: (name: string) => { events.push(`mkdir:${name}`); }, writeFileSync: () => undefined,
+    copyFileSync: () => { events.push("dependency-copy"); throw new Error("Stop after the successful preflight."); }
+  };
+  const cpAdapter = { execFileSync: (command: string, args: string[], options: Record<string, unknown>) => {
+    if (command !== "jq") { events.push(`version:${command}`); return outputs[command]; }
+    if (args[0] === "--version") {
+      events.push("jq-version"); if (result === "missing") throw new Error("No jq.");
+      return result === "version" ? "unrelated tool\n" : "jq-1.6\n";
+    }
+    events.push("jq-functional"); expect(args).toEqual(["-ce", ".[] | select(.enabled) | .items | map(. + 1) == [2,3]"]);
+    expect(options).toMatchObject({ cwd: "/input", encoding: "utf8", input: '[{"enabled":true,"items":[1,2]}]', maxBuffer: 1024 });
+    return result === "functional" ? "false\n" : "true\n";
+  } };
+  runInNewContext(CONTAINER_SETUP, { require: (name: string) => name === "node:fs" ? fsAdapter : name === "node:child_process" ? cpAdapter : {},
+    process: virtualProcess, console: { error: () => undefined }, Buffer });
+  expect(virtualProcess.exitCode).toBe(1);
+  expect(events).toContain("jq-version");
+  expect(events.includes("jq-functional")).toBe(result === "functional" || result === "success");
+  expect(events.includes("mkdir:/install")).toBe(result === "success");
+  expect(events.includes("dependency-copy")).toBe(result === "success");
+  if (result === "success") expect(events.indexOf("jq-functional")).toBeLessThan(events.indexOf("mkdir:/install"));
+});

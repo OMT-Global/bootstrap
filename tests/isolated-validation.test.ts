@@ -43,7 +43,7 @@ function fixture(hook = false, phase: "prepared-hook" | "final-check" = "final-c
       file("package-lock.json", '{"lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}'),
       file("scripts/ci/run-fast-checks.sh", "#!/bin/bash\nexit 0\n", true), ...(hook ? [file(".githooks/pre-commit", "#!/bin/bash\nexit 0\n", true)] : [])] };
 }
-interface FakeOptions { failAt?: string; exitCode?: number; hangAt?: string; cleanupFailure?: boolean; excessiveOutput?: boolean; platform?: string; invalidEvidence?: boolean; untrustedUid?: number; untrustedMode?: number; untrustedAncestor?: boolean }
+interface FakeOptions { failAt?: string; exitCode?: number; hangAt?: string; cleanupFailure?: boolean; excessiveOutput?: boolean; platform?: string; invalidEvidence?: boolean; untrustedUid?: number; untrustedMode?: number; untrustedAncestor?: boolean; storageNotRunning?: boolean; storageLostAfterPhase?: boolean }
 async function fakeDocker(options: FakeOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-docker-control-")); directories.push(directory);
   const log = path.join(directory, "calls.jsonl"); const config = path.join(directory, "options.json");
@@ -54,15 +54,24 @@ const cfg=JSON.parse(fs.readFileSync(${JSON.stringify(config)},'utf8'));
 const args=process.argv.slice(6), command=args[0], name=args.includes('--name')?args[args.indexOf('--name')+1]:args.at(-1);
 fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,environment:process.env,cwd:process.cwd()})+'\\n');
 const phase=String(name).split('-').at(-1);
-if(cfg.cleanupFailure && ((command==='rm')||(command==='volume'&&args[1]==='rm'))) process.exit(28);
-if(cfg.failAt===command || cfg.failAt===command+':'+phase) process.exit(23);
-if(cfg.hangAt===command+':'+phase) setInterval(()=>{},1000);
-else if(command==='version' || command==='image') console.log(cfg.platform||'linux/amd64');
-else if(command==='start' && phase==='prepare') console.log(JSON.stringify(cfg.invalidEvidence?{}:{tree:'b'.repeat(40),tools:{bash:'GNU bash',git:'git',python:'Python 3',node:'v24.0.0',npm:'11'}}));
-else if(command==='start' && cfg.excessiveOutput) process.stdout.write('x'.repeat(9*1024*1024));
-else if(command==='inspect') console.log(JSON.stringify({Running:false,ExitCode:phase==='check'?(cfg.exitCode||0):0,OOMKilled:false,Error:''}));
-else if(command==='cp') { const transfer=args[1].slice(0,-2); fs.writeFileSync(${JSON.stringify(path.join(directory, "transferred.json"))},fs.readFileSync(transfer+'/manifest.json')); }
-else if(command==='create'||command==='volume') console.log(name);
+function proceed() {
+  if(cfg.cleanupFailure && ((command==='rm')||(command==='volume'&&args[1]==='rm'))) process.exit(28);
+  if(cfg.failAt===command || cfg.failAt===command+':'+phase) process.exit(23);
+  if(cfg.hangAt===command+':'+phase) setInterval(()=>{},1000);
+  else if(command==='version' || command==='image') console.log(cfg.platform||'linux/amd64');
+  else if(command==='start' && phase==='prepare') console.log(JSON.stringify(cfg.invalidEvidence?{}:{tree:'b'.repeat(40),tools:{bash:'GNU bash',git:'git',python:'Python 3',node:'v24.0.0',npm:'11'}}));
+  else if(command==='start' && ['check','hook'].includes(phase) && cfg.excessiveOutput) process.stdout.write('x'.repeat(9*1024*1024));
+  else if(command==='inspect') {
+    const prefix=String(name).replace(/-storage$/,'');
+    const prior=fs.readFileSync(${JSON.stringify(log)},'utf8').trim().split('\\n').filter(Boolean).map(line=>JSON.parse(line).args);
+    const phaseRan=prior.some(call=>call[0]==='start' && call.at(-1).startsWith(prefix) && /-(check|hook)$/.test(call.at(-1)));
+    const running=phase==='storage' && !cfg.storageNotRunning && !(cfg.storageLostAfterPhase&&phaseRan);
+    console.log(JSON.stringify({Running:running,ExitCode:phase==='check'?(cfg.exitCode||0):0,OOMKilled:false,Error:''}));
+  }
+  else if(command==='cp') { const transfer=args[1].slice(0,-2); fs.writeFileSync(${JSON.stringify(path.join(directory, "transferred.json"))},fs.readFileSync(transfer+'/manifest.json')); }
+  else if(command==='create'||command==='volume') console.log(name);
+}
+proceed();
 `);
   await chmod(executable, 0o755);
   transport.executable = executable; transport.unavailable = false; transport.uid = options.untrustedUid ?? 0; transport.mode = options.untrustedMode ?? 0o100755; transport.badAncestor = options.untrustedAncestor ?? false;
@@ -89,24 +98,93 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     expect(report.phase === "final-check" && report.candidateCommit).toBe("c".repeat(40));
     expect(report.preparedTree).toBe("b".repeat(40)); expect(report.tools.node).toBe("v24.0.0");
     const calls = await fake.calls(); const creates = calls.filter(({ args }) => args[0] === "create");
-    expect(creates).toHaveLength(4);
+    expect(creates).toHaveLength(6);
     for (const { args, environment } of creates) {
-      for (const values of [["--network", "none"], ["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--user", "1000:1000"], ["--memory", "4g"], ["--pids-limit", "256"]]) {
+      for (const values of [["--network", "none"], ["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--user", "1000:1000"], ["--log-driver", "none"]]) {
         expect(args.slice(args.indexOf(values[0]), args.indexOf(values[0]) + 2)).toEqual(values);
       }
       expect(args).toContain("--read-only"); expect(args).toContain("--no-healthcheck");
       expect(args.filter((value: string) => value.startsWith("type="))).not.toContainEqual(expect.stringContaining("type=bind"));
       expect(environment.BOOTSTRAP_SYNTHETIC_OPERATOR_CANARY).toBeUndefined(); expect(Object.keys(environment).filter((key) => !(platform.value === "darwin" && key === "__CF_USER_TEXT_ENCODING")).sort()).toEqual(["HOME", "PATH"]);
     }
-    for (const { args } of creates.filter(({ args }) => args.at(-1) !== "prepare")) {
+    const keepers = creates.filter(({ args }) => args[args.indexOf("--name") + 1].endsWith("-storage"));
+    expect(keepers).toHaveLength(2);
+    const work = creates.filter(({ args }) => !args[args.indexOf("--name") + 1].endsWith("-storage"));
+    for (const { args } of work) {
+      expect(args.slice(args.indexOf("--memory"), args.indexOf("--memory") + 2)).toEqual(["--memory", "4g"]);
+      expect(args.slice(args.indexOf("--pids-limit"), args.indexOf("--pids-limit") + 2)).toEqual(["--pids-limit", "256"]);
+    }
+    for (const { args } of work.filter(({ args }) => args.at(-1) !== "prepare")) {
       const source = args.find((value: string) => value.startsWith("type=volume") && value.includes("dst=/repo"));
       const cache = args.find((value: string) => value.startsWith("type=volume") && value.includes("dst=/pristine-cache"));
       expect(source).toContain(",readonly"); expect(cache).toContain(",readonly");
     }
-    expect(creates.map(({ args }) => args.at(-1))).toEqual(["prepare", "hook", "prepare", "check"]);
-    expect(calls.filter(({ args }) => args[0] === "rm")).toHaveLength(4);
+    expect(work.map(({ args }) => args.at(-1))).toEqual(["prepare", "hook", "prepare", "check"]);
+    expect(calls.filter(({ args }) => args[0] === "rm")).toHaveLength(6);
     expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(6);
     await expect(access(calls[0]!.cwd)).rejects.toThrow();
+  }, 15_000);
+  it("keeps all three bounded volumes mounted with inert, confined, finite-lived storage code", async () => {
+    const fake = await fakeDocker(); await validateIsolatedNode(fixture());
+    const calls = await fake.calls();
+    const keeperIndex = calls.findIndex(({ args }) => args[0] === "create" && args[args.indexOf("--name") + 1].endsWith("-storage"));
+    expect(keeperIndex).toBeGreaterThanOrEqual(0);
+    const keeper = calls[keeperIndex]!.args as string[];
+    const name = keeper[keeper.indexOf("--name") + 1]!;
+    const mounts = keeper.filter((value) => value.startsWith("type=volume"));
+    expect(mounts).toHaveLength(3);
+    expect(mounts.map((value) => value.split(",").find((part) => part.startsWith("dst="))).sort()).toEqual(["dst=/input", "dst=/pristine-cache", "dst=/repo"]);
+    expect(mounts.some((value) => value.includes(",readonly"))).toBe(false);
+    expect(keeper.slice(keeper.indexOf("--cpus"), keeper.indexOf("--cpus") + 2)).toEqual(["--cpus", "0.1"]);
+    expect(keeper.slice(keeper.indexOf("--memory"), keeper.indexOf("--memory") + 2)).toEqual(["--memory", "64m"]);
+    expect(keeper.slice(keeper.indexOf("--memory-swap"), keeper.indexOf("--memory-swap") + 2)).toEqual(["--memory-swap", "64m"]);
+    expect(keeper.slice(keeper.indexOf("--pids-limit"), keeper.indexOf("--pids-limit") + 2)).toEqual(["--pids-limit", "16"]);
+    expect(keeper.find((value) => value.startsWith("/tmp:"))).toContain("size=1048576");
+    expect(keeper).not.toContain("/input/setup.cjs");
+    expect(keeper).toContain("-e");
+    const delays: number[] = []; const exits: number[] = []; let expire: (() => void) | undefined;
+    new Script(keeper[keeper.indexOf("-e") + 1]!).runInNewContext({
+      setTimeout: (callback: () => void, delay: number) => { expire = callback; delays.push(delay); return 1; },
+      process: { exit: (code: number) => { exits.push(code); } }
+    });
+    expect(delays).toHaveLength(1); expect(delays[0]).toBeGreaterThan(0); expect(delays[0]).toBeLessThanOrEqual(60 * 60_000);
+    expect(expire).toBeTypeOf("function"); expire!(); expect(exits).toEqual([1]);
+    const start = calls.findIndex(({ args }) => args[0] === "start" && args.at(-1) === name);
+    const copied = calls.findIndex(({ args }) => args[0] === "cp");
+    expect(start).toBeGreaterThan(keeperIndex); expect(start).toBeLessThan(copied);
+    expect(calls[start]!.args).not.toContain("--attach");
+    expect(calls.slice(start + 1, copied).some(({ args }) => args[0] === "inspect" && args.at(-1) === name)).toBe(true);
+    const keeperRemoved = calls.findIndex(({ args }) => args[0] === "rm" && args.at(-1) === name);
+    const prepareStarted = calls.findIndex(({ args }) => args[0] === "start" && args.at(-1).endsWith("-prepare"));
+    const workStarted = calls.findIndex(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"));
+    for (const [previous, next] of [[copied, prepareStarted], [prepareStarted, workStarted], [workStarted, keeperRemoved]]) {
+      expect(calls.slice(previous + 1, next).some(({ args }) => args[0] === "inspect" && args.at(-1) === name)).toBe(true);
+    }
+    const workRemovals = calls.flatMap(({ args }, index) => args[0] === "rm" && args.at(-1) !== name ? [index] : []);
+    const volumeRemovals = calls.flatMap(({ args }, index) => args[0] === "volume" && args[1] === "rm" ? [index] : []);
+    expect(keeperRemoved).toBeGreaterThan(Math.max(...workRemovals));
+    expect(Math.min(...volumeRemovals)).toBeGreaterThan(keeperRemoved);
+  });
+  it.each(["create:storage", "start:storage"])("blocks and removes tracked resources after keeper %s fails", async (failAt) => {
+    const fake = await fakeDocker({ failAt });
+    await expect(validateIsolatedNode(fixture())).rejects.toThrow();
+    const calls = await fake.calls();
+    expect(calls.some(({ args }) => args[0] === "cp")).toBe(false);
+    expect(calls.some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"))).toBe(true);
+    expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(3);
+  });
+  it("blocks before copying source when the storage keeper is not running", async () => {
+    const fake = await fakeDocker({ storageNotRunning: true });
+    await expect(validateIsolatedNode(fixture())).rejects.toThrow(/storage|keeper/i);
+    const calls = await fake.calls(); expect(calls.some(({ args }) => args[0] === "cp")).toBe(false);
+    expect(calls.some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"))).toBe(true);
+  });
+  it("rejects late storage loss before releasing success evidence", async () => {
+    const fake = await fakeDocker({ storageLostAfterPhase: true });
+    await expect(validateIsolatedNode(fixture())).rejects.toThrow(/storage|keeper/i);
+    const calls = await fake.calls(); expect(calls.some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"))).toBe(true);
+    expect(calls.some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"))).toBe(true);
+    expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(3);
   });
   it("freezes caller bytes before asynchronous Docker work", async () => {
     const fake = await fakeDocker(); const input = fixture(); const original = Buffer.from(input.files[0]!.bytes);
@@ -144,7 +222,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     expect(calls.findIndex(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-hook"))).toBeLessThan(calls.findIndex(({ args }) => args[0] === "create" && args.at(-1) === "check"));
     expect(check).toContainEqual(expect.stringContaining("/npm-cache:rw,nosuid,nodev,size="));
     expect(hook).toContainEqual(expect.stringContaining("/npm-cache:rw,nosuid,nodev,size="));
-  });
+  }, 15_000);
   it("kills the active client and removes the actual named resource on cancellation", async () => {
     const fake = await fakeDocker({ hangAt: "start:check" }); const controller = new AbortController();
     const operation = validateIsolatedNode(fixture(), { signal: controller.signal });
@@ -175,6 +253,38 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
       expect((outcome.error as Error).message).toContain("timed out");
       expect((await fake.calls()).some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-check"))).toBe(true);
     } finally { controller.abort(); vi.useRealTimers(); await operation; }
+  }, 15_000);
+  it("enforces its whole-operation deadline while a Docker client is active", async () => {
+    const schedule = globalThis.setTimeout;
+    const wholeDelays: number[] = []; let expire: (() => void) | undefined;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+      if (delay !== undefined && delay > ISOLATION_LIMITS.phaseMs) {
+        wholeDelays.push(delay); expire = () => callback(...args);
+      }
+      return schedule(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const fake = await fakeDocker({ hangAt: "start:check" }); const controller = new AbortController();
+    const operation = validateIsolatedNode(fixture(), { signal: controller.signal })
+      .then(() => ({ passed: true, error: undefined }), (error: unknown) => ({ passed: false, error }));
+    try {
+      let attached = false; const until = performance.now() + 5000;
+      while (performance.now() < until) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        attached = (await fake.calls()).some(({ args }) => args[0] === "start" && args.at(-1).endsWith("-check"));
+        if (attached) break;
+      }
+      expect(attached).toBe(true); expect(wholeDelays).toHaveLength(1);
+      expect(wholeDelays[0]).toBeGreaterThan(ISOLATION_LIMITS.operationMs - 1000);
+      expect(wholeDelays[0]).toBeLessThanOrEqual(ISOLATION_LIMITS.operationMs);
+      expect(expire).toBeTypeOf("function"); expire!();
+      const result = await operation;
+      expect(result.passed).toBe(false); expect(result.error).toBeInstanceOf(Error);
+      expect((result.error as Error).message).toMatch(/operation.*timed out/i);
+      const calls = await fake.calls();
+      expect(calls.some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-check"))).toBe(true);
+      expect(calls.some(({ args }) => args[0] === "rm" && args.at(-1).endsWith("-storage"))).toBe(true);
+      expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(3);
+    } finally { controller.abort(); await operation; }
   }, 15_000);
   it("keeps the original failure when Docker cleanup also fails", async () => {
     await fakeDocker({ failAt: "start:check", cleanupFailure: true });

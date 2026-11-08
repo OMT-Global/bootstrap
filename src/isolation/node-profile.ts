@@ -7,7 +7,7 @@ export const NODE_ISOLATION_PROFILE = "node-npm-linux-v1";
 export const NODE_ISOLATION_IMAGE = "docker.io/library/node@sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0";
 export const ISOLATION_LIMITS = Object.freeze({ files: 10_000, entries: 10_000, pathDepth: 32, sourceBytes: 512 * 1024 ** 2, bundleBytes: 64 * 1024 ** 2,
   archiveBytes: 64 * 1024 ** 2, downloadBytes: 512 * 1024 ** 2, archives: 1000, outputBytes: 8 * 1024 ** 2,
-  phaseMs: 15 * 60_000, downloadMs: 30_000, manifestBytes: 1024 ** 2, lockBytes: 16 * 1024 ** 2 });
+  phaseMs: 15 * 60_000, operationMs: 60 * 60_000, downloadMs: 30_000, manifestBytes: 1024 ** 2, lockBytes: 16 * 1024 ** 2 });
 export interface PlannedGitIdentity { name: string; email: string; date: string }
 export interface IsolatedSourceFile { path: string; mode: "100644" | "100755"; bytes: Uint8Array }
 interface NodeValidationCommon {

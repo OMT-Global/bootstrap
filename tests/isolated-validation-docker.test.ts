@@ -181,6 +181,8 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
   assert.throws(() => fs.writeFileSync(${JSON.stringify(canary)}, 'changed'));
   for (const name of ['README.md', '.git/index']) assert.throws(() => fs.writeFileSync(name, 'changed'), error => ['EROFS', 'EACCES', 'EPERM'].includes(error.code));
   assert.equal(fs.existsSync('/npm-cache/installer-lifecycle-ran'), false);
+  assert.equal(require('picocolors').createColors(false).red('fixture'), 'fixture');
+  console.log('ISOLATED-LOCKED-DEPENDENCY-PASSED:' + process.argv[2]);
   const capabilities = fs.readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10)).find(line => line.startsWith('CapEff:'));
   assert.equal(capabilities.split(':')[1].trim(), '0000000000000000');
   assert.equal(cp.execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], {encoding:'utf8'}).trim(), 'codex/isolation-fixture');
@@ -220,10 +222,19 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
   console.log('ISOLATED-PROBE-PASSED:' + process.argv[2]);
 })().catch(error=>{console.error(error.message);process.exitCode=1;});\n`;
     const packageData = JSON.parse(Buffer.from(input.files.find((entry) => entry.path === "package.json")!.bytes).toString());
+    const publicLock = JSON.parse(await readFile(path.join(checkout, "package-lock.json"), "utf8"));
+    const dependency = publicLock.packages["node_modules/picocolors"];
+    expect(dependency.version).toBe("1.1.1");
+    packageData.dependencies = { picocolors: dependency.version };
+    const lockData = JSON.parse(Buffer.from(input.files.find((entry) => entry.path === "package-lock.json")!.bytes).toString());
+    lockData.packages[""].dependencies = packageData.dependencies;
+    lockData.packages["node_modules/picocolors"] = { version: dependency.version, resolved: dependency.resolved,
+      integrity: dependency.integrity, license: dependency.license };
+    replace(input, file("package-lock.json", JSON.stringify(lockData)));
     packageData.scripts = { postinstall: "node -e \"require('node:fs').writeFileSync('/pristine-cache/installer-lifecycle-ran', 'unexpected lifecycle')\"" };
     replace(input, file("package.json", JSON.stringify(packageData)));
     replace(input, file("probe.cjs", probe));
-    replace(input, file("scripts/ci/run-fast-checks.sh", "#!/bin/bash\nset -euo pipefail\nnpm ci --offline --ignore-scripts --no-audit --no-fund\nnode probe.cjs checks\n", true));
+    replace(input, file("scripts/ci/run-fast-checks.sh", "#!/bin/bash\nset -euo pipefail\nnode probe.cjs checks\n", true));
     replace(input, file(".githooks/pre-commit", "#!/bin/bash\nset -euo pipefail\nnode probe.cjs hook\n", true)); input.hook = ".githooks/pre-commit";
     const frozen = freezeNodeValidation(input);
     const hook = await validateIsolatedNode(input);
@@ -234,11 +245,14 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(report.sourceSha256).toBe(frozen.sourceSha256); expect(report.preparedTree).toBe(candidateTrees.get(candidate.candidateCommit)); expect(report.baseCommit).toBe(input.baseCommit);
     expect(hook.phase).toBe("prepared-hook"); expect(report.phase).toBe("final-check"); expect(report.candidateCommit).toBe(candidate.candidateCommit);
     expect(hook.preparedTree).toBe(report.preparedTree);
+    expect(hook).toMatchObject({ profile: report.profile, image: report.image, sourceSha256: report.sourceSha256, baseCommit: report.baseCommit, hook: report.hook });
     expect(hook.commitPlanSha256).toBe(frozen.commitPlanSha256); expect(report.commitPlanSha256).toBe(frozen.commitPlanSha256);
     expect(Object.keys(report.tools).sort()).toEqual(["bash", "git", "node", "npm", "python"]);
     expect(report.tools.node).toMatch(/^v24\./); for (const value of Object.values(report.tools)) expect(value.length).toBeGreaterThan(0);
     expect(report.checkOutput).toContain("ISOLATED-PROBE-PASSED:checks"); expect(hook.hookOutput).toContain("ISOLATED-PROBE-PASSED:hook");
     expect(hook.hookOutput).toContain("ISOLATED-HOOK-CONTEXT-PASSED");
+    expect(hook.hookOutput).toContain("ISOLATED-LOCKED-DEPENDENCY-PASSED:hook");
+    expect(report.checkOutput).toContain("ISOLATED-LOCKED-DEPENDENCY-PASSED:checks");
     expect(report.checkOutput).toContain(`ISOLATED-CHECK-COMMIT:${candidate.candidateCommit}`); expect("hookOutput" in report).toBe(false);
     expect(await readFile(canary, "utf8")).toBe("unchanged host fixture\n"); expect(connections).toBe(0);
     await expect(access(marker)).rejects.toThrow(); expect(freezeNodeValidation(input).sourceSha256).toBe(frozen.sourceSha256);
@@ -291,6 +305,71 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     } finally { cancellation.abort(); }
     const result = await outcome; expect(result.passed).toBe(false); expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).message).toContain("cancelled"); expect(await resources()).toEqual(beforeResources);
+  }, timeout);
+
+  it.each(["hook", "check"] as const)("rejects loss of the live storage keeper during the actual %s phase", async (mode) => {
+    const { input } = await fixture();
+    replace(input, file("hold.cjs", "const fs=require('node:fs');fs.writeFileSync('/tmp/isolation-storage-phase-ready','ready');const timer=setInterval(()=>{if(fs.existsSync('/tmp/isolation-storage-phase-release'))clearInterval(timer);},25);\n"));
+    const entry = mode === "hook" ? ".githooks/pre-commit" : "scripts/ci/run-fast-checks.sh";
+    replace(input, file(entry, "#!/bin/bash\nset -euo pipefail\nnode hold.cjs\n", true));
+    if (mode === "hook") input.hook = ".githooks/pre-commit";
+    const prepared = mode === "check" ? await finalCandidate(input) : input;
+    const cancellation = new AbortController();
+    let completed: { passed: boolean; error: unknown } | undefined;
+    const outcome = validateIsolatedNode(prepared, { signal: cancellation.signal }).then(
+      () => completed = { passed: true, error: undefined }, (error: unknown) => completed = { passed: false, error });
+    let active = "";
+    try {
+      await waitFor(async () => {
+        if (completed) throw completed.error ?? new Error("The held target completed unexpectedly.");
+        const current = await resources();
+        for (const name of current.containers.filter((value) => !beforeResources.containers.includes(value) && value.endsWith(`-${mode}`))) {
+          try {
+            await dockerCommand(["exec", name, "/usr/bin/test", "-f", "/tmp/isolation-storage-phase-ready"]);
+            active = name; return true;
+          } catch { /* Target has not reached its held phase yet. */ }
+        }
+        return false;
+      });
+      const storage = active.replace(/-(?:hook|check)$/, "-storage");
+      const [keeper, phase] = JSON.parse(await dockerCommand(["inspect", storage, active]));
+      expect(keeper.State.Running).toBe(true); expect(phase.State.Running).toBe(true);
+      for (const container of [keeper, phase]) {
+        expect(container.Config.User).toBe("1000:1000"); expect(container.HostConfig.NetworkMode).toBe("none");
+        expect(container.HostConfig.ReadonlyRootfs).toBe(true); expect(container.HostConfig.CapDrop).toContain("ALL");
+        expect(container.HostConfig.SecurityOpt).toContain("no-new-privileges");
+        expect(container.HostConfig.LogConfig.Type).toBe("none");
+      }
+      expect(keeper.HostConfig.NanoCpus).toBe(100_000_000);
+      expect(keeper.HostConfig.Memory).toBe(64 * 1024 ** 2); expect(keeper.HostConfig.MemorySwap).toBe(64 * 1024 ** 2);
+      expect(keeper.HostConfig.PidsLimit).toBe(16); expect(keeper.HostConfig.Tmpfs["/tmp"]).toContain("size=1048576");
+      const mounted = (container: typeof keeper) => container.Mounts.filter((mount: { Type: string }) => mount.Type === "volume") as Array<{
+        Name: string; Destination: string; Driver: string; RW: boolean;
+      }>;
+      const keeperMounts = mounted(keeper), phaseMounts = mounted(phase);
+      expect(keeperMounts).toHaveLength(3); expect(phaseMounts).toHaveLength(3);
+      expect(keeperMounts.map((mount) => mount.Destination).sort()).toEqual(["/input", "/pristine-cache", "/repo"]);
+      expect(keeperMounts.map((mount) => mount.Name).sort()).toEqual(phaseMounts.map((mount) => mount.Name).sort());
+      for (const mount of keeperMounts) { expect(mount.Driver).toBe("local"); expect(mount.RW).toBe(true); }
+      for (const mount of phaseMounts) { expect(mount.Driver).toBe("local"); expect(mount.RW).toBe(false); }
+      const volumes = JSON.parse(await dockerCommand(["volume", "inspect", ...keeperMounts.map((mount) => mount.Name)]));
+      expect(volumes).toHaveLength(3);
+      for (const volume of volumes) {
+        expect(volume.Driver).toBe("local"); expect(volume.Options.type).toBe("tmpfs"); expect(volume.Options.device).toBe("tmpfs");
+        expect(volume.Options.o).toContain("nosuid,nodev");
+        const bytes = volume.Name.endsWith("-source") ? 1024 ** 3 : volume.Name.endsWith("-cache") ? 512 * 1024 ** 2 : 768 * 1024 ** 2;
+        expect(volume.Options.o).toContain(`size=${bytes}`);
+      }
+      await dockerCommand(["kill", storage]);
+      expect(JSON.parse(await dockerCommand(["inspect", "--format", "{{json .State}}", storage])).Running).toBe(false);
+      // Let the target finish successfully: only the trusted storage-liveness guard should reject its evidence.
+      try { await dockerCommand(["exec", active, "/usr/bin/touch", "/tmp/isolation-storage-phase-release"]); }
+      catch { expect((await resources()).containers).not.toContain(active); }
+      const result = await outcome;
+      expect(result.passed).toBe(false); expect(result.error).toBeInstanceOf(Error);
+      expect((result.error as Error).message).toContain("storage lifetime ended");
+      expect(await resources()).toEqual(beforeResources);
+    } finally { cancellation.abort(); await outcome; }
   }, timeout);
 
   it("runs Bootstrap's actual frozen fast checks using the integrity-verified offline cache", async () => {

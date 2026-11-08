@@ -20,11 +20,14 @@ The code-owned limits are explicit:
 | Public Git bundle | 64 MiB |
 | Package / lock JSON | 1 MiB / 16 MiB |
 | Dependency archives | 1,000 archives, 64 MiB each, 512 MiB total |
-| Execution | 15 minutes per phase, 2 CPUs, 4 GiB memory, 256 PIDs |
+| Execution | 15 minutes per phase, 60 minutes absolute per backend call; 2 CPUs, 4 GiB memory, 256 PIDs |
+| Storage keeper | 0.1 CPU, 64 MiB memory/swap, 16 PIDs, 1 MiB temporary filesystem |
 | Download | 30 seconds per archive |
 | Retained Docker output | 8 MiB across the run |
 
-The cache, input, source, temporary, dependency, and build filesystems also have fixed bounds in the profile. An unsupported write location or exhausted bound fails rather than widening access.
+The cache, input, source, temporary, dependency, and build filesystems also have fixed bounds in the profile. An unsupported write location or exhausted bound fails rather than widening access. A trusted inert `-storage` container continuously holds all three Docker local-driver tmpfs volumes from before data copy through completion. It uses the same non-root, network-disabled, read-only-root, capability-free controls as the worker containers. The supervisor verifies its live state before preparation, before each phase, and before returning evidence; death or deadline expiry blocks success. The host watchdog and keeper timer share the same absolute deadline from backend entry.
+
+Every created container explicitly uses `--log-driver none`; bounded attached output is the report path. This avoids an unbounded daemon log alongside the supervisor output budget. Cleanup removes workers first, the keeper last, then volumes.
 
 The trusted supervisor must supply explicit planned public author and committer identities, including raw Git dates (`epoch timezone`). There is no default identity, ambient configuration fallback, or inference from the DCO. The supported hook context is root-directory, no-editor, all-staged, and single-parent only; partial commits, amendments, merges, editor sessions, and subdirectory-prefix contexts need a later reviewed profile. Hook replay exports `.git/index`, empty `GIT_PREFIX`, `GIT_EDITOR=:`, both planned identities/date values, and a sanitized local Git user matching the planned committer.
 
@@ -32,8 +35,8 @@ The expected pipeline is:
 
 1. Validate the supported source, package/lock, hook, and profile inputs and freeze their exact bytes/modes.
 2. Download bounded public registry tarballs as inert data, reject redirects or credentials, and verify SHA-512 integrity.
-3. Populate a disposable cache and install the exact lock offline with lifecycle scripts disabled.
-4. Run the explicit `prepared-hook` phase against the base HEAD and prepared read-only index. After the future supervisor independently constructs/signs the exact public candidate, run the separate `final-check` phase with that candidate object as clean HEAD, verifying its exact raw author/committer identities/dates, parent, message, and prepared tree. Each phase uses a fresh, independent network-disabled container. Prepared source and sanitized Git/index data remain read-only; only bounded temporary, cache, dependency, and build locations are writable.
+3. Populate a disposable cache and verify the exact lock offline with lifecycle scripts disabled. Create the reserved empty `node_modules` and `dist` mount points before mounting the prepared source read-only.
+4. Run the explicit `prepared-hook` phase against the base HEAD and prepared read-only index. After the future supervisor independently constructs/signs the exact public candidate, run the separate `final-check` phase with that candidate object as clean HEAD, verifying its exact raw author/committer identities/dates, parent, message, and prepared tree. Each phase uses a fresh, independent network-disabled container, copies the pristine cache, and installs its own exact dependencies with `npm ci --offline --ignore-scripts` before invoking the hook or check. Prepared source and sanitized Git/index data remain read-only; only bounded temporary, cache, dependency, and build locations are writable.
 5. Remove each container and its ephemeral storage after success, failure, timeout, cancellation, or partial startup. Cleanup errors remain visible and cannot establish successful validation.
 
 No host path is bind-mounted. Target code receives a fixed minimal environment, no fleet credentials or host agent sockets, no Linux capabilities, and no external network route. The first hook contract permits only no hook or the regular in-repository `.githooks/pre-commit`; do not silently skip other required hooks. The future trusted supervisor must independently reconstruct and sign its own exact tree rather than accepting sandbox-produced Git objects as publication authority.
@@ -42,7 +45,7 @@ No host path is bind-mounted. Target code receives a fixed minimal environment, 
 
 Before the new standalone workflow is registered on the default branch, use the existing registered [Full Release Validation](../../.github/workflows/full-release-validation.yml) caller. The backend branch's reviewed `ci.customScripts.extended` projection runs normal fast checks, then pulls the pinned image and requires the Docker suite only when `RELEASE_PROFILE=full`. This preserves cheap ordinary PR checks; another profile prints an explicit non-execution message.
 
-After local checks and autoreview, dispatch the existing caller from the reviewed backend branch with its exact committed target SHA:
+After local checks and independent source-delta review, dispatch the existing caller from a committed WIP backend branch with its exact target SHA. Complete final branch autoreview after hosted proof and any resulting fixes; a PR/readiness claim requires both gates:
 
 ```sh
 gh workflow run full-release-validation.yml --repo OMT-Global/bootstrap \
@@ -52,10 +55,10 @@ gh workflow run full-release-validation.yml --repo OMT-Global/bootstrap \
 
 The new manual [Fleet Isolation Validation](../../.github/workflows/fleet-isolation-validation.yml) workflow is a post-merge convenience route once registered. It runs on GitHub-hosted Ubuntu with read-only repository permission, exact-head checkout, and no production fleet credentials. Both routes set `BOOTSTRAP_REQUIRE_ISOLATION_TESTS=1`; unavailable Docker or skipped confinement tests must fail.
 
-Record its exact head SHA, image digest, actual tool versions, offline-cache result, and hostile integration-test results in the PR validation evidence. The suite must demonstrate that fabricated operator environment/file/socket canaries and an outside workspace cannot be read or changed, external networking is blocked, supported hooks really run, failed or mutating hooks block, and containers are cleaned up on failure/timeout. Host Git configuration canaries must cover any host Git reads; testing only pre-commit/pre-push hooks is insufficient for supervisor integration.
+Record its exact head SHA, image digest, actual tool versions, offline-cache result, and hostile integration-test results in the PR validation evidence. The suite must demonstrate that fabricated operator environment/file/socket canaries and an outside workspace cannot be read or changed, external networking is blocked, supported hooks really run, failed or mutating hooks block, both fresh phases can import a locked public dependency without running lifecycle scripts, storage-keeper loss blocks evidence in both phases, and containers/volumes are cleaned up on failure/cancellation. The suite inspects the actual keeper mounts, confinement settings, resource limits, and disabled daemon logging. Natural 60-minute expiry is covered by controlled-clock regressions; the hosted death cases kill the keeper to keep the run bounded. Host Git configuration canaries must cover any host Git reads; testing only pre-commit/pre-push hooks is insufficient for supervisor integration.
 
 At design time, local Docker/Podman was unavailable and no VM/runtime was installed or started. Until the hosted suite succeeds at the exact implementation head, describe the profile as unproven. A successful backend test run does not authorize live fleet execution: supervisor integration, exact-commit review/checks, and an explicitly inspected target allowlist remain separate gates.
 
 ## Failure and recovery
 
-Treat unsupported input, incomplete offline cache, unexpected prepared-source writes, missing tools, startup failure, timeout, and cleanup failure as blockers. Preserve sanitized phase/reason evidence without printing target output as trusted text or exposing credentials. The API accepts an `AbortSignal` and force-cleans its named containers/volumes before returning cancellation. Abrupt supervisor loss or SIGKILL cannot guarantee a `finally` block executes; inspect resources carrying the `bootstrap.isolation` label and any reported credential-free scratch recovery state before retrying. Never reset or clean the original checkout to make a failed run appear successful.
+Treat unsupported input, incomplete offline cache, unexpected prepared-source writes, missing tools, startup failure, storage-keeper loss, timeout, and cleanup failure as blockers. Preserve sanitized phase/reason evidence without printing target output as trusted text or exposing credentials. The API accepts an `AbortSignal` and force-cleans its named containers/volumes before returning cancellation. Abrupt supervisor loss or SIGKILL cannot guarantee a `finally` block executes; inspect resources carrying the `bootstrap.isolation` label and any reported credential-free scratch recovery state before retrying. Never reset or clean the original checkout to make a failed run appear successful.

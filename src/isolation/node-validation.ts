@@ -67,6 +67,7 @@ const volume = (name: string, target: string, readonly = true) => ["--mount", `t
 
 /** Backend only: public frozen bytes in; validation evidence out. Never signs or publishes a repository. */
 export async function validateIsolatedNode(input: NodeValidationInput, options: { signal?: AbortSignal } = {}): Promise<NodeValidationReport> {
+  const deadline = Date.now() + ISOLATION_LIMITS.operationMs;
   options.signal?.throwIfAborted();
   const frozen = freezeNodeValidation(input);
   demand(process.platform === "linux" && process.arch === "x64", "This profile requires a Linux/amd64 supervisor; no host fallback exists.");
@@ -74,7 +75,11 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
   const home = await mkdtemp(path.join(os.tmpdir(), "bootstrap-isolation-"));
   const budget = { bytes: 0 }; const id = `bootstrap-isolation-${randomUUID()}`;
   const volumes: string[] = []; const containers: string[] = [];
-  const run = (args: string[], timeout?: number) => command(executable, args, home, budget, timeout, options.signal);
+  const operation = new AbortController(); let operationTimedOut = false;
+  const cancel = () => operation.abort(); options.signal?.addEventListener("abort", cancel, { once: true });
+  if (options.signal?.aborted) cancel();
+  const operationTimer = setTimeout(() => { operationTimedOut = true; cancel(); }, Math.max(1, deadline - Date.now()));
+  const run = (args: string[], timeout?: number) => command(executable, args, home, budget, timeout, operation.signal);
   let failure: unknown; let report: NodeValidationReport | undefined;
   try {
     await mkdir(path.join(home, "docker"), { mode: 0o700 });
@@ -95,26 +100,38 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
     await writeFile(path.join(transfer, "manifest.json"), JSON.stringify({ ...frozen, files: frozen.files.map(({ path, mode, sha256 }) => ({ path, mode, sha256 })), baseBundle: undefined, archives: undefined }), { mode: 0o600 });
     const downloadController = new AbortController();
     const cancelDownload = () => downloadController.abort();
-    options.signal?.addEventListener("abort", cancelDownload, { once: true });
+    operation.signal.addEventListener("abort", cancelDownload, { once: true });
     const downloadTimer = setTimeout(cancelDownload, ISOLATION_LIMITS.phaseMs);
     let downloaded = 0;
     try {
-      if (options.signal?.aborted) downloadController.abort();
+      if (operation.signal.aborted) downloadController.abort();
       for (const [index, request] of frozen.archives.entries()) {
         const bytes = await downloadArchive(request, downloadController.signal); downloaded += bytes.length;
         demand(downloaded <= ISOLATION_LIMITS.downloadBytes, "Dependency data exceeds the aggregate download bound.");
         await writeFile(path.join(transfer, "archives", `${index}.tgz`), bytes, { mode: 0o600 });
       }
-    } finally { clearTimeout(downloadTimer); options.signal?.removeEventListener("abort", cancelDownload); }
+    } finally { clearTimeout(downloadTimer); operation.signal.removeEventListener("abort", cancelDownload); }
     // Docker copies public input into its own bounded storage; no host bind mount is used.
     const common = ["--platform", "linux/amd64", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-      "--ipc", "private", "--cgroupns", "private", "--user", "1000:1000", "--cpus", "2", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "256", "--no-healthcheck", "--entrypoint", "node",
-      ...environment.flatMap((value) => ["--env", value]), ...tmpfs("/tmp", 256 * 1024 ** 2)];
-    const create = async (name: string, mounts: string[], mode: string, working = "/repo/project") => {
+      "--ipc", "private", "--cgroupns", "private", "--user", "1000:1000", "--no-healthcheck", "--log-driver", "none", "--entrypoint", "node",
+      ...environment.flatMap((value) => ["--env", value])];
+    const create = async (name: string, mounts: string[], mode: "prepare" | "check" | "hook" | "storage", working = "/repo/project") => {
       containers.push(name);
+      const storage = mode === "storage", memory = storage ? "64m" : "4g";
       await run(["create", "--name", name, "--label", `bootstrap.isolation=${id}`, "--workdir", working, ...common, ...mounts,
-        NODE_ISOLATION_IMAGE, "/input/setup.cjs", mode]);
+        "--cpus", storage ? "0.1" : "2", "--memory", memory, "--memory-swap", memory, "--pids-limit", storage ? "16" : "256",
+        ...tmpfs("/tmp", (storage ? 1 : 256) * 1024 ** 2), NODE_ISOLATION_IMAGE,
+        ...(storage ? ["-e", `setTimeout(() => process.exit(1), Math.max(1, ${deadline} - Date.now()))`] : ["/input/setup.cjs", mode])]);
     };
+    // A live, inert mount holder prevents the local driver's tmpfs data disappearing between operations.
+    const storage = `${id}-storage`;
+    await create(storage, [...volume(data, "/input", false), ...volume(source, "/repo", false), ...volume(cache, "/pristine-cache", false)], "storage", "/");
+    await run(["start", storage]);
+    const storageAlive = async () => {
+      const state = JSON.parse(await run(["inspect", "--format", "{{json .State}}", storage])) as { Running?: boolean; OOMKilled?: boolean; Error?: string };
+      demand(state.Running === true && state.OOMKilled === false && state.Error === "", "The bounded isolated storage lifetime ended.");
+    };
+    await storageAlive();
     const prepare = `${id}-prepare`;
     await create(prepare, [...volume(data, "/input", false), ...volume(source, "/repo", false), ...volume(cache, "/pristine-cache", false), ...tmpfs("/install", 512 * 1024 ** 2)], "prepare", "/input");
     // The non-root process needs to read copied public files. It never receives an operator configuration.
@@ -125,23 +142,28 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
       for (const entry of await readdir(directory, { withFileTypes: true })) if (entry.isDirectory()) await readableDirectories(path.join(directory, entry.name));
     };
     await readableDirectories(transfer);
+    await storageAlive();
     await run(["cp", `${transfer}/.`, `${prepare}:/input/`]);
     const stopped = async (name: string) => {
       const state = JSON.parse(await run(["inspect", "--format", "{{json .State}}", name])) as { Running?: boolean; ExitCode?: number; OOMKilled?: boolean; Error?: string };
       demand(state.Running === false && state.ExitCode === 0 && state.OOMKilled === false && state.Error === "", "The isolated process did not complete successfully.");
     };
+    await storageAlive();
     const preparedText = await run(["start", "--attach", prepare]);
     await stopped(prepare);
     const prepared = JSON.parse(preparedText.trim().split("\n").at(-1)!) as { tools: Record<string, string>; tree: string };
     demand(/^[a-f0-9]{40}$/.test(prepared.tree) && ["bash", "git", "python", "node", "npm"].every((name) => typeof prepared.tools[name] === "string" && prepared.tools[name]!.length <= 512), "Toolchain preparation evidence is invalid.");
     await run(["rm", "--force", prepare]); containers.splice(containers.indexOf(prepare), 1);
+    await storageAlive();
     const phase = async (mode: "check" | "hook") => {
+      await storageAlive();
       const name = `${id}-${mode}`;
       await create(name, [...volume(data, "/input"), ...volume(source, "/repo"), ...volume(cache, "/pristine-cache"),
         ...tmpfs("/npm-cache", 512 * 1024 ** 2), ...tmpfs("/repo/project/node_modules", 512 * 1024 ** 2), ...tmpfs("/repo/project/dist", 128 * 1024 ** 2)], mode);
       const output = await run(["start", "--attach", name]);
       await stopped(name);
       await run(["rm", "--force", name]); containers.splice(containers.indexOf(name), 1);
+      await storageAlive();
       return redactPublicText(output).value;
     };
     const evidence: NodeValidationEvidence = { profile: NODE_ISOLATION_PROFILE, image: NODE_ISOLATION_IMAGE, sourceSha256: frozen.sourceSha256, commitPlanSha256: frozen.commitPlanSha256,
@@ -149,8 +171,10 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
     report = frozen.phase === "prepared-hook"
       ? { ...evidence, phase: "prepared-hook", hookOutput: frozen.hook === "none" ? "" : await phase("hook") }
       : { ...evidence, phase: "final-check", candidateCommit: frozen.candidateCommit, checkOutput: await phase("check") };
-  } catch (error) { failure = options.signal?.aborted ? new IsolationError("Isolated validation was cancelled.") : error; }
+    await storageAlive();
+  } catch (error) { failure = operationTimedOut ? new IsolationError("Isolated operation timed out.") : options.signal?.aborted ? new IsolationError("Isolated validation was cancelled.") : error; }
   finally {
+    clearTimeout(operationTimer); options.signal?.removeEventListener("abort", cancel);
     let cleanupFailed = false;
     // Independent cleanup budget ensures an output-limit failure cannot prevent container removal.
     for (const name of containers.reverse()) try { await command(executable, ["rm", "--force", name], home, { bytes: 0 }, 30_000); } catch { cleanupFailed = true; }

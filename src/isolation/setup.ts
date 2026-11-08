@@ -23,6 +23,7 @@ try {
       const bytes = fs.readFileSync('/input/files/' + file.path); if (hash(bytes) !== file.sha256) throw Error();
       const destination = '/repo/project/' + file.path; fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.writeFileSync(destination, bytes, { mode: file.mode === '100755' ? 0o555 : 0o444 });
     }
+    for (const name of ['node_modules', 'dist']) fs.mkdirSync('/repo/project/' + name);
     git(['init', '-q', '--template=/input/empty-template']);
     git(['config', 'core.hooksPath', '/disabled-hooks']); git(['config', 'core.fsmonitor', 'false']);
     git(['config', 'user.name', manifest.committer.name]); git(['config', 'user.email', manifest.committer.email]);
@@ -52,6 +53,7 @@ try {
     console.log(JSON.stringify({ tools, tree }));
   } else {
     fs.cpSync('/pristine-cache', '/npm-cache', { recursive: true });
+    run('npm', ['ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--engine-strict']);
     const mode = process.argv[2];
     if (mode === 'check') {
       cp.execFileSync('bash', ['scripts/ci/run-fast-checks.sh'], { cwd: '/repo/project', stdio: 'inherit' });

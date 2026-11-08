@@ -2,7 +2,7 @@
 
 Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62). This is the backend stage described by [ADR-0013](../decisions/ADR-0013-isolated-node-validation-backend.md); it enables no fleet CLI, signing, push, PR creation, or live rollout.
 
-On 2026-11-08 a separate software-architect reviewer who did not author these modules independently checked the implementation against the reviewed isolation design. No accepted/actionable source findings remained in that original snapshot or the later planned-identity/materialized-entry delta reviewed below. This records automated implementation review, not independent GitHub approval or successful Docker confinement.
+On 2026-11-08 a separate software-architect reviewer who did not author these modules independently checked the implementation against the reviewed isolation design. No accepted/actionable source findings remained in that original snapshot or the later planned-identity/materialized-entry delta reviewed below. Those clean snapshots precede the pending runtime storage/dependency/logging delta below. This records automated implementation review, not independent GitHub approval or successful Docker confinement.
 
 | Original reviewed artifact | SHA-256 |
 |---|---|
@@ -16,7 +16,7 @@ The backend performs no original-checkout or host Git operation. It returns evid
 
 Meaningful local regressions cover source/path/package/hook/archive boundaries and lifecycle faults. A trailing-slash regular-file path test initially failed and was fixed. Controlled-Docker-CLI tests exercise false-success container exit codes, partial creation/start failures, cancellation, the fixed watchdog deadline, output overflow, and cleanup failures. Those tests do not establish actual Docker enforcement.
 
-At the original reviewed revision, ten actual Docker acceptance cases were required through the registered full-validation route or the later standalone manual workflow; the revised suite below contains twelve. They exercise fabricated operator environment/file/socket and host Git-configuration canaries, network isolation, immutable source/index, hook failures/mutation, exact final-candidate binding, actual cancellation cleanup, and Bootstrap's real locked offline checks. Local collection skips these cases; enabling the required flag fails on the unsupported local host rather than silently skipping. No local runtime or VM was installed or started. Image metadata and passing local tests do not establish runtime readiness: record actual image/tool/cache/adversarial results at the exact published implementation head before the backend is described as proven.
+At the original reviewed revision, ten actual Docker acceptance cases were required through the registered full-validation route or the later standalone manual workflow; the then-revised identity suite contained twelve. The current storage delta expands that suite to fourteen below. They exercise fabricated operator environment/file/socket and host Git-configuration canaries, network isolation, immutable source/index, hook failures/mutation, exact final-candidate binding, actual cancellation cleanup, and Bootstrap's real locked offline checks. Local collection skips these cases; enabling the required flag fails on the unsupported local host rather than silently skipping. No local runtime or VM was installed or started. Image metadata and passing local tests do not establish runtime readiness: record actual image/tool/cache/adversarial results at the exact published implementation head before the backend is described as proven.
 
 ## Trusted Docker executable delta
 
@@ -32,10 +32,24 @@ The supported context is now explicit: a normal root-directory, no-editor, all-p
 
 A real minimal-Git observation established the selected context and nested identity semantics; the old helper failed the regression for missing fields. New local profile regressions cover explicit identity validation, plan binding, and materialized bounds. The source inventory is bounded by 10,000 total file/directory entries and depth 32, rather than counting only files while allowing unbounded intermediate directories.
 
-| Current independently reviewed frozen artifact | SHA-256 |
+| Prior independently reviewed frozen artifact | SHA-256 |
 |---|---|
 | `src/isolation/node-profile.ts` | `2aace91c91e7cf1aa3ee30f04cd2eb4d2997072eef3c808a3df79f431ded8566` |
 | `src/isolation/node-validation.ts` | `9a902ac496fc925b6d6ecff833f5c56cb715bb357122a0a0fcbd9ac4fc18a909` |
 | `src/isolation/setup.ts` | `b08568193c419239a4e2b2399192caf9b2edff80942db807e3b3315f720e7701` |
 
 Twelve actual Docker acceptance cases are now collected. The positive case checks the explicit hook environment, nested Git identities, conditional scanner marker, and plan hash across independently populated hook/final phases. Wrong author and committer cases join parent/message/tree rejection before target-check startup. The harness constructs an unsigned synthetic candidate with the exact planned identity environment; this does not claim a production signature. Strict test TypeScript and generated-probe syntax checks pass. Full local validation passes 514 tests, with twelve Docker cases explicitly skipped on this unsupported host; typecheck, build, 43 action pins, staged secret scanning, and whitespace checks pass. The required Docker flag fails closed; no local runtime was installed or started. The independent reviewer read the real-Git and materialized-entry failing-old/passing-fixed evidence and found no remaining actionable delta issue. Final branch autoreview and hosted confinement results remain separate gates before calling this revised implementation ready.
+
+## Continuous storage, fresh dependency, and daemon-log delta
+
+Status: independent implemented source delta review clean on 2026-11-08 at the exact hashes below; actual hosted Docker proof and final branch autoreview remain pending.
+
+| Current independently reviewed frozen delta artifact | SHA-256 |
+|---|---|
+| `src/isolation/node-profile.ts` | `585355fc0a51e60eff78ac83a45955564a19830ff89d8f3547c563029e563da4` |
+| `src/isolation/node-validation.ts` | `fae9ff0f16f1e9a71cfab2eeb96e689c0c41d535a27f8c1bb70edbed6e2ef8c1` |
+| `src/isolation/setup.ts` | `62c0e15743108f70d8fe2dce33bc4be540cf5607077cf1a345d6712b330cf1fb` |
+
+The controller starts a trusted inert `-storage` container before data copy and keeps all three local-driver tmpfs volumes mounted through preparation and target execution. It checks keeper liveness before preparation, each phase, and successful evidence; workers are removed before the keeper and volumes. Both the keeper timer and host watchdog use the same absolute 60-minute backend-call deadline. Every created container explicitly disables daemon logs; the supervisor retains bounded attached output. Writable preparation creates reserved mount directories. Each fresh hook/check phase copies the pristine cache and performs its own locked offline install with lifecycle scripts disabled before invoking target code. The [design addendum](fleet-isolation-design.md#runtime-storage-dependency-and-logging-refinement) cites the relevant Docker/Moby contracts.
+
+The revised Docker suite contains fourteen acceptance cases. The positive fixture imports the real locked public `picocolors` dependency in both phases without a repository install command, while its lifecycle sentinel remains absent. Two new short cases inspect the actual keeper/worker configuration and named local tmpfs volumes, kill the keeper while a hook/check is held, release the otherwise successful target, and require rejection plus complete cleanup. They prove storage-death handling once run, not natural 60-minute expiry. Actual Docker remains unavailable locally; no runtime or VM was installed or started. The integration file passes strict standalone TypeScript; local collection reports fourteen explicitly skipped Docker cases with the required runtime flag unset. The generated Node probe parses and the historical proposal prefix remains exact. Full local validation passes 520 tests, typecheck, build, 43 action pins, secret scanning, and whitespace checks. The independent reviewer confirmed the implemented delta clean after reading the old-controller four-failure negative control and the corrected keeper, expiry, logging, dependency, and cleanup checks. A committed WIP branch may now be handed off solely for exact-head hosted proof. A PR/readiness claim requires the actual hosted run and final autoreview to succeed.

@@ -34,7 +34,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@f61cffeba28af7a795da25ca2224ba6375dc6d43
+    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@913b298fab0fb008796011d940ee7362a347659d
     with:
       tag: ${{ inputs.tag }}
       channel: ${{ inputs.channel }}

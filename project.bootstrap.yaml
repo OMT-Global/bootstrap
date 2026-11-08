@@ -239,7 +239,7 @@ release:
   updateMajorTag: true
   updateMinorTag: true
   reusableWorkflowRepo: OMT-Global/bootstrap
-  reusableWorkflowRef: f61cffeba28af7a795da25ca2224ba6375dc6d43
+  reusableWorkflowRef: 913b298fab0fb008796011d940ee7362a347659d
   changelog:
     enabled: true
     mode: github-generated-notes

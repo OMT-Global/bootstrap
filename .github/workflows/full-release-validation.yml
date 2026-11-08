@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@f61cffeba28af7a795da25ca2224ba6375dc6d43
+    uses: OMT-Global/bootstrap/.github/workflows/full-release-validation-reusable.yml@913b298fab0fb008796011d940ee7362a347659d
     with:
       target_ref: ${{ inputs.target_ref }}
       release_profile: ${{ inputs.release_profile }}

@@ -10,7 +10,7 @@ Governing issue: [#161](https://github.com/OMT-Global/bootstrap/issues/161).
 
 ## Authority and boundary
 
-After the independent design review, the owner explicitly approved: “Approve synthetic implementation in a follow-up PR.” This decision accepts only that bounded stage: strict schemas, cryptographic envelopes, injected fake key/sink/audit/approval interfaces, and fabricated-input tests. It does not accept or deploy the full [Proposed ADR-0009](ADR-0009-encrypted-private-provenance.md). The exact reviewed candidate documents remain unchanged.
+After the independent design review, the owner explicitly approved: “Approve synthetic implementation in a follow-up PR.” This decision accepts only that bounded stage: strict schemas, cryptographic envelopes, injected fake key/sink/audit/approval interfaces, and fabricated-input tests. It does not accept or deploy the full [Proposed ADR-0009](ADR-0009-encrypted-private-provenance.md). The separate design-review record preserves the original hashes and a narrow independent review of the corrected read-approval attribution; the cryptographic and broker requirements remain unchanged.
 
 ## Decision
 

@@ -100,7 +100,7 @@ export interface SyntheticReadRequest {
 }
 export interface SyntheticReadApproval {
   readonly syntheticOnly: true;
-  // A trusted fake checks authenticated jmcte approval, requester, purpose, exact version, and access window.
+  // A trusted fake checks scoped synthetic approval, requester, purpose, exact version, and access window.
   verify(request: Readonly<SyntheticReadRequest>): Promise<true>;
 }
 export interface SyntheticPrivateAudit {

@@ -35,7 +35,6 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 - Capture the seven required GitHub capability observations before treating remote security controls as verified.
 - Confirm `SECURITY.md` private reporting and response targets match the maintained operational policy.
 
-
 ## Environments
 
 - `dev`: open by default for rapid iteration.
@@ -67,7 +66,7 @@ Use this checklist after the first bootstrap render or whenever `project.bootstr
 ## Licensing
 
 - Repository visibility never selects or grants a license. Declare `license.mode` explicitly before Bootstrap manages `LICENSE`.
-- Current manifest mode: not declared; Bootstrap will not create, replace, or remove a license.
+- Current manifest mode: `spdx:MIT` using approval `Owner jmcte confirmed exact byte-identical MIT template adoption in Bootstrap task on 2026-11-08`.
 - Keep `THIRD_PARTY_NOTICES.md` separate from the first-party notice and inventory dependencies, assets, fonts, media, and incorporated source.
 - Any existing-license replacement requires legal ownership, contributor, distribution-history, issue, and approver evidence in the manifest. Previously granted rights are not revoked.
 - Verify GitHub license detection after publishing an SPDX license. Never describe a proprietary notice as SPDX, OSI approved, or GitHub-recognized.

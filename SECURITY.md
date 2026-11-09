@@ -10,10 +10,13 @@ Report suspected vulnerabilities through [GitHub private vulnerability reporting
 
 ## Response Targets
 
-- Acknowledge a complete report within 3 business days.
+- Acknowledge a complete private report within 2 business days.
+- Triage a confirmed report within 7 calendar days.
+- Remediate or contain critical findings within 7 calendar days.
+- Remediate high findings within 30 calendar days.
+- Coordinate public disclosure with the reporter after remediation.
 - Provide a status update within 10 business days, even when investigation is ongoing.
-- Target remediation within 7 days for critical findings, 30 days for high findings, and 90 days for moderate findings. Low-severity findings are scheduled by maintainers.
-- Coordinate disclosure timing with the reporter after a fix or documented mitigation is available.
+- Bootstrap additionally targets remediation within 90 days for moderate findings. Low-severity findings are scheduled by maintainers.
 
 ## Baseline
 

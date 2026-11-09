@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "owner": "bootstrap",
+  "templateVersion": "2026.03.28.2",
+  "regenerationCommand": "bootstrap apply repo --manifest ./project.bootstrap.yaml",
+  "license": {
+    "mode": "spdx",
+    "identifier": "MIT",
+    "contentSha256": "e512083a9d1748e3956b62c6d15e9e3e0f882b86c2f92c1e892ea3182287f052"
+  },
+  "managedFiles": {
+    ".githooks/pre-commit": {
+      "sha256": "992bc9b04d62f84df70ba1e42d7159a1d976190eae41597810aaafaa30252a4d",
+      "source": "bootstrap"
+    },
+    ".github/dependabot.yml": {
+      "sha256": "0a2dcfd5929ac033a11e24cff971698bb97e64edd41450812b83b999de5d939f",
+      "source": "bootstrap"
+    },
+    ".github/ISSUE_TEMPLATE/release_train.yml": {
+      "sha256": "a4f0e84173f0ba63d19010f5d03812b7a2e7a7f4e284cfbb2b863ceca5e3f7ed",
+      "source": "bootstrap"
+    },
+    ".github/PULL_REQUEST_TEMPLATE.md": {
+      "sha256": "b95b973bf0e6f5cdf77ad9d84e2f623525e493beed185d7d7b3093a4f50ec59d",
+      "source": "bootstrap"
+    },
+    ".github/release.yml": {
+      "sha256": "28b32a8d225d1036ff9a14ea6afaf8744814ef89cca624e60b4501a10c97561a",
+      "source": "bootstrap"
+    },
+    ".github/workflows/ai-attestation.yml": {
+      "sha256": "e472ffad84d5044f252dea4235b09855abcda8c4e26674b32898a78492f53693",
+      "source": "bootstrap"
+    },
+    ".github/workflows/extended-validation.yml": {
+      "sha256": "dc1960632e71ef457cf9850feaa845e879e140096aac1ea0bbe0b4739598e356",
+      "source": "bootstrap"
+    },
+    ".github/workflows/full-release-validation-reusable.yml": {
+      "sha256": "0956cb21aa158a4bc955c7694307355335b3e4669fe16d113da91e573c4033e1",
+      "source": "bootstrap"
+    },
+    ".github/workflows/full-release-validation.yml": {
+      "sha256": "841bba7b30b4105dd5457983e6c5b4e24a39681f579a9a53ac8478c9e2ce7385",
+      "source": "bootstrap"
+    },
+    ".github/workflows/issue-hygiene.yml": {
+      "sha256": "e85e30bc363e6aec75bdae4c8fcb1bb78b35dcbc7df12468a626bcbb35856a2a",
+      "source": "bootstrap"
+    },
+    ".github/workflows/pr-fast-ci.yml": {
+      "sha256": "e787165a22218228dd2d6ac1799b64227701f97fc6379031c5dd801026e202f1",
+      "source": "bootstrap"
+    },
+    ".github/workflows/release-postpublish-reusable.yml": {
+      "sha256": "2de097c9a5482995d4ea02039565e8c5f56d00b2cc4be46c52df576e9f6bb4fb",
+      "source": "bootstrap"
+    },
+    ".github/workflows/release-postpublish.yml": {
+      "sha256": "2cba0398697614b7ae56e2808d8390f03c5f8a8ca8a3b1283b007641c5e0087d",
+      "source": "bootstrap"
+    },
+    ".github/workflows/release-preflight-reusable.yml": {
+      "sha256": "77265bf0fe19d66aa991e7bd1474ba1dd1a66166e7b00ae484c87784aead2359",
+      "source": "bootstrap"
+    },
+    ".github/workflows/release-preflight.yml": {
+      "sha256": "a470960f3dfd69158164acaa16f249a41b6a8a1636bd81375827a9d2da8fac2f",
+      "source": "bootstrap"
+    },
+    ".github/workflows/release-publish-reusable.yml": {
+      "sha256": "7b596dbdee12c8afa48e199763b2c02a2cebb3765826542b402f6b75536f18a0",
+      "source": "bootstrap"
+    },
+    ".github/workflows/release-publish.yml": {
+      "sha256": "081934351d284c25dca45b8b1ff03b2bd582a40215a2f3520496b5700247a403",
+      "source": "bootstrap"
+    },
+    ".github/workflows/security.yml": {
+      "sha256": "7b14b0d06b7c3f7b253e09be14e8c04fe2785d742c99f31f0fb04891cbdd4a5e",
+      "source": "bootstrap"
+    },
+    ".gitignore": {
+      "sha256": "515ab11795aefbbf62cf3674dc5a4654e433bfd32d5733029948da3aeaf769be",
+      "source": "bootstrap"
+    },
+    "AGENTS.md": {
+      "sha256": "e6a3469b8384a17c9acfd9fecae298e8ae875c47896a92fe6e1feee698d59c2d",
+      "source": "bootstrap"
+    },
+    "CODEOWNERS": {
+      "sha256": "830a6a91d8c60c69797b41e39c05a32c887b023b35ee01de084544f814bb0cb0",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/codex-cloud-environment.md": {
+      "sha256": "ad944fdb1cb5a3e464d1647a31adda8bffc31bf9f1bbc5ac049b35d04b341061",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/issue-hygiene.md": {
+      "sha256": "039344533cc90b966fd7ef6501bf6cfb956b5edc61126ad9c14aad545c315580",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/next-steps.md": {
+      "sha256": "e1711872b4095a0e9691a47303e97187c563542e8b9a61250b56f81b6cdf3f3f",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/onboarding.md": {
+      "sha256": "45c13e8cd55e6444d8fdd1c81264e1cc4142a2c114ddab019bc90a4f0330c86c",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/release-evidence-schema.md": {
+      "sha256": "3388059c0dfd1871c7bb2096c4b34e40a21e1c9d1d09a11febb78fe8ac09e286",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/release-train-contract.md": {
+      "sha256": "11e975c793774fbdc0250288b4dcc6e2ae629f7218a4e0ab92bdd581c59059d4",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/security.md": {
+      "sha256": "fdd9ec36f603d8427c24a78277407c17da158684a36cee5691b5fb3748a29841",
+      "source": "bootstrap"
+    },
+    "docs/bootstrap/versioning.md": {
+      "sha256": "b121a25a937fa7a8ab344e9a6280a4feedc8fd00d8008d2bc9b71800a192858c",
+      "source": "bootstrap"
+    },
+    "docs/release-train.md": {
+      "sha256": "e8a9ddb8dea16bf1a6093be8c202a015169eb355f706622b5e742bccf70a4327",
+      "source": "bootstrap"
+    },
+    "LICENSE": {
+      "sha256": "e512083a9d1748e3956b62c6d15e9e3e0f882b86c2f92c1e892ea3182287f052",
+      "source": "bootstrap"
+    },
+    "project.bootstrap.yaml": {
+      "sha256": "14c3a6af67c9b351130cfa10130542703327169feec1bf286d24d855ea434006",
+      "source": "bootstrap"
+    },
+    "scripts/check-detect-secrets.sh": {
+      "sha256": "7f94837cceed656f03390b3af615d260558ae71ed6e88c1580239b90d5115fa8",
+      "source": "bootstrap"
+    },
+    "scripts/ci/check-action-pins.sh": {
+      "sha256": "4aaf63706ea4ba1754077fb449ffca310d971b9879ec999d26a3f942122788f8",
+      "source": "bootstrap"
+    },
+    "scripts/ci/check-pr-governance.sh": {
+      "sha256": "296a576f96a19af3785a31a472640bf5e342113f64a366f7ca3292883c46f17c",
+      "source": "bootstrap"
+    },
+    "scripts/ci/report-issue-hygiene.mjs": {
+      "sha256": "53bc2252f82e388ec4ba182cab500b78b3f429c304501a55c205ad3f0e534087",
+      "source": "bootstrap"
+    },
+    "scripts/ci/run-extended-validation.sh": {
+      "sha256": "f37b6e573e2aef0029bb7f088a0bcf6432dae4440311bff935021067378b1067",
+      "source": "bootstrap"
+    },
+    "scripts/ci/run-fast-checks.sh": {
+      "sha256": "09f5d82004bb2c5a501b72e62669a1adca1c92e1b5ab471096449c8606cc569b",
+      "source": "bootstrap"
+    },
+    "scripts/ci/run-release-build.sh": {
+      "sha256": "cc54d4ed42eaf697e0cbe01b5c061fd2927dfee893bf93c1a1a0708e9d5311f7",
+      "source": "bootstrap"
+    },
+    "scripts/ci/run-release-publish.sh": {
+      "sha256": "cb724dfaf963306f310e8991701120f316002e474290655ee84e4bc425759340",
+      "source": "bootstrap"
+    },
+    "scripts/ci/run-release-verification.sh": {
+      "sha256": "aa2b6a018412463e4e0fcbd78100659b5aa4791a20372bb287ac9a0fb2656ed3",
+      "source": "bootstrap"
+    },
+    "scripts/ci/run-release-version.sh": {
+      "sha256": "c96508d021cc2af055bd797869827969fb3118697f1b2c7931d68644459d6e71",
+      "source": "bootstrap"
+    },
+    "scripts/codex-cloud/maintenance.sh": {
+      "sha256": "8a4f5e11b133539c46dd9d45e74d49b19e0fb092e3620f2af8552e07cf94dabc",
+      "source": "bootstrap"
+    },
+    "scripts/codex-cloud/setup.sh": {
+      "sha256": "debc23607cccb92ed096941adc7da777ff794ec8c97d4efa842e592b33c29d10",
+      "source": "bootstrap"
+    },
+    "scripts/release/preflight.sh": {
+      "sha256": "c9cfc7df9591d9c079667efb691dfe704976259f55ddff020f21105fa053391f",
+      "source": "bootstrap"
+    },
+    "scripts/release/publish.sh": {
+      "sha256": "a9a3d51032ef51514b4a89cea989ef15579fecda0d2709909ba658fe1f24e0c1",
+      "source": "bootstrap"
+    },
+    "scripts/release/validate.sh": {
+      "sha256": "5d28ea7611d5562827249751ca89f44e772ad789cf358d85726a69c85a7c300f",
+      "source": "bootstrap"
+    },
+    "SECURITY.md": {
+      "sha256": "7be0722a50df29ae2ae85e46255a36f121840c5e1fcd422ebd94b09d4c42dbd5",
+      "source": "bootstrap"
+    },
+    "THIRD_PARTY_NOTICES.md": {
+      "sha256": "010af23399dfec698d83e7e370a09b54927dcda2afdb78619285a238b3bd655f",
+      "source": "bootstrap"
+    }
+  }
+}

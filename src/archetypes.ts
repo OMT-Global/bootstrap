@@ -197,6 +197,9 @@ function repoAgents(manifest: BootstrapManifest): string {
         : manifest.archetype.kind === "python-service"
           ? "Python service"
           : "Generic polyglot";
+  const privateReviewConsent = manifest.project.visibility === "private"
+    ? "\n    - For private repositories, before transmitting a concrete prepared diff to an external autoreviewer, verify required network access and explicit authorization for that diff scope and reviewer provider. Request only missing access or authorization; reuse grants already supplied in the current session."
+    : "";
 
   return dedent`
     # AGENTS
@@ -206,7 +209,7 @@ function repoAgents(manifest: BootstrapManifest): string {
     - CI baseline: fast PR checks stay cheap and shell-safe; extended validation runs on \`main\`, nightly, or manual dispatch.
     - Self-hosted runner policy: private-repository trusted jobs may use their matching capability pool. Public repository security workflows use GitHub-hosted isolation; fork pull-request jobs always remain read-only and GitHub-hosted.
     - Add or update tests for every interactive, branching, or operator-facing behavior change.
-    - For a task that may open or update a PR, handle autoreview access before implementation: request required network access immediately and, for a private repository, explicit authorization to send the forthcoming intended PR diff to the external reviewer. At closeout, use the \`autoreview\` skill against the actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If authorization is declined or the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.
+    - Before opening or updating a PR, use the \`autoreview\` skill to review the intended PR diff against its actual base. Verify every finding, fix accepted in-scope findings, and rerun affected tests and autoreview after changes. Proceed only when no accepted/actionable findings remain, and record the final command and result in the PR validation evidence. If the skill is unavailable or cannot complete, stop and report the blocker instead of bypassing the gate.${privateReviewConsent}
     - PRs must use the generated pull request template. The required PR gate validates summary, issue linkage, validation evidence, and risk notes.
     - Never commit real secrets, runtime auth, or machine-local env files. Use templates and GitHub environments instead.
 
@@ -1552,6 +1555,10 @@ function codeQlLanguages(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages.join(",");
 }
 
+function githubHostedRunner(manifest: BootstrapManifest): string {
+  return manifest.ci.githubHostedImage ?? "ubuntu-latest";
+}
+
 function codeQlMatrix(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages
     .map((language) => {
@@ -1560,7 +1567,7 @@ function codeQlMatrix(manifest: BootstrapManifest): string {
       return [
         `- language: ${language}`,
         `  build-mode: ${autobuild ? "autobuild" : "none"}`,
-        `  runner: ${swift ? "macos-14" : "ubuntu-latest"}`
+        `  runner: ${swift ? "macos-14" : githubHostedRunner(manifest)}`
       ].join("\n");
     })
     .join("\n");
@@ -1583,7 +1590,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
     jobs:
       dependency-review:
         if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         permissions:
           contents: read
           pull-requests: read
@@ -1616,7 +1623,7 @@ ${indentBlock(codeQlMatrix(manifest), 12)}
 
 `}      sbom:
         if: github.event_name == 'push' || github.event_name == 'schedule'
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         permissions:
           contents: read
         steps:
@@ -1679,7 +1686,7 @@ function releaseCallerWorkflow(manifest: BootstrapManifest): string {
       release:
         uses: ${manifest.release.reusableWorkflowRepo}/.github/workflows/release.yml@${manifest.release.reusableWorkflowRef}
         with:
-          runs-on: '["ubuntu-latest"]'
+          runs-on: '["${githubHostedRunner(manifest)}"]'
           verify-script: scripts/ci/run-release-verification.sh
           version-script: scripts/ci/run-release-version.sh
           build-script: scripts/ci/run-release-build.sh
@@ -1845,6 +1852,17 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
 }
 
 function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
+  const preflightInput = manifest.release.postpublishRequiresPreflight
+    ? `\n${indentBlock(dedent`
+        preflight_run_id:
+          description: Exact approved release preflight run ID
+          required: true
+          type: string
+      `, 10)}`
+    : "";
+  const preflightArgument = manifest.release.postpublishRequiresPreflight
+    ? "\n          preflight_run_id: ${{ inputs.preflight_run_id }}"
+    : "";
   return dedent`
     name: Release Postpublish
 
@@ -1864,7 +1882,7 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
           release_issue:
             description: Release issue number
             required: false
-            type: string
+            type: string${preflightInput}
 
     jobs:
       postpublish:
@@ -1875,7 +1893,7 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
         with:
           tag: \${{ inputs.tag }}
           channel: \${{ inputs.channel }}
-          release_issue: \${{ inputs.release_issue }}
+          release_issue: \${{ inputs.release_issue }}${preflightArgument}
           postpublish_script: scripts/release/postpublish.sh
           artifact_dir: ${manifest.release.artifacts.directory}
           evidence_artifact_name: release-evidence
@@ -2219,6 +2237,7 @@ function releasePostpublishReusableWorkflow(): string {
           tag: { required: true, type: string }
           channel: { required: true, type: string }
           release_issue: { required: false, type: string, default: "" }
+          preflight_run_id: { required: false, type: string, default: "" }
           postpublish_script: { required: false, type: string, default: scripts/release/postpublish.sh }
           artifact_dir: { required: false, type: string, default: dist/release }
           evidence_artifact_name: { required: false, type: string, default: release-evidence }
@@ -2244,6 +2263,7 @@ function releasePostpublishReusableWorkflow(): string {
               TAG: \${{ inputs.tag }}
               CHANNEL: \${{ inputs.channel }}
               RELEASE_ISSUE: \${{ inputs.release_issue }}
+              PREFLIGHT_RUN_ID: \${{ inputs.preflight_run_id }}
               POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
               ARTIFACT_DIR: \${{ inputs.artifact_dir }}
             run: |
@@ -2539,7 +2559,7 @@ function releaseEvidenceSchemaDoc(): string {
 
 function prWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: PR Fast CI
@@ -2820,7 +2840,7 @@ ${indentBlock(setupSteps(manifest), 10)}
 }
 
 function issueHygieneWorkflow(manifest: BootstrapManifest): string {
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: Issue Hygiene Report
@@ -2869,7 +2889,7 @@ function issueHygieneScript(): string {
 
 function extendedWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: Extended Validation
@@ -3505,7 +3525,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
           (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
           (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         timeout-minutes: 30
         steps:
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

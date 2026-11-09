@@ -43,4 +43,4 @@ jobs:
         run: npm run build
 
       - name: Require actual Docker confinement tests
-        run: npm test -- tests/isolated-validation-docker.test.ts --maxWorkers=1 --minWorkers=1
+        run: npm test -- tests/isolated-validation-docker.test.ts --maxWorkers=1

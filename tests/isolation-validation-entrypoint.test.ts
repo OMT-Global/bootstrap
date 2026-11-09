@@ -15,7 +15,7 @@ async function fixture(profile: string, failure = "") {
   const target = await mkdtemp(path.join(os.tmpdir(), "bootstrap-full-entrypoint-")); directories.push(target);
   await mkdir(path.join(target, "scripts/ci"), { recursive: true }); await mkdir(path.join(target, "bin"));
   await writeFile(path.join(target, "scripts/ci/run-fast-checks.sh"), '#!/bin/bash\nset -eu\nprintf "fast:%s\\n" "${BOOTSTRAP_REQUIRE_ISOLATION_TESTS:-unset}" >> "$ENTRY_LOG"\n[[ "${ENTRY_FAIL:-}" != fast ]] || exit 13\n');
-  for (const name of ["docker", "npm"]) {
+  for (const name of ["docker", "npm", "python3"]) {
     const file = path.join(target, "bin", name);
     await writeFile(file, `#!/bin/bash\nset -eu\nprintf '${name}:%s:%s\\n' "$*" "\${BOOTSTRAP_REQUIRE_ISOLATION_TESTS:-unset}" >> "$ENTRY_LOG"\n[[ "\${ENTRY_FAIL:-}" != ${name} ]] || exit 17\n`);
     await chmod(file, 0o755);
@@ -29,6 +29,13 @@ async function fixture(profile: string, failure = "") {
   return { status, stdout, events: (await readFile(path.join(target, "events"), "utf8")).trim().split("\n") };
 }
 describe("registered full-validation isolation entry point", () => {
+  it("checks artifact parsers, extraction and bounds without downloads or native execution", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "tests/reviewer-artifacts.test.py"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+      timeout: 30_000, maxBuffer: 256 * 1024
+    });
+    expect(result.stderr).toContain("OK");
+  });
   it("matches the supported manifest projection exactly", async () => {
     const manifest = await loadManifest("project.bootstrap.yaml");
     const projection = renderManagedFiles(manifest, await loadResolvedFlowPolicy(manifest, process.cwd())).find((file) => file.path === "scripts/ci/run-extended-validation.sh");
@@ -43,13 +50,15 @@ describe("registered full-validation isolation entry point", () => {
     const result = await fixture("full");
     expect(result.status).toBe(0);
     expect(result.events).toEqual(["fast:unset", `docker:pull --platform linux/amd64 ${NODE_ISOLATION_IMAGE}:unset`,
-      "npm:test -- tests/isolated-validation-docker.test.ts --maxWorkers=1 --minWorkers=1:1"]);
+      "npm:test -- tests/isolated-validation-docker.test.ts --maxWorkers=1:1",
+      "python3:scripts/ci/reviewer-artifacts.py:unset"]);
   });
-  it.each(["fast", "docker", "npm"])("fails instead of passing a full run when %s fails", async (failure) => {
+  it.each(["fast", "docker", "npm", "python3"])("fails instead of passing a full run when %s fails", async (failure) => {
     const result = await fixture("full", failure);
     expect(result.status).not.toBe(0);
     if (failure === "fast") expect(result.events).toHaveLength(1);
     if (failure === "docker") expect(result.events).toHaveLength(2);
     if (failure === "npm") expect(result.events).toHaveLength(3);
+    if (failure === "python3") expect(result.events).toHaveLength(4);
   });
 });

@@ -1,6 +1,7 @@
 import os from "node:os";
 
 import { validatePolicyExceptions } from "./exceptions.js";
+import { releaseEnvironmentPolicyError } from "./manifest.js";
 import { execRunner, type CommandRunner } from "./lib/process.js";
 import { resolveRunsOn } from "./runners.js";
 import type { BootstrapManifest } from "./types.js";
@@ -95,7 +96,8 @@ export async function runDoctor(
   const runnerLabels = resolveRunsOn(
     manifest.ci.runnerPolicy,
     manifest.project.visibility,
-    ["shell"]
+    ["shell"],
+    manifest.ci.githubHostedImage
   );
   checks.push({
     name: "Runner policy",
@@ -124,6 +126,15 @@ export async function runDoctor(
       detail: hasReviewers
         ? `${environmentName} environment has ${environment.reviewers.length} reviewer target(s).`
         : `${environmentName} requires approval but no reviewers are configured.`
+    });
+  }
+
+  if (manifest.environments["release-publish"] !== undefined) {
+    const policyError = releaseEnvironmentPolicyError(manifest.environments["release-publish"], manifest.project.defaultBranch);
+    checks.push({
+      name: "release-publish policy",
+      status: policyError ? "fail" : "ok",
+      detail: policyError ?? "Local release-publish approval, self-review prevention and protected-branch policy are configured; live protection is unverified."
     });
   }
 

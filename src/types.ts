@@ -4,6 +4,7 @@ export type PackageManager = "npm" | "pnpm" | "yarn" | "python";
 export type CodeqlSetup = "advanced" | "default";
 export type CodeqlLanguage = "actions" | "javascript-typescript" | "python" | "ruby" | "c-cpp" | "csharp" | "rust" | "go" | "swift";
 export type RunnerPolicy = "hybrid-safe" | "self-hosted-first" | "github-hosted-first";
+export type GitHubHostedImage = "ubuntu-latest" | "ubuntu-24.04";
 export type DefaultRepositoryPermission = "read" | "write" | "admin" | "none";
 export type RepoClass =
   | "cli"
@@ -295,6 +296,7 @@ export interface BootstrapManifest {
   ci: {
     policy?: CiPolicy;
     runnerPolicy: RunnerPolicy;
+    githubHostedImage?: GitHubHostedImage;
     nodeVersion: string;
     pythonVersion: string;
     fastChecks: string[];
@@ -340,6 +342,7 @@ export interface BootstrapManifest {
     updateMinorTag: boolean;
     reusableWorkflowRepo: string;
     reusableWorkflowRef: string;
+    postpublishRequiresPreflight?: boolean;
     changelog: ReleaseChangelogConfig;
     versions: ReleaseVersionSurface[];
     artifacts: ReleaseArtifactConfig;
@@ -384,6 +387,7 @@ export interface BootstrapManifest {
     dev: EnvironmentConfig;
     stage: EnvironmentConfig;
     prod: EnvironmentConfig;
+    "release-publish"?: EnvironmentConfig;
   };
 }
 

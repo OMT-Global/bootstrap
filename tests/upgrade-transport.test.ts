@@ -7,6 +7,184 @@ import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// Test-only source-bound witness; it observes the actual guard without changing host policy.
+const { hostDiagnostic, makeHostDiagnostic } = await vi.hoisted(async () => {
+  const { AsyncLocalStorage } = await import("node:async_hooks");
+  const makeHostDiagnostic = (
+    process: { platform: string; env: NodeJS.ProcessEnv; getuid?: () => number } = globalThis.process,
+    console: { info: (line: string) => void } = globalThis.console
+  ) => {
+    type Phase = "entry" | "proc-read" | "proc-open" | "proc-next" | "proc-entry" | "proc-owner" | "proc-status" | "trusted-tool";
+    type Entry = { ownerSeen: boolean; sameUid: boolean; enoent: boolean; returned: boolean; closed: boolean; utf8: boolean | null; count: number | null };
+    type Capture = { phase: Phase; entries: number; sameUid: number; skipped: number; accepted: number; total: number; known: boolean; complete: boolean; traversing: boolean; pending?: Entry };
+    const contexts = new AsyncLocalStorage<Capture>(); let emitted = false;
+    const runId = process.env.GITHUB_RUN_ID ?? ""; const runAttempt = process.env.GITHUB_RUN_ATTEMPT ?? "";
+    const enabled = process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" && process.env.RELEASE_PROFILE === "full"
+      && process.env.GITHUB_REPOSITORY === "OMT-Global/bootstrap" && process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
+      && /^[1-9][0-9]{0,19}$/.exec(runId)?.[0] === runId && /^[1-9][0-9]{0,5}$/.exec(runAttempt)?.[0] === runAttempt;
+    const observe = (capture: Capture, action: () => void) => { try { action(); } catch { capture.complete = false; } };
+    const failed = (capture: Capture, error: unknown) => observe(capture, () => {
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT" && capture.pending) capture.pending.enoent = true;
+    });
+    const acceptPrevious = (capture: Capture) => {
+      const entry = capture.pending; delete capture.pending;
+      if (!entry) return;
+      if (entry.enoent) { capture.skipped = Math.min(100_000, capture.skipped + 1); return; }
+      if (!entry.sameUid) return;
+      if (!entry.returned || !entry.closed || entry.utf8 !== true || entry.count === null) { capture.known = false; return; }
+      capture.accepted = Math.min(100_000, capture.accepted + 1); capture.total += entry.count;
+      // The next iterator request witnesses acceptance; a contradictory projection is unknown.
+      if (!(capture.total < 120)) capture.known = false;
+    };
+    const emit = (capture: Capture) => {
+      if (emitted) return; emitted = true;
+      try {
+        const entry = capture.pending;
+        const ready = capture.complete && capture.known && capture.phase === "proc-status" && !!entry?.sameUid && !entry.enoent && entry.returned && entry.closed && entry.utf8 === true;
+        const candidate = ready && entry && entry.count !== null ? capture.total + entry.count : null;
+        const predicate = candidate === null ? null : candidate < 120;
+        const record = { schema: 1, boundary: "actual-requireLinuxHost-rejection", phase: capture.phase,
+          procEntriesDelivered: capture.entries, sameUidEntriesObserved: capture.sameUid, enoentEntriesSkipped: capture.skipped,
+          threadReadsAcceptedBeforeTerminal: capture.accepted, acceptedThreadTotal: capture.complete && capture.known ? capture.total : null,
+          terminalReadReturnWitness: !!entry?.returned, terminalReadCloseSucceeded: !!entry?.closed,
+          terminalUtf8Valid: entry?.utf8 ?? null, terminalThreadsLineMatched: entry?.returned && entry.utf8 === true ? entry.count !== null : null,
+          terminalThreadTotalCapped: candidate === null ? null : Math.min(1_000_000, candidate), terminalThreadTotalWasCapped: candidate !== null && candidate > 1_000_000,
+          sameUidThreadTotalBelow120: predicate, failedPredicate: ready && entry?.count === null ? "threads-line" : predicate === false ? "thread-total-below-120" : "unknown",
+          diagnosticComplete: capture.complete };
+        const line = "BOOTSTRAP_HOST_GUARD_DIAGNOSTIC " + JSON.stringify(record);
+        if (Buffer.byteLength(line + "\n", "utf8") <= 2048) console.info(line);
+      } catch { /* A diagnostic failure must not mask the actual rejection. */ }
+    };
+    return {
+      async call<T>(operation: () => Promise<T>): Promise<T> {
+        if (!enabled) return operation();
+        const capture: Capture = { phase: "entry", entries: 0, sameUid: 0, skipped: 0, accepted: 0, total: 0, known: true, complete: true, traversing: false };
+        let started = false;
+        try { return await contexts.run(capture, async () => {
+          started = true;
+          try { return await operation(); } catch (error) { emit(capture); throw error; }
+        }); } catch (error) { if (!started) return operation(); throw error; }
+      },
+      realpath(file: unknown) { const capture = contexts.getStore(); if (capture && (file === "/usr/bin/git" || file === "/usr/bin/prlimit")) observe(capture, () => { capture.phase = "trusted-tool"; }); },
+      async lstat<T extends { uid: number | bigint }>(operation: () => Promise<T>, file: unknown): Promise<T> {
+        const capture = contexts.getStore();
+        if (capture) observe(capture, () => { if (!capture.traversing && capture.phase !== "trusted-tool") capture.phase = "proc-read"; else if (capture.pending && !capture.pending.ownerSeen) capture.phase = "proc-owner"; });
+        try {
+          const result = await operation();
+          if (capture) observe(capture, () => {
+            const entry = capture.pending;
+            if (capture.traversing && entry && !entry.ownerSeen && typeof file === "string" && /^\/proc\/[0-9]+$/.test(file)) {
+              entry.ownerSeen = true; entry.sameUid = result.uid === process.getuid?.();
+              if (entry.sameUid) capture.sameUid = Math.min(100_000, capture.sameUid + 1);
+            }
+          });
+          return result;
+        } catch (error) { if (capture) failed(capture, error); throw error; }
+      },
+      async directory<T extends import("node:fs").Dir>(operation: () => Promise<T>, file: unknown): Promise<T> {
+        const capture = contexts.getStore();
+        if (!capture || file !== "/proc") return operation();
+        observe(capture, () => { capture.phase = "proc-open"; });
+        const directory = await operation();
+        observe(capture, () => {
+          const original = directory[Symbol.asyncIterator].bind(directory);
+          const descriptor = Object.getOwnPropertyDescriptor(directory, Symbol.asyncIterator);
+          const restore = () => observe(capture, () => { if (descriptor) Object.defineProperty(directory, Symbol.asyncIterator, descriptor); else if (!Reflect.deleteProperty(directory, Symbol.asyncIterator)) capture.complete = false; });
+          Object.defineProperty(directory, Symbol.asyncIterator, { configurable: true, value: () => {
+            const iterator = original(); capture.traversing = true;
+            return {
+              [Symbol.asyncIterator]() { return this; },
+              async next(...args: Parameters<typeof iterator.next>) {
+                observe(capture, () => { acceptPrevious(capture); capture.phase = "proc-next"; });
+                const step = await iterator.next(...args);
+                observe(capture, () => {
+                  if (step.done) { capture.traversing = false; restore(); return; }
+                  capture.phase = "proc-entry"; capture.entries = Math.min(100_001, capture.entries + 1);
+                  if (/^[0-9]+$/.test(step.value.name)) capture.pending = { ownerSeen: false, sameUid: false, enoent: false, returned: false, closed: false, utf8: null, count: null };
+                });
+                return step;
+              },
+              async return(...args: Parameters<NonNullable<typeof iterator.return>>) {
+                restore(); return iterator.return ? iterator.return(...args) : { done: true as const, value: undefined };
+              },
+              async throw(...args: Parameters<NonNullable<typeof iterator.throw>>) {
+                restore(); if (iterator.throw) return iterator.throw(...args); throw args[0];
+              }
+            };
+          } });
+        });
+        return directory;
+      },
+      opened(file: string, error?: unknown) {
+        const capture = contexts.getStore();
+        if (capture) observe(capture, () => { if (capture.traversing && /^\/proc\/[0-9]+\/status$/.test(file)) capture.phase = "proc-status"; else if (!capture.traversing) capture.phase = "proc-read"; });
+        if (capture && error !== undefined) failed(capture, error);
+      },
+      handle(handle: import("node:fs/promises").FileHandle, file: string) {
+        const capture = contexts.getStore(); const entry = capture?.pending;
+        if (!capture || !entry?.sameUid || !capture.traversing || !/^\/proc\/[0-9]+\/status$/.test(file)) return;
+        observe(capture, () => {
+          const read = handle.read; const stat = handle.stat; const close = handle.close;
+          const originals = ["read", "stat", "close"].map((name) => [name, Object.getOwnPropertyDescriptor(handle, name)] as const);
+          let buffer: Buffer | undefined; let subarray: typeof Buffer.prototype.subarray | undefined; let busy = 0; let stats = 0; let delivered = 0;
+          const restore = () => {
+            observe(capture, () => {
+              if (buffer && subarray) {
+                if (Object.getOwnPropertyDescriptor(buffer, "subarray")?.value === subarray) { if (!Reflect.deleteProperty(buffer, "subarray")) capture.complete = false; }
+                else capture.complete = false;
+              }
+            });
+            for (const [name, descriptor] of originals) observe(capture, () => { if (descriptor) Object.defineProperty(handle, name, descriptor); else if (!Reflect.deleteProperty(handle, name)) capture.complete = false; });
+          };
+          let installed = false;
+          try {
+          handle.stat = (async (...args: Parameters<typeof stat>) => {
+            busy++; try { const result = await Reflect.apply(stat, handle, args); stats++; return result; }
+            catch (error) { failed(capture, error); throw error; } finally { busy--; }
+          }) as typeof stat;
+          handle.read = (async (...args: unknown[]) => {
+            observe(capture, () => {
+              const candidate = args[0];
+              if (!buffer && Buffer.isBuffer(candidate)) {
+                if (Object.hasOwn(candidate, "subarray")) { capture.complete = false; return; }
+                buffer = candidate; const original = candidate.subarray;
+                subarray = function (this: Buffer, start?: number, end?: number) {
+                  const result = Reflect.apply(original, this, [start, end]) as Buffer;
+                  observe(capture, () => {
+                    if (this !== buffer || busy !== 0 || stats !== 2 || start !== 0 || end !== delivered || entry.returned) return;
+                    entry.returned = true;
+                    let text: string;
+                    try { text = new TextDecoder("utf-8", { fatal: true }).decode(result); }
+                    catch { entry.utf8 = false; return; }
+                    entry.utf8 = true;
+                    const match = /^Threads:\s+(\d+)$/m.exec(text); entry.count = match ? Number(match[1]) : null;
+                  });
+                  return result;
+                };
+                Object.defineProperty(candidate, "subarray", { configurable: true, writable: true, value: subarray });
+              } else if (buffer && candidate !== buffer) capture.complete = false;
+            });
+            busy++;
+            try {
+              const result = await Reflect.apply(read, handle, args);
+              observe(capture, () => { if (!Number.isInteger(result.bytesRead) || result.bytesRead < 0 || delivered + result.bytesRead > 65537) capture.complete = false; else delivered += result.bytesRead; });
+              return result;
+            } catch (error) { failed(capture, error); throw error; } finally { busy--; }
+          }) as typeof read;
+          handle.close = async () => {
+            restore();
+            try { await Reflect.apply(close, handle, []); observe(capture, () => { entry.closed = true; }); }
+            catch (error) { failed(capture, error); throw error; }
+          };
+          installed = true;
+          } finally { if (!installed) restore(); }
+        });
+      }
+    };
+  };
+  return { makeHostDiagnostic, hostDiagnostic: makeHostDiagnostic() };
+});
+
 const faults = vi.hoisted(() => ({ source: "", sha: "", metadata: "", shape: "", depth: "", helperCalls: 0,
   admission: 0, copyCalls: 0, auditCalls: 0, originalRoots: [] as string[], originalOpens: 0, originalStats: 0, dirtyReads: 0, dirtyPath: "", changeHead: false, abortAfterAudit: undefined as undefined | (() => void),
   cleanupCalls: 0, cleanupFailures: 0, holdCleanup: false, resumeCleanup: undefined as undefined | (() => void),
@@ -18,7 +196,7 @@ vi.mock("../src/upgrade-host.js", async (original) => {
   return { ...actual,
     HOST_LIMITS: { ...actual.HOST_LIMITS, get admission() { return faults.admission || actual.HOST_LIMITS.admission; } },
     trustedExecutable: (file: string) => process.platform === "darwin" && file.endsWith("/git-remote-https") ? Promise.resolve(file) : actual.trustedExecutable(file),
-    requireLinuxHost: process.platform === "linux" ? actual.requireLinuxHost : async () => ({ git: "/usr/bin/git", prlimit: "/private/test-only-prlimit" }) };
+    requireLinuxHost: process.platform === "linux" ? () => hostDiagnostic.call(() => actual.requireLinuxHost()) : async () => ({ git: "/usr/bin/git", prlimit: "/private/test-only-prlimit" }) };
 });
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
@@ -75,12 +253,16 @@ vi.mock("../src/upgrade-checkout.js", async (original) => {
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual,
-    realpath: actual.realpath,
-    lstat: (...args: Parameters<typeof actual.lstat>) => { if (faults.originalRoots.some((root) => String(args[0]).startsWith(root))) faults.originalStats++; return actual.lstat(...args); },
+    realpath: (...args: Parameters<typeof actual.realpath>) => { hostDiagnostic.realpath(args[0]); return actual.realpath(...args); },
+    opendir: (...args: Parameters<typeof actual.opendir>) => hostDiagnostic.directory(() => actual.opendir(...args), args[0]),
+    lstat: (...args: Parameters<typeof actual.lstat>) => { if (faults.originalRoots.some((root) => String(args[0]).startsWith(root))) faults.originalStats++; return hostDiagnostic.lstat(() => actual.lstat(...args), args[0]); },
     open: async (...args: Parameters<typeof actual.open>) => {
       const file = String(args[0]); if (faults.originalRoots.some((root) => file.startsWith(root))) faults.originalOpens++;
-      const handle = await actual.open(...args);
+      hostDiagnostic.opened(file);
+      let handle: Awaited<ReturnType<typeof actual.open>>;
+      try { handle = await actual.open(...args); } catch (error) { hostDiagnostic.opened(file, error); throw error; }
       if (faults.dirtyPath && file.endsWith(faults.dirtyPath)) { const read = handle.read.bind(handle); handle.read = ((...input: unknown[]) => { faults.dirtyReads++; return Reflect.apply(read, handle, input); }) as typeof handle.read; }
+      hostDiagnostic.handle(handle, file);
       return handle;
     }
   };
@@ -254,5 +436,319 @@ describe("private public transport with real Git and simulated Linux launch", ()
     const copies = vi.spyOn(Buffer, "from"); const before = faults.commands.length;
     await expect(writeFrozenTree(repository, [{ path: "target.txt", mode: "100644", bytes: payload }])).rejects.toThrow(fixed);
     expect(copies.mock.calls.some(([value]) => value === payload)).toBe(false); expect(faults.commands).toHaveLength(before);
+  });
+});
+
+// Synthetic instances use fabricated inputs and never reset the live observer.
+describe("host diagnostic collector synthetic", () => {
+  type Observer = ReturnType<typeof makeHostDiagnostic>;
+  const prefix = "BOOTSTRAP_HOST_GUARD_DIAGNOSTIC ";
+  const keys = ["schema", "boundary", "phase", "procEntriesDelivered", "sameUidEntriesObserved", "enoentEntriesSkipped", "threadReadsAcceptedBeforeTerminal", "acceptedThreadTotal", "terminalReadReturnWitness", "terminalReadCloseSucceeded", "terminalUtf8Valid", "terminalThreadsLineMatched", "terminalThreadTotalCapped", "terminalThreadTotalWasCapped", "sameUidThreadTotalBelow120", "failedPredicate", "diagnosticComplete"];
+  const gate = { GITHUB_ACTIONS: "true", RELEASE_PROFILE: "full", GITHUB_REPOSITORY: "OMT-Global/bootstrap", GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1" };
+  function fresh(env: NodeJS.ProcessEnv = {}, platform = "linux", sink?: (line: string) => void, getuid = () => 1001) {
+    const lines: string[] = [];
+    const fakeProcess = { platform, env: { ...gate, ...env }, getuid };
+    const observer = makeHostDiagnostic(fakeProcess, { info: (line) => { lines.push(line); sink?.(line); } });
+    return { observer, lines, fakeProcess };
+  }
+  function record(lines: string[]) {
+    expect(lines).toHaveLength(1); expect(lines[0]!.startsWith(prefix)).toBe(true);
+    expect(Buffer.byteLength(lines[0]! + "\n", "utf8")).toBeLessThanOrEqual(2048);
+    const result = JSON.parse(lines[0]!.slice(prefix.length)) as Record<string, unknown>;
+    expect(Object.keys(result)).toEqual(keys); return result;
+  }
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+  function directory(names = ["3141592653", "3141592654"]) {
+    let index = 0;
+    const steps = names.map((name) => ({ done: false as const, value: { name } }));
+    const done = { done: true as const, value: undefined };
+    const calls: unknown[][] = [];
+    const originalIterator = {
+      async next(...args: unknown[]) { calls.push(["next", this, ...args]); return steps[index++] ?? done; },
+      async return(...args: unknown[]) { calls.push(["return", this, ...args]); return done; },
+      async throw(...args: unknown[]) { calls.push(["throw", this, ...args]); throw args[0]; }
+    };
+    const object = { [Symbol.asyncIterator]() { return originalIterator; } };
+    const descriptor = Object.getOwnPropertyDescriptor(object, Symbol.asyncIterator);
+    return { object: object as unknown as import("node:fs").Dir, originalIterator, descriptor, calls, steps, done };
+  }
+  async function begin(observer: Observer, names?: string[]) {
+    const fixture = directory(names); let calls = 0;
+    const returned = await observer.directory(async () => { calls++; return fixture.object; }, "/proc");
+    expect(returned).toBe(fixture.object); expect(calls).toBe(1);
+    const iterator = returned[Symbol.asyncIterator]();
+    expect(await iterator.next()).toBe(fixture.steps[0]);
+    return { ...fixture, iterator };
+  }
+  async function owner(observer: Observer, ...uidInput: unknown[]) {
+    const uid = uidInput.length ? uidInput[0] : 1001;
+    const stat = { uid } as { uid: number | bigint }; let calls = 0;
+    expect(await observer.lstat(async () => { calls++; return stat; }, "/proc/3141592653")).toBe(stat);
+    expect(calls).toBe(1); observer.opened("/proc/3141592653/status");
+  }
+  function handle(bytes: Buffer = Buffer.from("Threads:\t120\n"), closeError?: unknown) {
+    let reads = 0; let stats = 0; let closes = 0;
+    const calls: unknown[][] = []; const readResults: Array<{ bytesRead: number; buffer: Buffer }> = [];
+    const statResult = Object.freeze({ fixture: "stat-result" });
+    const object = {
+      async read(buffer: Buffer, offset: number, length: number, position: number) {
+        calls.push(["read", this, buffer, offset, length, position]);
+        const size = reads++ === 0 ? bytes.length : 0;
+        if (size) bytes.copy(buffer, offset);
+        const result = { bytesRead: size, buffer }; readResults.push(result); return result;
+      },
+      async stat(...args: unknown[]) { calls.push(["stat", this, ...args]); stats++; return statResult; },
+      async close() { calls.push(["close", this]); closes++; if (closeError !== undefined) throw closeError; }
+    };
+    const originals = { read: object.read, stat: object.stat, close: object.close };
+    return { object: object as unknown as import("node:fs/promises").FileHandle, originals, calls, readResults, statResult,
+      counts: () => ({ reads, stats, closes }), bytes };
+  }
+  async function status(fixture: ReturnType<typeof handle>, witness = true, buffer: Buffer = Buffer.alloc(65537)) {
+    expect(await fixture.object.stat()).toBe(fixture.statResult);
+    const first = await fixture.object.read(buffer, 0, 65537, 0); expect(first).toBe(fixture.readResults[0]);
+    const eof = await fixture.object.read(buffer, fixture.bytes.length, 65537 - fixture.bytes.length, fixture.bytes.length); expect(eof).toBe(fixture.readResults[1]);
+    expect(await fixture.object.stat()).toBe(fixture.statResult);
+    const view = witness ? buffer.subarray(0, fixture.bytes.length) : undefined;
+    await fixture.object.close(); return { buffer, view };
+  }
+  async function terminal(bytes: Buffer, options: { witness?: boolean; closeError?: unknown } = {}) {
+    const fixture = fresh(); const rejection = new Error("synthetic terminal PRIVATE_ERROR_CANARY");
+    let file!: ReturnType<typeof handle>;
+    await expect(fixture.observer.call(async () => {
+      const traversal = await begin(fixture.observer); await owner(fixture.observer);
+      file = handle(bytes, options.closeError); fixture.observer.handle(file.object, "/proc/3141592653/status");
+      await status(file, options.witness ?? true); await traversal.iterator.return?.(); throw rejection;
+    })).rejects.toBe(options.closeError ?? rejection);
+    return { ...fixture, file, observed: record(fixture.lines) };
+  }
+
+  it("preserves resolved authority identity, rejects by identity and delegates once", async () => {
+    const { observer, lines } = fresh(); const authority = Object.freeze({ git: "synthetic", prlimit: "synthetic" }); let calls = 0;
+    expect(await observer.call(async () => { calls++; return authority; })).toBe(authority); expect(calls).toBe(1); expect(lines).toHaveLength(0);
+    const error = new Error("PRIVATE_ERROR_CANARY");
+    await expect(observer.call(async () => { calls++; throw error; })).rejects.toBe(error); expect(calls).toBe(2);
+    expect(record(lines)).toMatchObject({ phase: "entry", failedPredicate: "unknown", diagnosticComplete: true });
+    expect(lines[0]).not.toContain("PRIVATE_ERROR_CANARY");
+  });
+  it.each([[119, true, "unknown"], [120, false, "thread-total-below-120"], [121, false, "thread-total-below-120"]] as const)("observes terminal %i without implementing a guard", async (count, below, failure) => {
+    const { observed } = await terminal(Buffer.from(`Threads:\t${count}\n`));
+    expect(observed).toMatchObject({ acceptedThreadTotal: 0, terminalReadReturnWitness: true, terminalReadCloseSucceeded: true,
+      terminalUtf8Valid: true, terminalThreadsLineMatched: true, terminalThreadTotalCapped: count,
+      sameUidThreadTotalBelow120: below, failedPredicate: failure, diagnosticComplete: true });
+  });
+  it("commits prior119 only at next and diagnoses a separately scripted terminal1", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      const traversal = await begin(observer); await owner(observer);
+      const prior = handle(Buffer.from("Threads:\t119\n")); observer.handle(prior.object, "/proc/3141592653/status"); await status(prior);
+      expect(await traversal.iterator.next()).toBe(traversal.steps[1]); await owner(observer);
+      const last = handle(Buffer.from("Threads:\t1\n")); observer.handle(last.object, "/proc/3141592653/status"); await status(last);
+      await traversal.iterator.return?.(); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ threadReadsAcceptedBeforeTerminal: 1, acceptedThreadTotal: 119, terminalThreadTotalCapped: 120, sameUidThreadTotalBelow120: false, failedPredicate: "thread-total-below-120" });
+  });
+  it("keeps accepted119 and preserves trusted-tool stage across ancestry lstats", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      const traversal = await begin(observer, ["3141592653"]); await owner(observer);
+      const file = handle(Buffer.from("Threads:\t119\n")); observer.handle(file.object, "/proc/3141592653/status"); await status(file);
+      expect(await traversal.iterator.next()).toBe(traversal.done);
+      observer.realpath("/usr/bin/git"); await observer.lstat(async () => ({ uid: 0 }), "/usr/bin/git");
+      await observer.lstat(async () => { throw error; }, "/usr/bin");
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ phase: "trusted-tool", acceptedThreadTotal: 119, failedPredicate: "unknown", sameUidThreadTotalBelow120: null });
+  });
+  it("reports missing Threads but keeps invalid UTF8 unknown", async () => {
+    const missing = await terminal(Buffer.from("Name:\tPRIVATE_STATUS_CANARY\n"));
+    expect(missing.observed).toMatchObject({ terminalUtf8Valid: true, terminalThreadsLineMatched: false, terminalThreadTotalCapped: null, failedPredicate: "threads-line" });
+    expect(missing.lines[0]).not.toContain("PRIVATE_STATUS_CANARY");
+    const invalid = await terminal(Buffer.from([0xff]));
+    expect(invalid.observed).toMatchObject({ terminalUtf8Valid: false, terminalThreadsLineMatched: null, terminalThreadTotalCapped: null, failedPredicate: "unknown" });
+  });
+  it("cannot infer a threshold from bytes and close without the return expression", async () => {
+    const { observed } = await terminal(Buffer.from("Threads:\t120\n"), { witness: false });
+    expect(observed).toMatchObject({ terminalReadReturnWitness: false, terminalReadCloseSucceeded: true, terminalThreadTotalCapped: null, failedPredicate: "unknown" });
+  });
+  it("excludes a returned120 when original close rejects ENOENT and the trace advances", async () => {
+    const { observer, lines } = fresh(); const missing = Object.assign(new Error("synthetic missing"), { code: "ENOENT" }); const error = new Error("synthetic tools");
+    await expect(observer.call(async () => {
+      const traversal = await begin(observer, ["3141592653"]); await owner(observer);
+      const file = handle(Buffer.from("Threads:\t120\n"), missing); observer.handle(file.object, "/proc/3141592653/status");
+      await expect(status(file)).rejects.toBe(missing); expect(await traversal.iterator.next()).toBe(traversal.done);
+      observer.realpath("/usr/bin/git"); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ enoentEntriesSkipped: 1, acceptedThreadTotal: 0, threadReadsAcceptedBeforeTerminal: 0, failedPredicate: "unknown" });
+  });
+  it("does not mask nonENOENT close errors or create a terminal predicate", async () => {
+    const error = Object.assign(new Error("synthetic close"), { code: "EIO" });
+    const { observed, file } = await terminal(Buffer.from("Threads:\t120\n"), { closeError: error });
+    expect(file.counts().closes).toBe(1); expect(observed).toMatchObject({ terminalReadReturnWitness: true, terminalReadCloseSucceeded: false, failedPredicate: "unknown" });
+  });
+  it("delegates the same Buffer view and restores only the private buffer descriptor", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic"); let delegated!: Buffer; let actual!: Buffer | undefined;
+    const buffer = Buffer.alloc(65537); const globalSubarray = Buffer.prototype.subarray;
+    const inherited = Object.create(Object.getPrototypeOf(buffer), { subarray: { configurable: true, value: function (this: Buffer, start?: number, end?: number) { delegated = Reflect.apply(globalSubarray, this, [start, end]); return delegated; } } });
+    Object.setPrototypeOf(buffer, inherited);
+    await expect(observer.call(async () => {
+      const traversal = await begin(observer); await owner(observer); const file = handle(); observer.handle(file.object, "/proc/3141592653/status");
+      actual = (await status(file, true, buffer)).view;
+      expect(file.object.read).toBe(file.originals.read); expect(file.object.stat).toBe(file.originals.stat); expect(file.object.close).toBe(file.originals.close);
+      await traversal.iterator.return?.(); expect(Object.getOwnPropertyDescriptor(traversal.object, Symbol.asyncIterator)).toEqual(traversal.descriptor); throw error;
+    })).rejects.toBe(error);
+    expect(actual).toBe(delegated); expect(Object.hasOwn(buffer, "subarray")).toBe(false); expect(Object.getPrototypeOf(buffer)).toBe(inherited); expect(Buffer.prototype.subarray).toBe(globalSubarray);
+    expect(record(lines).terminalReadReturnWitness).toBe(true);
+  });
+  it.each(["stat", "read", "close"] as const)("rolls back partial installation when %s is nonwritable", async (locked) => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      await begin(observer); await owner(observer); const file = handle();
+      Object.defineProperty(file.object, locked, { writable: false, configurable: false });
+      const before = Object.fromEntries(["stat", "read", "close"].map((key) => [key, Object.getOwnPropertyDescriptor(file.object, key)]));
+      expect(() => observer.handle(file.object, "/proc/3141592653/status")).not.toThrow();
+      for (const key of ["stat", "read", "close"]) expect(Object.getOwnPropertyDescriptor(file.object, key)).toEqual(before[key]);
+      await file.object.close(); expect(file.counts().closes).toBe(1); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ diagnosticComplete: false, acceptedThreadTotal: null, failedPredicate: "unknown" });
+  });
+  it.each(["stat", "read", "close"] as const)("continues restoring other targets when restoring %s throws", async (blocked) => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      await begin(observer); await owner(observer); const file = handle(); let armed = false;
+      const proxied = new Proxy(file.object, { defineProperty(target, key, descriptor) {
+        if (armed && key === blocked && descriptor.value === file.originals[blocked]) throw new Error("synthetic descriptor refusal");
+        return Reflect.defineProperty(target, key, descriptor);
+      } });
+      observer.handle(proxied, "/proc/3141592653/status"); armed = true;
+      await status({ ...file, object: proxied });
+      for (const key of ["stat", "read", "close"] as const) if (key !== blocked) expect(proxied[key]).toBe(file.originals[key]);
+      expect(file.counts().closes).toBe(1); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ diagnosticComplete: false, acceptedThreadTotal: null, terminalThreadTotalCapped: null, failedPredicate: "unknown" });
+  });
+  it("restores handle targets and calls original close even if buffer cleanup fails", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      await begin(observer); await owner(observer); const file = handle(); observer.handle(file.object, "/proc/3141592653/status");
+      const buffer = Buffer.alloc(65537); await file.object.stat(); await file.object.read(buffer, 0, 65537, 0); await file.object.stat(); buffer.subarray(0, file.bytes.length);
+      Object.defineProperty(buffer, "subarray", { configurable: false }); await file.object.close();
+      for (const key of ["stat", "read", "close"] as const) expect(file.object[key]).toBe(file.originals[key]);
+      expect(file.counts().closes).toBe(1); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ diagnosticComplete: false, failedPredicate: "unknown" });
+  });
+  it.each([[1001, 1], [1002, 0], [1001n, 0], ["1001", 0], [NaN, 0], [Infinity, 0], [undefined, 0]] as const)("uses strict numeric UID comparison for %s", async (uid, expected) => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => { await begin(observer); await owner(observer, uid); throw error; })).rejects.toBe(error);
+    expect(record(lines).sameUidEntriesObserved).toBe(expected);
+  });
+  it("never coerces a UID object or counts parent lstats twice", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic"); let coercions = 0;
+    await expect(observer.call(async () => {
+      await begin(observer); await owner(observer, { valueOf() { coercions++; return 1001; } });
+      await observer.lstat(async () => ({ uid: 1001 }), "/proc/3141592653"); throw error;
+    })).rejects.toBe(error);
+    expect(coercions).toBe(0); expect(record(lines).sameUidEntriesObserved).toBe(0);
+  });
+  it("retains A-owned handle observations when B invokes its wrapped methods", async () => {
+    const { observer, lines } = fresh(); const ready = deferred<ReturnType<typeof handle>>(); const worked = deferred<void>(); const releaseB = deferred<void>();
+    const errorA = new Error("synthetic A"); const errorB = new Error("synthetic B");
+    const a = observer.call(async () => {
+      await begin(observer); await owner(observer); const file = handle(); observer.handle(file.object, "/proc/3141592653/status"); ready.resolve(file);
+      await worked.promise; throw errorA;
+    });
+    const b = observer.call(async () => { const fileA = await ready.promise; await status(fileA); worked.resolve(); await releaseB.promise; throw errorB; });
+    await expect(a).rejects.toBe(errorA); releaseB.resolve(); await expect(b).rejects.toBe(errorB);
+    expect(record(lines)).toMatchObject({ procEntriesDelivered: 1, sameUidEntriesObserved: 1, terminalReadReturnWitness: true, terminalThreadTotalCapped: 120, failedPredicate: "thread-total-below-120" });
+  });
+  it("makes one attempt per instance even if console throws, without resetting the live observer", async () => {
+    const { observer, lines } = fresh({}, "linux", () => { throw new Error("synthetic sink"); }); const error = new Error("synthetic original");
+    await expect(observer.call(async () => { throw error; })).rejects.toBe(error);
+    await expect(observer.call(async () => { throw error; })).rejects.toBe(error); expect(lines).toHaveLength(1);
+    const independent = fresh(); await expect(independent.observer.call(async () => { throw error; })).rejects.toBe(error); expect(independent.lines).toHaveLength(1);
+  });
+  it.each([
+    ["GITHUB_ACTIONS", undefined], ["GITHUB_ACTIONS", "TRUE"], ["GITHUB_ACTIONS", "1"],
+    ["RELEASE_PROFILE", undefined], ["RELEASE_PROFILE", "standard"], ["RELEASE_PROFILE", "Full"],
+    ["GITHUB_REPOSITORY", undefined], ["GITHUB_REPOSITORY", "omt-global/bootstrap"],
+    ["GITHUB_EVENT_NAME", undefined], ["GITHUB_EVENT_NAME", "push"],
+    ["GITHUB_RUN_ID", undefined], ["GITHUB_RUN_ID", "0"], ["GITHUB_RUN_ID", "01"], ["GITHUB_RUN_ID", " 1"], ["GITHUB_RUN_ID", "1.0"], ["GITHUB_RUN_ID", "9".repeat(21)],
+    ["GITHUB_RUN_ATTEMPT", undefined], ["GITHUB_RUN_ATTEMPT", "0"], ["GITHUB_RUN_ATTEMPT", "01"], ["GITHUB_RUN_ATTEMPT", "+1"], ["GITHUB_RUN_ATTEMPT", "9".repeat(7)],
+    ["GITHUB_RUN_ID", "1\n"], ["GITHUB_RUN_ID", "1\r\n"], ["GITHUB_RUN_ID", "1\r"], ["GITHUB_RUN_ID", "1\u2028"], ["GITHUB_RUN_ID", "1\u2029"],
+    ["GITHUB_RUN_ATTEMPT", "1\n"], ["GITHUB_RUN_ATTEMPT", "1\r\n"], ["GITHUB_RUN_ATTEMPT", "1\r"], ["GITHUB_RUN_ATTEMPT", "1\u2028"], ["GITHUB_RUN_ATTEMPT", "1\u2029"]
+  ] as const)("keeps gate off for %s=%s while preserving exact delegation", async (name, value) => {
+    const { observer, lines } = fresh({ [name]: value }); const error = new Error("synthetic"); let calls = 0;
+    await expect(observer.call(async () => { calls++; throw error; })).rejects.toBe(error); expect(calls).toBe(1); expect(lines).toHaveLength(0);
+  });
+  it.each(["darwin", "win32"])("keeps %s gate off", async (platform) => {
+    const { observer, lines } = fresh({}, platform); const error = new Error("synthetic");
+    await expect(observer.call(async () => { throw error; })).rejects.toBe(error); expect(lines).toHaveLength(0);
+  });
+  it.each([undefined, "0", "1", "PRIVATE_ENV_CANARY"])("does not gate on the host-broker flag %s", async (flag) => {
+    const { observer, lines } = fresh({ BOOTSTRAP_REQUIRE_HOST_BROKER_TESTS: flag, GITHUB_RUN_ID: "9".repeat(20), GITHUB_RUN_ATTEMPT: "9".repeat(6) }); const error = new Error("PRIVATE_ERROR_CANARY");
+    await expect(observer.call(async () => { throw error; })).rejects.toBe(error); record(lines); expect(lines[0]).not.toContain("PRIVATE_ENV_CANARY"); expect(lines[0]).not.toContain("PRIVATE_ERROR_CANARY");
+  });
+  it("captures the gate when a fresh instance is constructed", async () => {
+    const { observer, lines, fakeProcess } = fresh({ RELEASE_PROFILE: "standard" }); fakeProcess.env.RELEASE_PROFILE = "full";
+    const error = new Error("synthetic"); await expect(observer.call(async () => { throw error; })).rejects.toBe(error); expect(lines).toHaveLength(0);
+  });
+  it("caps projected overflow while retaining fixed public schema and no private status text", async () => {
+    const { observed, lines } = await terminal(Buffer.from("Private:\tPRIVATE_STATUS_CANARY\nThreads:\t" + "9".repeat(4096) + "\n"));
+    expect(observed).toMatchObject({ terminalThreadTotalCapped: 1000000, terminalThreadTotalWasCapped: true, sameUidThreadTotalBelow120: false, failedPredicate: "thread-total-below-120" });
+    for (const value of Object.values(observed)) if (typeof value === "number") expect(Number.isFinite(value)).toBe(true);
+    expect(lines[0]).not.toContain("PRIVATE_STATUS_CANARY"); expect(lines[0]).not.toContain("3141592653"); expect(Buffer.byteLength(lines[0]! + "\n", "utf8")).toBeLessThanOrEqual(585);
+  });
+  it.each(["owner", "open", "read", "stat"] as const)("excludes ENOENT at %s before a later rejection", async (stage) => {
+    const { observer, lines } = fresh(); const missing = Object.assign(new Error("synthetic vanished"), { code: "ENOENT" }); const error = new Error("synthetic later");
+    await expect(observer.call(async () => {
+      const traversal = await begin(observer, ["3141592653"]);
+      if (stage === "owner") await expect(observer.lstat(async () => { throw missing; }, "/proc/3141592653")).rejects.toBe(missing);
+      else {
+        await owner(observer);
+        if (stage === "open") observer.opened("/proc/3141592653/status", missing);
+        else {
+          const file = handle();
+          if (stage === "read") file.object.read = (async () => { throw missing; }) as typeof file.object.read;
+          else file.object.stat = (async () => { throw missing; }) as typeof file.object.stat;
+          observer.handle(file.object, "/proc/3141592653/status"); await expect(status(file)).rejects.toBe(missing); await file.object.close();
+        }
+      }
+      expect(await traversal.iterator.next()).toBe(traversal.done); observer.realpath("/usr/bin/git"); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ enoentEntriesSkipped: 1, threadReadsAcceptedBeforeTerminal: 0, acceptedThreadTotal: 0, failedPredicate: "unknown" });
+  });
+  it("does not infer from a terminal count when an earlier accepted total is unknown", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      const traversal = await begin(observer); await owner(observer);
+      const prior = handle(Buffer.from("Threads:\t1\n")); observer.handle(prior.object, "/proc/3141592653/status"); await status(prior, false);
+      expect(await traversal.iterator.next()).toBe(traversal.steps[1]); await owner(observer);
+      const last = handle(); observer.handle(last.object, "/proc/3141592653/status"); await status(last); await traversal.iterator.return?.(); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ acceptedThreadTotal: null, terminalReadReturnWitness: true, terminalThreadTotalCapped: null, failedPredicate: "unknown" });
+  });
+  it("does not witness a return while a read is pending even with two stats", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic"); const pending = deferred<{ bytesRead: number; buffer: Buffer }>();
+    await expect(observer.call(async () => {
+      await begin(observer); await owner(observer); const file = handle(); const buffer = Buffer.alloc(65537);
+      file.object.read = (() => pending.promise) as typeof file.object.read; observer.handle(file.object, "/proc/3141592653/status");
+      await file.object.stat(); await file.object.stat(); const reading = file.object.read(buffer, 0, buffer.length, 0);
+      buffer.subarray(0, 0); const returned = { bytesRead: 0, buffer }; pending.resolve(returned); expect(await reading).toBe(returned);
+      await file.object.close(); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ terminalReadReturnWitness: false, failedPredicate: "unknown" });
+  });
+  it("does not witness a different subarray range", async () => {
+    const { observer, lines } = fresh(); const error = new Error("synthetic");
+    await expect(observer.call(async () => {
+      await begin(observer); await owner(observer); const file = handle(); observer.handle(file.object, "/proc/3141592653/status"); const buffer = Buffer.alloc(65537);
+      await file.object.stat(); await file.object.read(buffer, 0, buffer.length, 0); await file.object.stat(); buffer.subarray(1, file.bytes.length);
+      await file.object.close(); throw error;
+    })).rejects.toBe(error);
+    expect(record(lines)).toMatchObject({ terminalReadReturnWitness: false, failedPredicate: "unknown" });
   });
 });

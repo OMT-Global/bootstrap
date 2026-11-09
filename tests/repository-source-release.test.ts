@@ -19,7 +19,7 @@ class ReleaseFixture {
   readonly approved: string;
   sourceCommit = "";
 
-  constructor(readonly directory: string) {
+  constructor(readonly directory: string, readonly candidateVersion = version, readonly candidateChannel = "stable") {
     this.package = path.join(directory, "dist/release");
     this.approved = path.join(directory, "approved-preflight");
     this.env = {
@@ -32,8 +32,8 @@ class ReleaseFixture {
       GIT_AUTHOR_EMAIL: "fixture@example.invalid",
       GIT_COMMITTER_NAME: "Release fixture",
       GIT_COMMITTER_EMAIL: "fixture@example.invalid",
-      VERSION: version,
-      CHANNEL: "stable",
+      VERSION: this.candidateVersion,
+      CHANNEL: this.candidateChannel,
       GITHUB_REPOSITORY: repository,
       RUNNER_TEMP: directory,
       PREFLIGHT_RUN_ID: "101",
@@ -62,7 +62,7 @@ class ReleaseFixture {
     this.sourceCommit = this.git("rev-parse", "HEAD");
   }
 
-  hook(name: string, tag = version) {
+  hook(name: string, tag = this.candidateVersion) {
     return this.run("/bin/bash", [`scripts/release/${name}.sh`, ...(name === "postpublish" ? [tag] : [])]);
   }
 
@@ -76,14 +76,19 @@ class ReleaseFixture {
     this.requireHook("prep");
     this.requireHook("build");
     await writeFile(path.join(this.package, "release-evidence.json"), JSON.stringify({
-      schema_version: 1, repo: repository, version, channel: "stable",
+      schema_version: 1, repo: repository, version: this.candidateVersion, channel: this.candidateChannel,
       target_sha: this.sourceCommit, preflight_run_id: "101",
       checks: { prep: "passed", preflight: "passed", build: "passed" }
     }));
     await cp(this.package, this.approved, { recursive: true });
   }
 
-  async remoteFixture(inventory: unknown = releaseAssets) {
+  get releaseAssets() {
+    const candidateArchive = `bootstrap-${this.candidateVersion}-source.tar.gz`;
+    return [candidateArchive, `${candidateArchive}.sha256`, "artifact-manifest.json", "RELEASE_NOTES.md"];
+  }
+
+  async remoteFixture(inventory: unknown = this.releaseAssets) {
     const assetNames = path.join(this.directory, "remote-asset-names.json");
     await writeFile(assetNames, JSON.stringify(inventory));
     const bin = path.join(this.directory, "bin");
@@ -94,7 +99,7 @@ set -euo pipefail
 printf '%s %s\\n' "$1" "$2" >> "$REMOTE_EVENTS"
 case "$1 $2" in
   "release view")
-    [[ "$3" == "v1.1.0" && "$4" == "--repo" && "$5" == "OMT-Global/bootstrap" ]] || exit 90
+    [[ "$3" == "$EXPECTED_RELEASE_VERSION" && "$4" == "--repo" && "$5" == "OMT-Global/bootstrap" ]] || exit 90
     if [[ "$#" == "9" && "$6" == "--json" && "$7" == "assets" && "$8" == "--jq" && "$9" == '[.assets[].name]' ]]; then
       cat "$REMOTE_ASSET_NAMES_FIXTURE"
     elif [[ "$#" == "5" || ( "$#" == "9" && "$6" == "--json" && "$7" == "assets" && "$8" == "--jq" && "$9" == '.assets | length' ) ]]; then
@@ -102,7 +107,7 @@ case "$1 $2" in
     else exit 90; fi
     exit 0
     ;;
-  "release download") [[ "$3" == "v1.1.0" ]] || exit 90; source="$PACKAGE_FIXTURE" ;;
+  "release download") [[ "$3" == "$EXPECTED_RELEASE_VERSION" ]] || exit 90; source="$PACKAGE_FIXTURE" ;;
   "run download")
     [[ "$3" == "101" && "\${NO_APPROVED_PREFLIGHT:-0}" != "1" ]] || exit 44
     source="$APPROVED_PACKAGE_FIXTURE"
@@ -123,11 +128,12 @@ cp "$source"/* "$destination"/
     this.env.APPROVED_PACKAGE_FIXTURE = this.approved;
     this.env.REMOTE_EVENTS = path.join(this.directory, "remote-events");
     this.env.REMOTE_ASSET_NAMES_FIXTURE = assetNames;
+    this.env.EXPECTED_RELEASE_VERSION = this.candidateVersion;
   }
 
   async recomputeReleaseManifest() {
-    const contents = await readFile(path.join(this.package, archive));
-    await writeFile(path.join(this.package, `${archive}.sha256`), `${sha256(contents)}  ${archive}\n`);
+    const contents = await readFile(path.join(this.package, `bootstrap-${this.candidateVersion}-source.tar.gz`));
+    await writeFile(path.join(this.package, `bootstrap-${this.candidateVersion}-source.tar.gz.sha256`), `${sha256(contents)}  bootstrap-${this.candidateVersion}-source.tar.gz\n`);
     const manifestPath = path.join(this.package, "artifact-manifest.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     for (const asset of manifest.assets) {
@@ -139,21 +145,21 @@ cp "$source"/* "$destination"/
   }
 }
 
-async function fixture(test: (value: ReleaseFixture) => Promise<void>) {
+async function fixture(test: (value: ReleaseFixture) => Promise<void>, candidateVersion = version, channel = "stable") {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-source-release-"));
   try {
-    const value = new ReleaseFixture(directory);
+    const value = new ReleaseFixture(directory, candidateVersion, channel);
     await mkdir(path.join(directory, "scripts/release"), { recursive: true });
     for (const hook of ["prep", "build", "postpublish"]) {
       await cp(path.resolve(`scripts/release/${hook}.sh`), path.join(directory, `scripts/release/${hook}.sh`));
     }
     await mkdir(path.join(directory, "release-notes"));
-    await writeFile(path.join(directory, `release-notes/${version}.md`), "# Synthetic release notes\n\nFabricated source fixture; no real release.\n");
+    await writeFile(path.join(directory, `release-notes/${candidateVersion}.md`), "# Synthetic release notes\n\nFabricated source fixture; no real release.\n");
     await writeFile(path.join(directory, "README.md"), "Synthetic source distribution\n");
     await writeFile(path.join(directory, "LICENSE"), "Existing legal bytes are preserved exactly.\n");
     value.git("init", "-qb", "fixture");
     value.commit();
-    value.git("-c", "tag.gpgSign=false", "tag", version);
+    value.git("-c", "tag.gpgSign=false", "tag", candidateVersion);
     await writeFile(path.join(directory, "untracked-local-state"), "Never archive this file.\n");
     await test(value);
   } finally {
@@ -217,9 +223,35 @@ describe("repository-source release hooks", () => {
 
   it("rejects unsupported channels before building or downloading", () => fixture(async f => {
     f.env.CHANNEL = "unrecognized";
+    expect(f.hook("prep").stderr).toContain("Invalid release channel");
     expect(f.hook("build").stderr).toContain("Invalid release channel");
     expect(f.hook("postpublish").stderr).toContain("Invalid release channel");
   }));
+
+  it.each([
+    ["beta", "v1.2.3"], ["rc", "v1.2.3"],
+    ["stable", "v1.2.3-rc.1"], ["stable", "v1.2.3-beta.1"],
+    ["maintenance", "v1.2.3-rc.1"], ["maintenance", "v1.2.3-beta.1"]
+  ])("rejects channel/version maturity mismatch %s / %s before source or remote work", (channel, candidate) => fixture(async f => {
+    await f.remoteFixture();
+    for (const hook of ["prep", "build", "postpublish"]) {
+      const result = f.hook(hook, candidate);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Release channel and version maturity must agree");
+    }
+    await expect(readFile(path.join(f.package, "RELEASE_NOTES.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(f.directory, "remote-events"))).rejects.toMatchObject({ code: "ENOENT" });
+  }, candidate, channel));
+
+  it.each([
+    ["stable", "v0.0.0"], ["maintenance", "v1.2.3"],
+    ["beta", "v1.2.3-beta.01"], ["rc", "v1.2.3-rc.0"],
+    ["beta", "v1.2.3-rc.1"], ["rc", "v1.2.3-beta.1"]
+  ])("preserves supported channel/version maturity %s / %s", (channel, candidate) => fixture(async f => {
+    await f.build();
+    await f.remoteFixture();
+    expect(f.requireHook("postpublish").stdout).toContain(f.sourceCommit);
+  }, candidate, channel));
 
   it("uses committed notes despite modified working-copy text", () => fixture(async f => {
     await writeFile(path.join(f.directory, `release-notes/${version}.md`), "Unreviewed working-copy replacement\n");

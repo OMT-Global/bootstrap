@@ -2,8 +2,14 @@
 set -euo pipefail
 
 : "${VERSION:?Candidate version is required.}"
+: "${CHANNEL:?Release channel is required.}"
 semver='(0|[1-9][0-9]*)'
 [[ "$VERSION" =~ ^v${semver}\.${semver}\.${semver}(-(rc|beta)\.[0-9]+)?$ ]] || { echo "Invalid source-release version." >&2; exit 1; }
+case "$CHANNEL" in
+  rc|beta) [[ "$VERSION" == *-rc.* || "$VERSION" == *-beta.* ]] ;;
+  stable|maintenance) [[ "$VERSION" != *-* ]] ;;
+  *) echo "Invalid release channel." >&2; exit 1 ;;
+esac || { echo "Release channel and version maturity must agree." >&2; exit 1; }
 notes="release-notes/${VERSION}.md"
 notes_file="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bootstrap-release-notes.XXXXXX")"
 trap 'rm -f "$notes_file"' EXIT

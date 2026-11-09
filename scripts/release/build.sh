@@ -6,7 +6,11 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?Repository is required.}"
 semver='(0|[1-9][0-9]*)'
 [[ "$VERSION" =~ ^v${semver}\.${semver}\.${semver}(-(rc|beta)\.[0-9]+)?$ ]] || { echo "Invalid source-release version." >&2; exit 1; }
-case "$CHANNEL" in rc|beta|stable|maintenance) ;; *) echo "Invalid release channel." >&2; exit 1 ;; esac
+case "$CHANNEL" in
+  rc|beta) [[ "$VERSION" == *-rc.* || "$VERSION" == *-beta.* ]] ;;
+  stable|maintenance) [[ "$VERSION" != *-* ]] ;;
+  *) echo "Invalid release channel." >&2; exit 1 ;;
+esac || { echo "Release channel and version maturity must agree." >&2; exit 1; }
 artifact_dir="${ARTIFACT_DIR:-dist/release}"
 [[ -s "$artifact_dir/RELEASE_NOTES.md" ]] || { echo "Run release prep with reviewed notes first." >&2; exit 1; }
 target_sha="$(git rev-parse HEAD)"

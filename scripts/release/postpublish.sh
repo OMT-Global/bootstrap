@@ -8,7 +8,11 @@ tag="${1:?Exact release tag is required.}"
 semver='(0|[1-9][0-9]*)'
 [[ "$tag" =~ ^v${semver}\.${semver}\.${semver}(-(rc|beta)\.[0-9]+)?$ ]] || { echo "Invalid source-release version." >&2; exit 1; }
 [[ "$PREFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid approved preflight run ID." >&2; exit 1; }
-case "$CHANNEL" in rc|beta|stable|maintenance) ;; *) echo "Invalid release channel." >&2; exit 1 ;; esac
+case "$CHANNEL" in
+  rc|beta) [[ "$tag" == *-rc.* || "$tag" == *-beta.* ]] ;;
+  stable|maintenance) [[ "$tag" != *-* ]] ;;
+  *) echo "Invalid release channel." >&2; exit 1 ;;
+esac || { echo "Release channel and version maturity must agree." >&2; exit 1; }
 archive="bootstrap-${tag}-source.tar.gz"
 target_sha="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
 target_tree="$(git rev-parse --verify "refs/tags/$tag^{tree}")"

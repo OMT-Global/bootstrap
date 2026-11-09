@@ -6,6 +6,8 @@ Bootstrap's product-owned prep/build/postpublish hooks prepare a repository-sour
 
 For the selected `vMAJOR.MINOR.PATCH` version (optionally `-rc.N` or `-beta.N`), generate and review the release notes, then commit them as `release-notes/<version>.md`. Reconcile the notes' generation basis with the final reviewed source. The repository intentionally contains no fabricated candidate notes or approved release target in this hook preparation change.
 
+The source hooks require prerelease channels (`rc` or `beta`) to use one of the supported prerelease suffixes, and stable/maintenance channels to use an unsuffixed version. This checks promotion maturity; it does not introduce a requirement that the two prerelease channel labels match their suffix names.
+
 The preflight wrapper passes its existing `VERSION`, `CHANNEL`, `GITHUB_REPOSITORY` and `ARTIFACT_DIR` environment. Prep reads notes from the checked-out commit, ignoring uncommitted replacements, and rejects absent, empty, whitespace-only (including Unicode whitespace) or placeholder text. Build checks that the prepared notes still equal that same commit's versioned notes and archives the checked-out commit with `git archive`.
 
 The four custom release assets are:

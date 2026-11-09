@@ -95,7 +95,8 @@ export async function runDoctor(
   const runnerLabels = resolveRunsOn(
     manifest.ci.runnerPolicy,
     manifest.project.visibility,
-    ["shell"]
+    ["shell"],
+    manifest.ci.githubHostedImage
   );
   checks.push({
     name: "Runner policy",

@@ -6,9 +6,11 @@ Governing issue: [#63](https://github.com/OMT-Global/bootstrap/issues/63). Stage
 
 Stage A selected Vite 7.3.7, esbuild 0.28.1, PostCSS 8.5.23, NanoID 3.3.18 and source-map-js 1.2.2 while retaining Vitest 3.2.7. The paired Vite update makes the chosen esbuild version compatible with its declared parent range. Stage A left three inherited development-only audit groups; the prior baseline had eight.
 
-Stage B adopts exact Vitest 4.1.12 and the complete frozen lock, retaining those five project-local constraints. Tinypool/vite-node are absent. The complete package/lock diff is 611 additions plus deletions; known final source/config changes total 629, including every lock line. All five direct production ranges, eight complete production records/integrities, unrelated development roots, scripts/bin/engines, MIT and notice bytes remain unchanged. No partial lock, forced out-of-range edge, global tool update or size exception is used.
+Stage B adopts exact Vitest 4.1.12 and Vite 7.3.8 with the complete frozen lock, retaining the other four project-local constraints. Tinypool/vite-node are absent. The complete package/lock diff is 619 additions plus deletions; known final source/config changes total 637, including every lock line. All five direct production ranges, eight complete production records/integrities, unrelated development roots, scripts/bin/engines, MIT and notice bytes remain unchanged. No partial lock, forced out-of-range edge, global tool update or size exception is used.
 
 Only Bootstrap's own `ci.customScripts.fast` and `extended` lose minWorkers, keeping maximums two/one, order, failure propagation, immutable image and native flag. The actual renderer derives the two scripts, manifest and sidecar. Both project-owned adjunct workflows remove only minWorkers; the Node20 focused five-file list, Node20.20.2 pin, Ubuntu24.04, actions, permissions and timeouts remain. Shared/default Vitest2 behavior, Vitest configuration, pool/concurrency settings, runner/resource policy and release pins are unchanged. The [versioned Vitest4 migration](https://v4.vitest.dev/guide/migration) and [maxWorkers contract](https://v4.vitest.dev/config/maxworkers), plus actual installed help/types, were checked; unversioned Vitest5 semantics were not used.
+
+Vite 7.3.8 incorporates the upstream [virtual-module error-stub escaping fix](https://github.com/vitejs/vite/pull/24043) ([commit](https://github.com/vitejs/vite/commit/e5f23b60f0c46a906a60986faad88a5bd7611a15)), using JSON.stringify for embedded identifiers and regression coverage for special characters. This folds the Vite target of Dependabot #222 into this Node20/Vitest4 lane. Its declared Node range remains `^20.19.0 || >=22.12.0`, satisfied by Node20.20.2. The current official advisory search did not identify a newly published advisory requiring 7.3.8; that bounded observation does not classify the fix as nonsecurity. Stage A's 7.3.7 selection above remains a historical fact.
 
 ## Genuine local producer history
 
@@ -18,7 +20,7 @@ After root reviewed the exact local command, 59 checked source-only backups and 
 
 Only three of the same 49 claimed hashes changed; the sidecar itself is the fourth managed update. All other 46 managed outputs and protected README/source hooks/legal data retain bytes/modes. Genuine fixed-point plans and actual state/binding receipts are captured. No other worktree's state, Git metadata, auth or home profile was copied; no manual sidecar/state hash edit created authority. This establishes this worktree's actual producer event, not a reconstruction of missing historical events elsewhere.
 
-## Actual local checks
+## Original Vitest4 migration local checks
 
 Used existing Node20.20.2/npm10.8.2 with empty task HOME/config/cache and no inherited auth/proxy/SSH-agent state. `npm ci --ignore-scripts --engine-strict --no-audit --no-fund` used the official registry. Package lifecycle hooks and Node/npm/global-tool upgrades were excluded; explicit build/test commands exercised the locked development patches.
 
@@ -31,6 +33,14 @@ Used existing Node20.20.2/npm10.8.2 with empty task HOME/config/cache and no inh
 - The pinned upstream actionlint1.7.7 Darwin tool was checksum-verified and extracted only into TMP; both changed workflows pass with baseline-identical empty diagnostics. No global install/PATH/config or repository dependency change was made for that verifier.
 
 Full and runtime-only audits at `2026-11-09T09:26:18.249548+00:00` both exited zero with no reported findings. These are timestamped local graph observations, not proof of vulnerability absence. Stage A's three inherited groups are resolved in this prepared Stage B graph.
+
+## Vite 7.3.8 integration checks
+
+The narrow follow-up changes only the Vite override, its complete locked record (version, official tarball URL and integrity), and this migration note. All other 105 lock records, including the root and eight production entries, are unchanged from the original Stage B lock. Vitest/mocker remain 4.1.12; no Tinypool/vite-node, Node/runtime upgrade, additional dependency or package-script change is introduced.
+
+On 2026-11-09, the exact updated lock was materialized in fresh TMP under Node20.20.2/npm10.8.2 using the same anonymous official-registry/lifecycle-disabled boundary. All 55 installed versions/tarball integrities and 152 virtual dependency/peer edges were verified against actual parent declarations; Node20 engines pass. Full ordinary tests passed **1,074 / 48 files**, with the same 16 expected skips; the Node20 compatibility workflow's exact five-file subset passed **258 / zero skips**. Typecheck/build, strict typing of the original two changed tests, CLI/CommonMark imports, 45 action pins, scanner, managed-shell syntax and whitespace checks passed. Both full and runtime-only audits at `2026-11-09T14:14:44Z`–`14:14:45Z` reported zero findings; these remain timestamped registry observations. An npm-list diagnostic from the temporary worktree dependency link was retained; the identical graph listed cleanly from its real materialized root. The original local dependency directory was preserved and restored after validation.
+
+These results update local dependency compatibility evidence. Earlier exact-head review/hosted results remain historical; the changed PR requires a fresh complete actual-base review and new exact-head hosted checks before human approval or merge. No producer apply or state import occurred for this follow-up.
 
 ## Remaining gates
 

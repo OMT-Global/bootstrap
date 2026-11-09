@@ -25,7 +25,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - name: Exercise AST, reader, policy, and baseline conformance on Node 20
-        run: npm test -- --run tests/security-response-markdown.test.ts tests/security-response-policy.test.ts tests/conformance.test.ts tests/policy.test.ts tests/managed-security-policy.test.ts --maxWorkers=2 --minWorkers=1
+        run: npm test -- --run tests/security-response-markdown.test.ts tests/security-response-policy.test.ts tests/conformance.test.ts tests/policy.test.ts tests/managed-security-policy.test.ts --maxWorkers=2
       - name: Load the built CLI and CommonMark entry
         run: |
           node dist/cli.js --help >/dev/null

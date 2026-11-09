@@ -323,14 +323,18 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             return json.dumps([{'Id': 'sha256:' + 'b' * 64}]).encode()
         if operation == 'image' and arguments[4] == 'rm' and mode == 'image-cleanup-failure':
             raise probe.Unsupported('injected-image-cleanup-failure')
-        if operation == 'start' and mode in ('admission-failure', 'admission-cleanup-failure'):
+        if operation == 'start' and mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure'):
+            failure = {'stage': 'inherited-as', 'addressSpace': {'soft': -1, 'hard': -1}}
+            if mode.startswith('process-mounts'):
+                failure = {'stage': 'process-mounts', 'addressSpace': {'soft': 17179869184, 'hard': 17179869184},
+                           'processMounts': {'substage': 'combined-predicate', 'capsZero': True, 'rootRo': True, 'mountsSafe': True, 'noNewPrivs': False}}
             kwargs['on_line'](json.dumps({'event': 'result', 'case': 'mechanical', 'ok': False, 'providerRequests': 0,
-                'admissionFailure': {'stage': 'inherited-as', 'addressSpace': {'soft': -1, 'hard': -1}}}).encode(), io.BytesIO())
+                'admissionFailure': failure}).encode(), io.BytesIO())
         return b''
 
     def case_run(case, *args):
         state['caseOrder'].append(case)
-        if mode in ('admission-failure', 'admission-cleanup-failure'):
+        if mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure'):
             assert case == 'mechanical'
             return actual_case_run(case, *args)
         result = {'case': case, 'ok': not (mode == 'native-unsupported' and case == 'sandbox'), 'providerRequests': 0}
@@ -341,7 +345,7 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
         return result
 
     def rmtree(path, *args, **kwargs):
-        if mode in ('temp-cleanup-failure', 'admission-cleanup-failure') and Path(path) in state['roots']:
+        if mode in ('temp-cleanup-failure', 'admission-cleanup-failure', 'process-mounts-cleanup-failure') and Path(path) in state['roots']:
             raise OSError('injected temporary cleanup failure')
         return real_rmtree(path, *args, **kwargs)
 
@@ -445,7 +449,8 @@ interface OrchestrationResult {
   evidence: { ok: boolean; cleanup: boolean; reason?: string; signatureVerified?: boolean;
     stageSourceSha256?: string; bundles?: Record<string, { bytes: number; sha256: string }>;
     package?: { packageNoticesPreserved: Record<string, string> }; cases: { providerRequests: number }[];
-    preAuthDiagnostic?: { fixtureAdmissionFailure?: { stage: string; addressSpace?: { soft: number; hard: number } };
+    preAuthDiagnostic?: { fixtureAdmissionFailure?: { stage: string; addressSpace?: { soft: number; hard: number };
+      processMounts?: { substage: string; capsZero?: boolean; rootRo?: boolean; mountsSafe?: boolean; noNewPrivs?: boolean } };
       readyEventSeen: boolean; resultEventSeen: boolean; resultOk: boolean | null; failureStage?: string; stage: string } };
 }
 
@@ -553,19 +558,23 @@ describe("controlled reviewer artifact orchestration", () => {
     expect(result.reportWrittenWhileRootPresent).toBe(false);
   });
 
-  it.each(["admission-failure", "admission-cleanup-failure"])("retains fixture and host failures separately through outer cleanup for %s", async (mode) => {
+  it.each(["admission-failure", "admission-cleanup-failure", "process-mounts-failure", "process-mounts-cleanup-failure"])("retains fixture and host failures separately through outer cleanup for %s", async (mode) => {
     const result = await orchestrationCase(mode);
+    const cleanup = !mode.includes("cleanup-failure");
     expect(result.status).toBe(1);
     expect(result.caseOrder).toEqual(["mechanical"]);
     expect(result.providerRequests).toBe(0);
     expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
-    expect(result.evidence).toMatchObject({ ok: false, reason: "cleanup", cleanup: mode === "admission-failure" });
+    expect(result.evidence).toMatchObject({ ok: false, reason: "cleanup", cleanup });
     expect(result.evidence.preAuthDiagnostic).toMatchObject({
-      fixtureAdmissionFailure: { stage: "inherited-as", addressSpace: { soft: -1, hard: -1 } },
+      fixtureAdmissionFailure: mode.startsWith("process-mounts") ? {
+        stage: "process-mounts", addressSpace: { soft: 17179869184, hard: 17179869184 },
+        processMounts: { substage: "combined-predicate", capsZero: true, rootRo: true, mountsSafe: true, noNewPrivs: false }
+      } : { stage: "inherited-as", addressSpace: { soft: -1, hard: -1 } },
       readyEventSeen: false, resultEventSeen: true, resultOk: false,
       failureStage: "post-case-cgroup", stage: "container-removed"
     });
-    expect(result.allRootsRemoved).toBe(mode === "admission-failure");
+    expect(result.allRootsRemoved).toBe(cleanup);
   });
 });
 
@@ -999,6 +1008,39 @@ class PublicDiagnosticTests(unittest.TestCase):
         self.assertEqual(diagnostic['failureStage'], 'post-case-cgroup')
         self.assertEqual(diagnostic['stage'], 'mechanical-remove')
 
+    def test_process_mounts_closed_boolean_schema_retains_false_and_unavailable(self):
+        substages = ('status-read', 'status-parse', 'capabilities', 'mountinfo-read', 'mountinfo-parse', 'root-ro', 'mounts-safe', 'combined-predicate')
+        for substage in substages:
+            for fields in ({}, {'capsZero': False, 'rootRo': True, 'mountsSafe': False, 'noNewPrivs': False}):
+                payload = {'stage': 'process-mounts', 'processMounts': {'substage': substage, **fields}}
+                with self.subTest(payload=payload):
+                    diagnostic, value, reason, pending = mechanical('pre-ready', failure_fields={'admissionFailure': payload})
+                    self.assertEqual(reason, 'cleanup')
+                    self.assertEqual(diagnostic['fixtureAdmissionFailure'], payload)
+                    self.assertEqual(diagnostic['failureStage'], 'post-case-cgroup')
+                    self.assertEqual(pending, [])
+        private = {'stage': 'process-mounts', 'processMounts': {'raw': 'private-process-canary'}}
+        diagnostic, value, reason, pending = mechanical('post-ready-failure', failure_fields={'admissionFailure': private})
+        self.assertIsNone(reason)
+        self.assertNotIn('fixtureAdmissionFailure', diagnostic)
+        self.assertNotIn('private-process-canary', json.dumps([diagnostic, value]))
+
+    def test_malformed_or_wrong_stage_process_context_is_never_retained(self):
+        malformed = [None, [], True, {}, {'substage': 'unknown'}, {'substage': True},
+                     {'substage': 'status-read', 'raw': 'private-process-canary'}, {'substage': 'status-read', 'caps_zero': True}]
+        malformed += [{'substage': 'combined-predicate', 'noNewPrivs': value} for value in (0, 1, 0.0, 'false', None)]
+        payloads = [{'stage': 'process-mounts', 'processMounts': context} for context in malformed]
+        payloads += [{'stage': stage, 'processMounts': {'substage': 'status-read'}} for stage in ('platform', 'shared-memory')]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                capture = {}
+                diagnostic, value, reason, pending = mechanical('pre-ready', capture=capture, failure_fields={'admissionFailure': payload})
+                self.assertEqual(reason, 'output')
+                self.assertNotIn('fixtureAdmissionFailure', diagnostic)
+                self.assertNotIn('private-process-canary', json.dumps(diagnostic))
+                self.assertEqual(pending, [])
+                self.assertEqual(capture, {'commands': 3, 'inputWrites': [b'', b'', b'']})
+
 
 log = io.StringIO()
 result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(PublicDiagnosticTests))
@@ -1015,7 +1057,7 @@ describe("controlled reviewer public pre-auth diagnostic", () => {
       cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
     });
-    expect(JSON.parse(result.stdout)).toEqual({ testCases: 12,
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 14,
       publicPhases: ["image-history", "mechanical-create", "mechanical-start", "mechanical-inspect-running",
         "mechanical-inspect-stopped", "mechanical-remove"],
       nativeDockerAuthNetworkProcesses: 0, allProcessesWereFakePopen: true });
@@ -1026,6 +1068,7 @@ describe("controlled reviewer public pre-auth diagnostic", () => {
 const addressSpaceHarness = String.raw`
 """Inherited address-space fixtures; every resource setter and Linux observation is mocked."""
 import ast
+import copy
 import contextlib
 import ctypes
 import importlib.util
@@ -1126,19 +1169,68 @@ def host_case(fields):
 
 
 @contextlib.contextmanager
-def mocked_gate(fault=None):
+def mocked_gate(fault=None, process_probe=None):
     values = {'memory.max': '2147483648', 'memory.swap.max': '0', 'pids.max': '128', 'cpu.max': '200000 100000'}
-    status = '\n'.join(name + ': 0' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')) + '\nNoNewPrivs: 1\n'
+    counts = process_probe if process_probe is not None else {}
+    counts.update(reads=[], nnpLookup=0, nnpStrip=0)
+    class Value(str):
+        def __new__(cls, key, value):
+            result = super().__new__(cls, value)
+            result.key = key
+            return result
+        def strip(self):
+            if self.key == 'NoNewPrivs':
+                counts['nnpStrip'] += 1
+                if fault == 'nnp-raises':
+                    raise OSError(CANARY)
+            return super().strip()
+    class StatusLine(str):
+        def __new__(cls, key, value):
+            result = super().__new__(cls, key + ': ' + value)
+            result.key, result.value = key, value
+            return result
+        def split(self, *args):
+            return [self.key, Value(self.key, self.value)]
+    class Status(dict):
+        def __getitem__(self, key):
+            if key == 'NoNewPrivs':
+                counts['nnpLookup'] += 1
+            return super().__getitem__(key)
+    class StatusText:
+        def splitlines(self):
+            if fault == 'status-parse':
+                raise MemoryError(CANARY)
+            entries = [(name, '1' if fault == 'caps-false' and name == 'CapEff' else
+                        CANARY if fault == 'capabilities' and name == 'CapEff' else '0')
+                       for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')]
+            if fault != 'nnp-missing':
+                entries.append(('NoNewPrivs', '0' if fault == 'nnp-false' else '1'))
+            return [StatusLine(key, value) for key, value in entries]
     elf = b'\x7fELF\x02\x01\x01' + bytes(11) + b'\x3e\x00'
     original_mkdir = Path.mkdir
     with tempfile.TemporaryDirectory(prefix='bootstrap-as-full-gate-fixture-') as temporary:
         def read_text(path, *args, **kwargs):
             if str(path) == '/proc/self/status':
-                if fault == 'process-mounts':
+                counts['reads'].append('status')
+                if fault in ('process-mounts', 'status-read'):
                     raise OSError(CANARY)
-                return status
+                return StatusText()
             if str(path) == '/proc/self/mountinfo':
-                return '1 0 0:0 / / ro - ext4 root ro\n2 1 0:1 / ' + temporary + ' rw - tmpfs tmpfs rw\n'
+                counts['reads'].append('mountinfo')
+                if fault == 'mountinfo-read':
+                    raise OSError(CANARY)
+                class MountText:
+                    def splitlines(self):
+                        if fault == 'mountinfo-parse':
+                            raise MemoryError(CANARY)
+                        if fault == 'root-ro':
+                            return ['malformed-row']
+                        rows = ['1 0 0:0 / / ' + ('rw' if fault == 'root-false' else 'ro'),
+                                '2 1 0:1 / ' + temporary + ' rw']
+                        if fault in ('mounts-safe', 'mounts-false'):
+                            rows.append('3 1 0:2 / /' + CANARY + ' rw')
+                        return rows
+                return MountText()
             if fault == 'cgroup':
                 raise OSError(CANARY)
             return values[path.name]
@@ -1152,9 +1244,14 @@ def mocked_gate(fault=None):
         def statfs(path, raw):
             ctypes.cast(raw, ctypes.POINTER(ctypes.c_long))[0] = 0x01021994
             return 0
+        def access(path, mode):
+            if fault == 'mounts-safe':
+                raise OSError(CANARY)
+            return fault in ('mounts-false', 'shared-memory')
         pair = (-1, -1) if fault == 'inherited-as' else (LIMIT, LIMIT)
         with admission(pair, setter) as (order, emit, native), \
                 mock.patch.object(fixture, 'ROOT', Path(temporary)), \
+                mock.patch.object(fixture, 'dict', Status, create=True), \
                 mock.patch.object(fixture.os, 'getpid', return_value=2 if fault == 'platform' else 1), \
                 mock.patch.object(fixture.os, 'environ', {}), \
                 mock.patch.object(Path, 'read_text', read_text), mock.patch.object(Path, 'mkdir', mkdir), \
@@ -1162,7 +1259,8 @@ def mocked_gate(fault=None):
                     return_value=types.SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0, st_nlink=1)), \
                 mock.patch.object(Path, 'open', side_effect=lambda *args, **kwargs: io.BytesIO(elf)), \
                 mock.patch.object(fixture.os.path, 'exists', return_value=fault == 'shared-memory'), \
-                mock.patch.object(fixture.os, 'access', return_value=fault == 'shared-memory'), \
+                mock.patch.object(fixture.os, 'access', side_effect=access), \
+                mock.patch.object(fixture.os, 'stat', return_value=types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600)), \
                 mock.patch.object(fixture.os, 'statvfs', return_value=types.SimpleNamespace(f_blocks=0 if fault == 'tmpfs' else 64, f_frsize=4096, f_files=16384)), \
                 mock.patch.object(fixture.ctypes, 'CDLL', return_value=types.SimpleNamespace(statfs=statfs)), \
                 mock.patch.object(fixture.os, 'uname', return_value=types.SimpleNamespace(machine=CANARY if fault == 'architecture' else 'x86_64')), \
@@ -1239,6 +1337,8 @@ class InheritedAddressSpaceTests(unittest.TestCase):
                 expected = {'stage': stage}
                 if stage != 'platform':
                     expected['addressSpace'] = {'soft': -1, 'hard': -1} if stage == 'inherited-as' else PAIR
+                if stage == 'process-mounts':
+                    expected['processMounts'] = {'substage': 'status-read'}
                 self.assertEqual(failure['admissionFailure'], expected)
                 self.assertNotIn(CANARY, json.dumps(emitted))
                 setters = [entry for entry in order if entry[0] == 'set']
@@ -1280,6 +1380,98 @@ class InheritedAddressSpaceTests(unittest.TestCase):
                 self.assertNotIn(CANARY, json.dumps(emitted))
                 native.assert_not_called()
 
+    def test_actual_process_read_parse_and_computation_failures_publish_only_completed_booleans(self):
+        cases = [('status-read', 'status-read', {}), ('status-parse', 'status-parse', {}),
+                 ('capabilities', 'capabilities', {}), ('mountinfo-read', 'mountinfo-read', {'capsZero': True}),
+                 ('mountinfo-parse', 'mountinfo-parse', {'capsZero': True}), ('root-ro', 'root-ro', {'capsZero': True}),
+                 ('mounts-safe', 'mounts-safe', {'capsZero': True, 'rootRo': True}),
+                 ('nnp-raises', 'combined-predicate', {'capsZero': True, 'rootRo': True, 'mountsSafe': True})]
+        for fault, substage, predicates in cases:
+            counts = {}
+            with self.subTest(fault=fault), mocked_gate(fault, counts) as (order, emit, native, emitted):
+                self.assertEqual(fixture_entry('mechanical'), 0)
+                self.assertEqual(len(emitted), 1)
+                self.assertEqual(emitted[0]['admissionFailure'], {
+                    'stage': 'process-mounts', 'addressSpace': PAIR, 'processMounts': {'substage': substage, **predicates}})
+                self.assertEqual(counts['reads'], ['status'] if fault in ('status-read', 'status-parse', 'capabilities') else ['status', 'mountinfo'])
+                self.assertEqual(counts['nnpLookup'], int(fault == 'nnp-raises'))
+                self.assertEqual(counts['nnpStrip'], int(fault == 'nnp-raises'))
+                self.assertNotIn(CANARY, json.dumps(emitted))
+                native.assert_not_called()
+
+    def test_false_unevaluated_and_exceptional_nnp_remain_distinct_and_success_clears_context(self):
+        cases = [('root-false', 'rootRo', 0, 0), ('mounts-false', 'mountsSafe', 0, 0),
+                 ('caps-false', 'capsZero', 0, 0), ('nnp-false', 'noNewPrivs', 1, 1),
+                 ('nnp-missing', None, 1, 0), ('nnp-raises', None, 1, 1)]
+        for fault, field, lookups, strips in cases:
+            counts = {}
+            with self.subTest(fault=fault), mocked_gate(fault, counts) as (order, emit, native, emitted):
+                self.assertEqual(fixture_entry('mechanical'), 0)
+                context = emitted[0]['admissionFailure']['processMounts']
+                self.assertEqual(context['substage'], 'combined-predicate')
+                if field is not None:
+                    self.assertIs(context[field], False)
+                self.assertEqual('noNewPrivs' in context, fault == 'nnp-false')
+                self.assertEqual(counts, {'reads': ['status', 'mountinfo'], 'nnpLookup': lookups, 'nnpStrip': strips})
+                native.assert_not_called()
+        self.assertIn('processMounts', fixture.ADMISSION)
+        with mocked_gate('platform') as (order, emit, native, emitted):
+            self.assertEqual(fixture_entry('mechanical'), 0)
+            self.assertEqual(emitted[0]['admissionFailure'], {'stage': 'platform'})
+            self.assertNotIn('processMounts', fixture.ADMISSION)
+        counts = {}
+        with mocked_gate(process_probe=counts) as (order, emit, native, emitted):
+            fixture.gate()
+            self.assertEqual(counts, {'reads': ['status', 'mountinfo'], 'nnpLookup': 1, 'nnpStrip': 1})
+            self.assertNotIn('processMounts', fixture.ADMISSION)
+            self.assertNotIn('processMounts', emitted[0])
+
+    def test_nnp_observation_unwraps_to_the_canonical_predicate_and_preserves_truth_call_order(self):
+        gate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'gate')
+        observed = next(node for node in gate.body if isinstance(node, ast.Try))
+        initialization = next(node for node in gate.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'no_new_privs' for target in node.targets))
+        canonical = ast.parse("require(root_ro and mounts_safe and caps_zero and status['NoNewPrivs'].strip() == '1')").body[0]
+        class Unwrap(ast.NodeTransformer):
+            def visit_NamedExpr(self, node):
+                return self.visit(node.value)
+        self.assertEqual(ast.dump(canonical.value.args[0]), ast.dump(Unwrap().visit(copy.deepcopy(observed.body[0].value.args[0]))))
+        for values in ((False, True, True, True), (True, False, True, True), (True, True, False, True),
+                       (True, True, True, False), (True, True, True, True)):
+            outcomes = []
+            for statements in ([canonical], [initialization, observed]):
+                calls = []
+                class Truth:
+                    def __init__(self, name, value):
+                        self.name, self.value = name, value
+                    def __bool__(self):
+                        calls.append(self.name)
+                        return self.value
+                class Nnp(str):
+                    def strip(self):
+                        calls.append('NNP-strip')
+                        return super().strip()
+                class Status(dict):
+                    def __getitem__(self, key):
+                        calls.append('NNP-lookup')
+                        return super().__getitem__(key)
+                context = {'substage': 'combined-predicate'}
+                namespace = {'root_ro': Truth('root', values[0]), 'mounts_safe': Truth('mounts', values[1]),
+                             'caps_zero': Truth('caps', values[2]), 'status': Status(NoNewPrivs=Nnp('1' if values[3] else '0')),
+                             'require': fixture.require, 'process_context': context}
+                try:
+                    exec(compile(ast.fix_missing_locations(ast.Module(body=statements, type_ignores=[])), '<predicate-fixture>', 'exec'), namespace)
+                    failed = False
+                except RuntimeError:
+                    failed = True
+                outcomes.append((calls, failed, context))
+            self.assertEqual(outcomes[0][:2], outcomes[1][:2])
+            evaluated = all(values[:3])
+            self.assertEqual(outcomes[1][0].count('NNP-lookup'), int(evaluated))
+            self.assertEqual(outcomes[1][0].count('NNP-strip'), int(evaluated))
+            self.assertEqual('noNewPrivs' in outcomes[1][2], evaluated)
+            if evaluated:
+                self.assertIs(outcomes[1][2]['noNewPrivs'], values[3])
+
     def test_host_rejects_malformed_pairs_before_go_and_retains_the_valid_mechanical_pair(self):
         malformed = [{}, {'addressSpace': None}, {'addressSpace': []}, {'addressSpace': {}},
                      {'addressSpace': {'soft': LIMIT}}, {'addressSpace': {**PAIR, 'extra': 0}},
@@ -1317,7 +1509,7 @@ describe("controlled reviewer inherited address space", () => {
       cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
     });
-    expect(JSON.parse(result.stdout)).toEqual({ testCases: 8, actualResourceSetters: 0, nativeOrLauncherProcesses: 0 });
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 11, actualResourceSetters: 0, nativeOrLauncherProcesses: 0 });
   });
 
   it("uses the fixed prlimit exec form before Python with no shell, PID selector or fallback", async () => {

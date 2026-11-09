@@ -116,14 +116,35 @@ def gate():
         target.mkdir(mode=0o700)
         os.environ['XDG_' + kind + '_HOME'] = str(target)
     ADMISSION['stage'] = 'process-mounts'
-    status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+    process_context = {'substage': 'status-read'}
+    ADMISSION['processMounts'] = process_context
+    status_text = Path('/proc/self/status').read_text()
+    process_context['substage'] = 'status-parse'
+    status = dict(line.split(':', 1) for line in status_text.splitlines() if ':' in line)
+    process_context['substage'] = 'capabilities'
     caps_zero = all(int(status[name].strip(), 16) == 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
-    mounts = [line.split() for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    process_context['capsZero'] = caps_zero
+    process_context['substage'] = 'mountinfo-read'
+    mountinfo_text = Path('/proc/self/mountinfo').read_text()
+    process_context['substage'] = 'mountinfo-parse'
+    mounts = [line.split() for line in mountinfo_text.splitlines()]
+    process_context['substage'] = 'root-ro'
     root_ro = any(row[4] == '/' and 'ro' in row[5].split(',') for row in mounts)
+    process_context['rootRo'] = root_ro
+    process_context['substage'] = 'mounts-safe'
     mounts_safe = all(row[4] == str(ROOT) or 'rw' not in row[5].split(',') or
                       (row[4] == '/proc' or row[4].startswith('/proc/')) or not os.access(row[4], os.W_OK) or
                       stat.S_ISCHR(os.stat(row[4]).st_mode) for row in mounts)
-    require(root_ro and mounts_safe and caps_zero and status['NoNewPrivs'].strip() == '1')
+    process_context['mountsSafe'] = mounts_safe
+    process_context['substage'] = 'combined-predicate'
+    no_new_privs = None
+    try:
+        require(root_ro and mounts_safe and caps_zero and (no_new_privs := status['NoNewPrivs'].strip() == '1'))
+    finally:
+        if type(no_new_privs) is bool:
+            process_context['noNewPrivs'] = no_new_privs
+    ADMISSION.pop('processMounts')
+
     ADMISSION['stage'] = 'shared-memory'
     require(not os.path.exists('/dev/shm') or not os.access('/dev/shm', os.W_OK))
     ADMISSION['stage'] = 'tmpfs'

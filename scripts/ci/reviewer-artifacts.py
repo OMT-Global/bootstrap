@@ -5,6 +5,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -218,41 +219,122 @@ def integer(value):
     return result
 
 
-def audit_bundle(legacy_data, standard_data, expected_digest):
-    """Compare representations only; pinned Cosign performs every cryptographic check."""
+def bundle_tag(artifact, field, failure):
+    require(artifact in ('package', 'native', 'bwrap') and failure in ('shape', 'mismatch') and field in (
+        'legacy-file', 'raw-file', 'standard-file', 'pinned-file', 'pinned-hash', 'legacy-json', 'standard-json', 'legacy-keys',
+        'media-type', 'verification-material', 'certificate-pem', 'certificate-der', 'signature', 'kind-version',
+        'rekor-body', 'rekor-log-id', 'rekor-log-index', 'rekor-integrated-time', 'rekor-set', 'digest-algorithm',
+        'artifact-digest', 'proof', 'proof-index', 'proof-root-hash', 'proof-hashes', 'proof-checkpoint', 'candidate-json',
+        'verified-bytes', 'candidate-bytes'),
+        'bundle/diagnostic/shape')
+    return 'bundle/' + artifact + '/' + field + '/' + failure
+
+
+def read_bundle(path, artifact, field):
+    tag = bundle_tag(artifact, field, 'shape')
+    try:
+        return read_bounded(path)
+    except Unsupported as error:
+        if str(error) != 'bundle':
+            raise
+        raise Unsupported(tag) from None
+    except (OSError, TypeError, ValueError):
+        raise Unsupported(tag) from None
+
+
+def immutable_bundle_fields(legacy_data, standard_data, expected_digest, artifact='package'):
+    """Bind immutable fields and both existing SET representations; no cryptography."""
+    field = 'legacy-json'
+    bundle_tag(artifact, field, 'shape')
+    def check(value, failure='mismatch'):
+        require(value, bundle_tag(artifact, field, failure))
     def unique(pairs):
         result = {}
         for key, value in pairs:
             require(key not in result, 'bundle')
             result[key] = value
         return result
+    def invalid_constant(value):
+        raise Unsupported('bundle')
+    def finite_float(value):
+        number = float(value)
+        require(math.isfinite(number), 'bundle')
+        return number
     try:
-        legacy = json.loads(legacy_data, object_pairs_hook=unique)
-        standard = json.loads(standard_data, object_pairs_hook=unique)
-        require(set(legacy) == {'base64Signature', 'cert', 'rekorBundle'}, 'bundle')
-        require(standard['mediaType'] == 'application/vnd.dev.sigstore.bundle+json;version=0.3', 'bundle')
+        legacy = json.loads(legacy_data, object_pairs_hook=unique, parse_constant=invalid_constant, parse_float=finite_float)
+        field = 'standard-json'
+        standard = json.loads(standard_data, object_pairs_hook=unique, parse_constant=invalid_constant, parse_float=finite_float)
+        field = 'legacy-keys'
+        check(set(legacy) == {'base64Signature', 'cert', 'rekorBundle'}, 'shape')
+        field = 'media-type'
+        check(standard['mediaType'] == 'application/vnd.dev.sigstore.bundle+json;version=0.3')
+        field = 'verification-material'
         material, message = standard['verificationMaterial'], standard['messageSignature']
-        require(len(material['tlogEntries']) == 1 and 'x509CertificateChain' not in material, 'bundle')
+        check(isinstance(material['tlogEntries'], list) and len(material['tlogEntries']) == 1 and
+              'x509CertificateChain' not in material, 'shape')
         entry, old = material['tlogEntries'][0], legacy['rekorBundle']
+        field = 'certificate-pem'
         pem = decode64(legacy['cert']).decode('ascii')
-        require(re.fullmatch(r'-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*', pem), 'bundle')
-        require(decode64(material['certificate']['rawBytes']) == ssl.PEM_cert_to_DER_cert(pem), 'bundle')
-        require(decode64(message['signature']) == decode64(legacy['base64Signature']), 'bundle')
-        require(entry['kindVersion'] == {'kind': 'hashedrekord', 'version': '0.0.1'}, 'bundle')
-        require(decode64(entry['canonicalizedBody']) == decode64(old['Payload']['body']), 'bundle')
-        require(decode64(entry['logId']['keyId']) == bytes.fromhex(old['Payload']['logID']), 'bundle')
-        require(integer(entry['logIndex']) == integer(old['Payload']['logIndex']) and
-                integer(entry['integratedTime']) == integer(old['Payload']['integratedTime']), 'bundle')
-        require(decode64(entry['inclusionPromise']['signedEntryTimestamp']) == decode64(old['SignedEntryTimestamp']), 'bundle')
-        require(message['messageDigest']['algorithm'] == 'SHA2_256' and
-                decode64(message['messageDigest']['digest']) == bytes.fromhex(expected_digest), 'bundle')
+        check(re.fullmatch(r'-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*', pem), 'shape')
+        field = 'certificate-der'
+        check(decode64(material['certificate']['rawBytes']) == ssl.PEM_cert_to_DER_cert(pem))
+        field = 'signature'
+        check(decode64(message['signature']) == decode64(legacy['base64Signature']))
+        field = 'kind-version'
+        check(entry['kindVersion'] == {'kind': 'hashedrekord', 'version': '0.0.1'})
+        field = 'rekor-body'
+        check(decode64(entry['canonicalizedBody']) == decode64(old['Payload']['body']))
+        field = 'rekor-log-id'
+        check(decode64(entry['logId']['keyId']) == bytes.fromhex(old['Payload']['logID']))
+        field = 'rekor-log-index'
+        check(integer(entry['logIndex']) == integer(old['Payload']['logIndex']))
+        field = 'rekor-integrated-time'
+        check(integer(entry['integratedTime']) == integer(old['Payload']['integratedTime']))
+        field = 'rekor-set'
+        original_set = decode64(old['SignedEntryTimestamp'])
+        converted_set = decode64(entry['inclusionPromise']['signedEntryTimestamp'])
+        check(original_set and converted_set, 'shape')
+        field = 'digest-algorithm'
+        check(message['messageDigest']['algorithm'] == 'SHA2_256')
+        field = 'artifact-digest'
+        check(decode64(message['messageDigest']['digest']) == bytes.fromhex(expected_digest))
+        field = 'proof'
         proof = entry['inclusionProof']
-        require(integer(proof['logIndex']) < integer(proof['treeSize']) and len(decode64(proof['rootHash'])) == 32 and
-                isinstance(proof['hashes'], list) and all(len(decode64(value)) == 32 for value in proof['hashes']) and
-                isinstance(proof['checkpoint']['envelope'], str) and proof['checkpoint']['envelope'], 'bundle')
+        field = 'proof-index'
+        check(integer(proof['logIndex']) < integer(proof['treeSize']))
+        field = 'proof-root-hash'
+        check(len(decode64(proof['rootHash'])) == 32)
+        field = 'proof-hashes'
+        check(isinstance(proof['hashes'], list), 'shape')
+        check(all(len(decode64(value)) == 32 for value in proof['hashes']))
+        field = 'proof-checkpoint'
+        check(isinstance(proof['checkpoint']['envelope'], str) and proof['checkpoint']['envelope'], 'shape')
+        return legacy, standard, original_set, converted_set
+    except Unsupported as error:
+        if str(error) != 'bundle':
+            raise
+        raise Unsupported(bundle_tag(artifact, field, 'shape')) from None
     except (KeyError, IndexError, TypeError, ValueError, UnicodeError):
-        raise Unsupported('bundle') from None
+        raise Unsupported(bundle_tag(artifact, field, 'shape')) from None
 
+
+def audit_bundle(legacy_data, standard_data, expected_digest, artifact='package'):
+    """Require the pinned original SET as well as every immutable field."""
+    _, _, original_set, converted_set = immutable_bundle_fields(legacy_data, standard_data, expected_digest, artifact)
+    require(original_set == converted_set, bundle_tag(artifact, 'rekor-set', 'mismatch'))
+
+
+def normalize_bundle(legacy_data, raw_data, expected_digest, artifact='package'):
+    """Change only the existing SET leaf after binding every immutable field."""
+    _, standard, original_set, _ = immutable_bundle_fields(legacy_data, raw_data, expected_digest, artifact)
+    standard['verificationMaterial']['tlogEntries'][0]['inclusionPromise']['signedEntryTimestamp'] = base64.b64encode(original_set).decode('ascii')
+    try:
+        candidate = (json.dumps(standard, indent=2, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
+    except (TypeError, ValueError, UnicodeError):
+        raise Unsupported(bundle_tag(artifact, 'candidate-json', 'shape')) from None
+    require(len(candidate) <= 65536, bundle_tag(artifact, 'candidate-json', 'shape'))
+    audit_bundle(legacy_data, candidate, expected_digest, artifact)
+    return candidate
 
 def binaries(directory, package):
     return [('package', directory / 'package.tar.gz'), ('native', package / 'bin/codex'),
@@ -316,21 +398,26 @@ def acquire(directory):
     return package, evidence
 
 
-def finish(directory, package, evidence):
+def finish(directory, package, evidence, expected_candidates):
+    candidates = {}
     for name, _ in binaries(directory, package):
-        audit_bundle(read_bounded(directory / (name + '.sigstore')), read_bounded(directory / (name + '.standard.json')),
-                     ASSETS['package.tar.gz'][2] if name == 'package' else NATIVE['bin/codex' if name == 'native' else 'codex-resources/bwrap'])
+        candidates[name] = read_bundle(directory / (name + '.standard.json'), name, 'standard-file')
+        audit_bundle(read_bundle(directory / (name + '.sigstore'), name, 'legacy-file'), candidates[name],
+                     ASSETS['package.tar.gz'][2] if name == 'package' else NATIVE['bin/codex' if name == 'native' else 'codex-resources/bwrap'], name)
+        require(candidates[name] == expected_candidates[name], bundle_tag(name, 'candidate-bytes', 'mismatch'))
     verify_signatures(directory, package)
+    for name, data in candidates.items():
+        require(read_bundle(directory / (name + '.standard.json'), name, 'standard-file') == data,
+                bundle_tag(name, 'verified-bytes', 'mismatch'))
     evidence['signatureVerified'] = True
-    evidence['bundles'] = {name: {'bytes': (directory / (name + '.standard.json')).stat().st_size,
-                                'sha256': sha(read_bounded(directory / (name + '.standard.json')))} for name, _ in binaries(directory, package)}
+    evidence['bundles'] = {name: {'bytes': len(data), 'sha256': sha(data)} for name, data in candidates.items()}
     notices = package.parent / 'public-notices'
     notices.mkdir(mode=0o755)
     for name in ('LICENSE', 'NOTICE', 'bubblewrap-COPYING', 'ripgrep-LICENSE-MIT', 'ripgrep-UNLICENSE'):
         shutil.copyfile(directory / name, notices / name)
         (notices / name).chmod(0o644)
     (package.parent / 'public-provenance.json').write_text(json.dumps(evidence, indent=2) + '\n')
-    return {'package': package, 'context': package.parent, 'evidence': evidence}
+    return {'package': package, 'context': package.parent, 'evidence': evidence, 'verifiedBundleBytes': candidates}
 
 
 def stage(directory, absolute_deadline=None):
@@ -338,11 +425,13 @@ def stage(directory, absolute_deadline=None):
     require(set(BUNDLE_PINS) == {'package', 'native', 'bwrap'}, 'metadata-unpinned')
     with acquisition_clock(absolute_deadline):
         package, evidence = acquire(directory)
+        pinned = {}
         for name, (expected_size, expected_hash) in BUNDLE_PINS.items():
-            data = read_bounded(BUNDLE_DIRECTORY / (name + '.json'))
-            require(len(data) == expected_size and sha(data) == expected_hash, 'bundle-pin')
+            data = read_bundle(BUNDLE_DIRECTORY / (name + '.json'), name, 'pinned-file')
+            require(len(data) == expected_size and sha(data) == expected_hash, bundle_tag(name, 'pinned-hash', 'mismatch'))
             (directory / (name + '.standard.json')).write_bytes(data)
-        return finish(directory, package, evidence)
+            pinned[name] = data
+        return finish(directory, package, evidence, pinned)
 
 
 def prepare_metadata(directory):
@@ -355,20 +444,54 @@ def prepare_with_clock(directory):
     package, evidence = acquire(directory)
     cosign = directory / 'cosign'
     cosign.chmod(0o700)
+    raw_bundles, created = {}, {}
     for name, binary in binaries(directory, package):
         command([str(cosign), 'bundle', 'create', '--rekor-url', 'https://rekor.sigstore.dev', '--artifact', str(binary),
-                 '--bundle', str(directory / (name + '.sigstore')), '--out', str(directory / (name + '.standard.json'))])
-        read_bounded(directory / (name + '.standard.json'))
-    result = finish(directory, package, evidence)
+                 '--bundle', str(directory / (name + '.sigstore')), '--out', str(directory / (name + '.raw.json'))])
+        raw = read_bundle(directory / (name + '.raw.json'), name, 'raw-file')
+        legacy = read_bundle(directory / (name + '.sigstore'), name, 'legacy-file')
+        expected = ASSETS['package.tar.gz'][2] if name == 'package' else NATIVE['bin/codex' if name == 'native' else 'codex-resources/bwrap']
+        candidate = normalize_bundle(legacy, raw, expected, name)
+        (directory / (name + '.standard.json')).write_bytes(candidate)
+        created[name] = candidate
+        raw_bundles[name] = {'bytes': len(raw), 'sha256': sha(raw), 'base64': base64.b64encode(raw).decode('ascii')}
+    evidence['rawBundles'] = {name: {key: value for key, value in record.items() if key != 'base64'} for name, record in raw_bundles.items()}
+    evidence['bundlePreparation'] = 'original-set-only'
+    result = finish(directory, package, evidence, created)
+    result['rawBundles'] = raw_bundles
     result['publicBundles'] = {name: {'bytes': pin['bytes'], 'sha256': pin['sha256'],
-                                    'base64': base64.b64encode(read_bounded(directory / (name + '.standard.json'))).decode('ascii')}
+                                    'base64': base64.b64encode(result['verifiedBundleBytes'][name]).decode('ascii')}
                               for name, pin in evidence['bundles'].items()}
     return result
+
+
+def emit_evidence(evidence, raw_payloads):
+    successful = evidence.get('ok') and evidence.get('cleanup') and evidence.get('signatureVerified')
+    if successful and evidence['preparation']:
+        successful = set(raw_payloads) == {'package', 'native', 'bwrap'} and set(evidence.get('publicBundles', {})) == set(raw_payloads)
+    if not successful:
+        evidence['ok'] = False
+        evidence.setdefault('reason', 'unverified')
+        evidence.pop('publicBundles', None)
+        evidence.pop('signatureVerified', None)
+        raw_payloads = {}
+    raw_lines = ['REVIEWER_ARTIFACT_RAW ' + json.dumps({'schema': 1, 'artifact': name, **raw_payloads[name]}, separators=(',', ':'))
+                 for name in ('package', 'native', 'bwrap') if name in raw_payloads]
+    summary = 'REVIEWER_ARTIFACT_EVIDENCE ' + json.dumps(evidence, separators=(',', ':'))
+    if any(len(line.encode()) + 1 > 131072 for line in raw_lines) or sum(len(line.encode()) + 1 for line in [*raw_lines, summary]) > 262144:
+        evidence = {'schema': 1, 'preparation': evidence['preparation'], 'ok': False,
+                    'cleanup': evidence['cleanup'], 'reason': 'evidence-limit'}
+        raw_lines = []
+        summary = 'REVIEWER_ARTIFACT_EVIDENCE ' + json.dumps(evidence, separators=(',', ':'))
+    for line in [*raw_lines, summary]:
+        print(line, flush=True)
+    return bool(evidence['ok'] and evidence['cleanup'])
 
 
 def main(prepare):
     os.umask(0o077)
     evidence = {'schema': 1, 'preparation': prepare, 'ok': False, 'cleanup': False}
+    raw_payloads = {}
     temporary = None
     try:
         require(sys.platform == 'linux', 'platform')
@@ -377,6 +500,7 @@ def main(prepare):
         evidence.update(result['evidence'])
         if prepare:
             evidence['publicBundles'] = result['publicBundles']
+            raw_payloads = result['rawBundles']
         evidence['ok'] = True
     except BaseException as error:
         evidence['reason'] = str(error) if isinstance(error, Unsupported) else 'unsupported'
@@ -391,10 +515,7 @@ def main(prepare):
             evidence['cleanup'] = True
         except BaseException:
             evidence.update(ok=False, reason='cleanup')
-    encoded = json.dumps(evidence, separators=(',', ':'))
-    require(len(encoded.encode()) <= 262144, 'evidence-limit')
-    print('REVIEWER_ARTIFACT_EVIDENCE ' + encoded)
-    return 0 if evidence['ok'] and evidence['cleanup'] else 1
+    return 0 if emit_evidence(evidence, raw_payloads) else 1
 
 
 if __name__ == '__main__':

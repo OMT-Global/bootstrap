@@ -26,7 +26,7 @@ def producer_api_failure(requests):
         raise RuntimeError('synthetic API failure')
     namespace = {'__name__': '__main__', 'argparse': argparse, 'sys': sys, 'CASES': ('api',),
                  'gate': gate, 'run_case': run_case, 'emit': lambda value: events.append(value.copy()),
-                 'MOCK_REQUESTS': requests, 'native': forbidden,
+'MOCK_REQUESTS': requests, 'SANDBOX_FAILURE': {}, 'native': forbidden,
                  'resource': type('ForbiddenResource', (), {'setrlimit': forbidden, 'getrlimit': forbidden})()}
     with mock.patch.object(sys, 'argv', ['synthetic-fixture', '--case', 'api']):
         try:
@@ -39,6 +39,53 @@ def producer_api_failure(requests):
     assert events == [{'event': 'result', 'case': 'api', 'ok': False, 'phase': 'api',
                        'reason': 'unsupported', 'providerRequests': requests}]
     return events[0]
+
+def producer_sandbox_result(stage, exit_code=None, code_present=False, success=False):
+    import argparse
+    import ast
+    from pathlib import Path
+    import sys
+    from unittest import mock
+    source = Path.cwd() / 'scripts/ci/controlled-reviewer-fixture.py'
+    tree = ast.parse(source.read_text())
+    setter = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'sandbox_stage')
+    entry = next(node for node in tree.body if isinstance(node, ast.If) and
+                 ast.unparse(node.test) == "__name__ == '__main__'")
+    events, calls, forbidden_calls = [], [], []
+    def forbidden(*args, **kwargs):
+        forbidden_calls.append(True)
+        raise AssertionError('native and resources forbidden in sandbox handler fixture')
+    def gate():
+        calls.append('gate')
+        if stage == 'gate' and not success:
+            raise RuntimeError('private-sandbox-discriminator-canary')
+    def run_case(case):
+        assert case == 'sandbox'
+        calls.append(case)
+        if success:
+            return {'providerRequests': 0}
+        if stage != 'dispatch':
+            namespace['sandbox_stage'](stage, exit_code if code_present else None)
+        raise RuntimeError('private-sandbox-discriminator-canary')
+    namespace = {'__name__': '__main__', 'argparse': argparse, 'sys': sys, 'CASES': ('sandbox',),
+                 'gate': gate, 'run_case': run_case, 'emit': lambda value: events.append(value.copy()),
+                 'MOCK_REQUESTS': 0, 'SANDBOX_FAILURE': {'stale': 'private-sandbox-discriminator-canary'},
+                 'native': forbidden,
+                 'resource': type('ForbiddenResource', (), {'setrlimit': forbidden, 'getrlimit': forbidden})()}
+    with mock.patch.object(sys, 'argv', ['synthetic-fixture', '--case', 'sandbox']):
+        try:
+            exec(compile(ast.Module(body=[setter, entry], type_ignores=[]), str(source), 'exec'), namespace)
+        except SystemExit as error:
+            assert error.code == 1 and not success
+        else:
+            assert success
+    assert calls == (['gate'] if stage == 'gate' and not success else ['gate', 'sandbox'])
+    assert not forbidden_calls and len(events) == 1
+    assert events[0]['case'] == 'sandbox' and events[0]['providerRequests'] == 0
+    assert ('sandboxFailure' in events[0]) is not success
+    assert 'private-sandbox-discriminator-canary' not in str(events)
+    return events[0]
+
 `;
 
 const driverHarness = producerFailureHarness + String.raw`
@@ -235,6 +282,7 @@ spec.loader.exec_module(probe)
 # Synthetic-only fixture data for the inherited-credential rejection check.
 ENV_CANARY = 'fabricated-env-key-must-not-forward'
 mode = sys.argv[1]
+sandbox_scenario = json.loads(mode.partition(':')[2]) if mode.startswith('sandbox-discriminator:') else None
 if mode == 'cleanup-clock':
     before_handler = signal.getsignal(signal.SIGALRM)
     before_timer = signal.getitimer(signal.ITIMER_REAL)
@@ -410,6 +458,29 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             return json.dumps([{'Id': 'sha256:' + 'b' * 64}]).encode()
         if operation == 'image' and arguments[4] == 'rm' and mode == 'image-cleanup-failure':
             raise probe.Unsupported('injected-image-cleanup-failure')
+        if sandbox_scenario is not None and operation == 'rm' and sandbox_scenario.get('hostFailure') == 'remove' and not state.get('sandboxRemoveFailed'):
+            state['sandboxRemoveFailed'] = True
+            raise probe.Unsupported('cleanup')
+        if sandbox_scenario is not None and operation == 'image' and arguments[4] == 'rm' and sandbox_scenario.get('hostFailure') == 'aggregate':
+            raise probe.Unsupported('cleanup')
+        if operation == 'start' and sandbox_scenario is not None:
+            state['sandboxRunning'] = True
+            callback = kwargs['on_line']
+            try:
+                callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **READY_SECURITY,
+                    'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), io.BytesIO())
+                failure = producer_sandbox_result(sandbox_scenario.get('stage', 'version-stderr'),
+                    sandbox_scenario.get('code'), 'code' in sandbox_scenario, sandbox_scenario.get('success', False))
+                if sandbox_scenario.get('legacy'):
+                    failure.pop('sandboxFailure', None)
+                if sandbox_scenario.get('malformed'):
+                    failure['sandboxFailure'] = {'stage': 'private-sandbox-discriminator-canary'}
+                callback(json.dumps(failure).encode(), io.BytesIO())
+                if sandbox_scenario.get('followup'):
+                    callback(json.dumps({'event': 'result', 'case': 'sandbox', 'ok': True,
+                        'phase': 'sandbox', 'providerRequests': 0}).encode(), io.BytesIO())
+            finally:
+                state['sandboxRunning'] = False
         if operation == 'start' and mode.startswith('producer-api-failure:'):
             state['apiRunning'] = True
             callback = kwargs['on_line']
@@ -430,6 +501,10 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
 
     def case_run(case, *args):
         state['caseOrder'].append(case)
+        if sandbox_scenario is not None:
+            state.setdefault('sandboxCollectors', []).append({'case': case, 'passed': len(args) > 5 and args[5] is not None})
+            if case == 'sandbox':
+                return actual_case_run(case, *args)
         if retained_cleanup and not state['retainedAdded']:
             args[2].extend(['retained-first', 'retained-middle', 'retained-last'])
             state['retainedAdded'] = True
@@ -498,6 +573,19 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
         probe.inspect = lambda name: {'State': {'Running': state.get('apiRunning', False), 'Pid': 123},
             'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
         probe.cgroup_for = lambda pid: outer / 'absent-api-cgroup'
+    if sandbox_scenario is not None:
+        probe.inspect = lambda name: {'State': {'Running': state.get('sandboxRunning', False) or sandbox_scenario.get('hostFailure') == 'postcheck', 'Pid': 123},
+            'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
+        probe.cgroup_for = lambda pid: outer / 'absent-sandbox-cgroup'
+        if 'wireExtra' in sandbox_scenario:
+            original_encode_evidence = probe.encode_evidence
+            def sandbox_wire_boundary(evidence):
+                state['sandboxFieldBeforeEncode'] = 'sandboxFailure' in evidence
+                evidence['wirePadding'] = ''
+                overhead = len(probe.EVIDENCE_PREFIX.encode()) + len(json.dumps(evidence, ensure_ascii=False, separators=(',', ':')).encode()) + 1
+                evidence['wirePadding'] = 'x' * (65536 - overhead + sandbox_scenario['wireExtra'])
+                return original_encode_evidence(evidence)
+            probe.encode_evidence = sandbox_wire_boundary
     probe.self_test, probe.command, probe.case_run = lambda: None, command, case_run
     started = time.monotonic()
     with mock.patch.object(probe.tempfile, 'mkdtemp', side_effect=owned_mkdtemp), \
@@ -1387,7 +1475,7 @@ def observe(failure, active=True):
             selected.append(key)
             return dict.get(mapping, key)
     evidence = {'bootstrapStage': 'artifact-stage-call'} if active else {}
-    exec(HANDLER, {'error': failure, 'evidence': evidence, 'Unsupported': probe.Unsupported, 'urllib': urllib, 'dict': Dictionary})
+    exec(HANDLER, {'error': failure, 'evidence': evidence, 'sandbox_failure': {}, 'Unsupported': probe.Unsupported, 'urllib': urllib, 'dict': Dictionary})
     return evidence, selected
 
 
@@ -1896,5 +1984,305 @@ describe("controlled reviewer retained cleanup attempts", () => {
       expect(result.status).toBe(1); expect(result.evidence).toMatchObject({ ok: false, cleanup: false, reason: "cleanup" });
     }
     expect(result.alreadyAbsentExitZero).toBe(mode === "already-absent");
+  });
+});
+
+const sandboxConsumerHarness = producerFailureHarness + String.raw`
+READY_SECURITY = {'pid1': True, 'root_ro': True, 'mounts_safe': True, 'caps_zero': True, 'no_new_privs': True, 'seccomp': 2, 'apparmor': 'docker-default (enforce)', 'tmpfs': {'type': 0x01021994, 'bytes': 268435456, 'inodes': 16384, 'flags': 14}}
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+from unittest import mock
+spec = importlib.util.spec_from_file_location('sandbox_consumer_host', Path.cwd() / 'scripts/ci/controlled-reviewer-probe.py')
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+options = json.loads(sys.argv[1])
+case = options.get('case', 'sandbox')
+failure = producer_sandbox_result(options.get('stage', 'version-stderr'), options.get('code'),
+                                 'code' in options, options.get('success', False))
+if options.get('legacy'):
+    failure.pop('sandboxFailure', None)
+if 'failure' in options:
+    failure['sandboxFailure'] = options['failure']
+failure.update(options.get('event', {}))
+if options.get('privateCanary'):
+    failure['unrelatedPrivateField'] = 'private-sandbox-discriminator-canary'
+state = {'running': False, 'go': bytearray(), 'writes': 0, 'resultSent': False, 'operations': [], 'forbiddenCalls': 0}
+class Input(io.BytesIO):
+    def write(self, value):
+        state['go'].extend(value)
+        state['writes'] += 1
+        return super().write(value)
+class OwnedSubclass(dict):
+    pass
+collector_mode = options.get('collector', 'empty')
+collector = {'prefilled': True} if collector_mode == 'prefilled' else OwnedSubclass() if collector_mode == 'subclass' else [] if collector_mode == 'list' else {}
+real_loads = json.loads
+decoded = []
+def observed_loads(value):
+    item = real_loads(value)
+    decoded.append(item)
+    return item
+def forbidden(*args, **kwargs):
+    state['forbiddenCalls'] += 1
+    raise AssertionError('real process or provider forbidden')
+def command(arguments, **kwargs):
+    operation = arguments[len(probe.DOCKER)]
+    state['operations'].append(operation)
+    if operation == 'start':
+        state['running'] = True
+        callback = kwargs['on_line']
+        try:
+            if options.get('prefixEvent'):
+                callback(json.dumps({'event': 'unknown'}).encode(), Input())
+            if not options.get('beforeReady') and options.get('event', {}).get('event', 'result') == 'result':
+                ready = {'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **READY_SECURITY,
+                         'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}
+                if options.get('badReady'):
+                    ready['caps_zero'] = False
+                callback(json.dumps(ready).encode(), Input())
+            wire = json.dumps(failure)
+            if options.get('rawNumber'):
+                key = options['rawNumber']
+                wire = wire.replace('"' + key + '": 0', '"' + key + '": 0.0')
+            callback(wire.encode(), Input())
+            state['resultSent'] = True
+            if options.get('mutateAfterCapture'):
+                decoded[-1]['sandboxFailure']['stage'] = 'private-sandbox-discriminator-canary'
+                decoded[-1]['sandboxFailure']['exitCode'] = 123
+            if options.get('followup'):
+                later = {'event': 'result', 'case': 'sandbox', 'ok': True, 'phase': 'sandbox', 'providerRequests': 0}
+                if options['followup'] == 'failure':
+                    later.update(ok=False, phase='native-sandbox', sandboxFailure={'stage': 'listener-close'})
+                callback(json.dumps(later).encode(), Input())
+        finally:
+            state['running'] = False
+    if operation == 'rm' and options.get('removeFailure'):
+        raise probe.Unsupported('cleanup')
+    return b''
+with tempfile.TemporaryDirectory(prefix='bootstrap-sandbox-consumer-') as temporary:
+    pending = []
+    probe.DOCKER = ['never-executed']
+    with mock.patch.object(probe, 'command', side_effect=command), \
+            mock.patch.object(probe, 'inspect', side_effect=lambda _: {
+                'State': {'Running': state['running'] or bool(options.get('postcheck') and not state['running']), 'Pid': 123},
+                'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}), \
+            mock.patch.object(probe, 'cgroup_for', return_value=Path(temporary) / 'absent-cgroup'), \
+            mock.patch.object(probe.subprocess, 'Popen', side_effect=forbidden), \
+            mock.patch.object(probe.json, 'loads', side_effect=observed_loads):
+        try:
+            arguments = [case, 'synthetic-sandbox-image', Path(temporary), pending, '',
+                         {'commands': []} if options.get('mechanicalTrace') else None]
+            if collector_mode != 'omit':
+                arguments.append(collector)
+            value = probe.case_run(*arguments)
+            reason = None
+        except probe.Unsupported as error:
+            value, reason = None, str(error)
+    retained = dict(collector) if type(collector) is dict else None
+    evidence = {'schema': 1, 'ok': False, 'cleanup': not pending}
+    if retained:
+        evidence['sandboxFailure'] = retained
+    _, encoded = probe.encode_evidence(evidence)
+    public = {'value': value, 'reason': reason, 'retained': retained, 'go': state['go'].decode('ascii'),
+              'writes': state['writes'], 'resultSent': state['resultSent'], 'operations': state['operations'],
+              'pending': len(pending), 'authDirectories': len(list(Path(temporary).glob('auth-*'))),
+              'forbiddenCalls': state['forbiddenCalls'], 'wire': encoded.decode('utf-8')}
+    assert 'private-sandbox-discriminator-canary' not in json.dumps(public)
+    print(json.dumps(public))
+`;
+
+interface SandboxConsumerResult {
+  value: { case: string; ok: boolean; providerRequests: number } | null;
+  reason: string | null; retained: Record<string, unknown> | null;
+  go: string; writes: number; resultSent: boolean; operations: string[];
+  pending: number; authDirectories: number; forbiddenCalls: number; wire: string;
+}
+async function sandboxConsumerCase(options: Record<string, unknown>): Promise<SandboxConsumerResult> {
+  const result = await execute("python3", ["-B", "-I", "-S", "-c", sandboxConsumerHarness, JSON.stringify(options)], {
+    cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+  });
+  return JSON.parse(result.stdout) as SandboxConsumerResult;
+}
+const sandboxFailureStages = ["gate", "dispatch", "version-call", "version-exit", "version-stdout",
+  "version-stderr", "workspace-setup", "loopback-control", "sandbox-call", "sandbox-exit",
+  "listener-postcheck", "listener-close"] as const;
+const rejectedSandboxFailures: unknown[] = [
+  null, [], true, "private-sandbox-discriminator-canary", {},
+  { stage: "private-sandbox-discriminator-canary" }, { stage: true }, { stage: 1 },
+  { stage: "version-call", private: "private-sandbox-discriminator-canary" },
+  ...[true, "1", 1.5, null, -256, 256].map((exitCode) => ({ stage: "sandbox-exit", exitCode })),
+  ...sandboxFailureStages.filter((stage) => stage !== "version-exit" && stage !== "sandbox-exit")
+    .map((stage) => ({ stage, exitCode: 0 }))
+];
+describe("controlled reviewer sandbox failure consumer", () => {
+  it.each(sandboxFailureStages)("retains the actual producer handler's %s failure without changing the case row", async (stage) => {
+    const result = await sandboxConsumerCase({ stage });
+    expect(result.reason).toBeNull();
+    expect(result.retained).toEqual({ stage });
+    expect(result.value).toEqual({ case: "sandbox", ok: false, providerRequests: 0 });
+    expect(result.go).toBe("GO\n"); expect(result.writes).toBe(1);
+    expect(result.operations).toEqual(["create", "start", "rm"]);
+    expect(result.pending).toBe(0); expect(result.authDirectories).toBe(0); expect(result.forbiddenCalls).toBe(0);
+  });
+  it.each(["version-exit", "sandbox-exit"] as const)("retains only bounded returned codes for %s", async (stage) => {
+    for (const code of [-255, -1, 0, 255]) {
+      const result = await sandboxConsumerCase({ stage, code });
+      expect(result.reason).toBeNull(); expect(result.retained).toEqual({ stage, exitCode: code });
+      expect(result.value).toEqual({ case: "sandbox", ok: false, providerRequests: 0 });
+    }
+  });
+  it("retains a gate failure before READY without claiming GO or successful host postchecks", async () => {
+    const result = await sandboxConsumerCase({ stage: "gate", beforeReady: true });
+    expect(result.retained).toEqual({ stage: "gate" }); expect(result.go).toBe("");
+    expect(result.reason).toBe("cleanup"); expect(result.value).toBeNull();
+    expect(result.operations).toEqual(["create", "start", "rm"]); expect(result.pending).toBe(0);
+  });
+  it.each(sandboxFailureStages.filter((stage) => stage !== "gate"))("rejects %s without the validated READY sequence", async (stage) => {
+    const result = await sandboxConsumerCase({ stage, beforeReady: true });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({}); expect(result.go).toBe("");
+    expect(result.operations).toEqual(["create", "start", "rm"]);
+  });
+  it.each(rejectedSandboxFailures)("rejects a malformed reserved object without retaining private values: %j", async (failure) => {
+    const result = await sandboxConsumerCase({ failure, privateCanary: true });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({});
+    expect(result.value).toBeNull(); expect(result.pending).toBe(0);
+    expect(JSON.stringify(result)).not.toContain("private-sandbox-discriminator-canary");
+  });
+  it.each([
+    { case: "bytes" }, { event: { case: "bytes" } }, { event: { ok: true } },
+    { event: { phase: "sandbox" } }, { event: { providerRequests: 1 } },
+    { event: { providerRequests: true } }, { event: { providerRequests: 0.0 }, failure: { stage: false } }
+  ])("reserves the field for an exact failed sandbox result: %j", async (options) => {
+    const result = await sandboxConsumerCase({ ...options, collector: "case" in options ? "omit" : "empty" });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({});
+    expect(result.value).toBeNull(); expect(result.forbiddenCalls).toBe(0);
+  });
+  it.each(["providerRequests", "exitCode"])("rejects a raw JSON float in %s without coercion", async (rawNumber) => {
+    const result = await sandboxConsumerCase({ rawNumber, failure: { stage: "sandbox-exit", exitCode: 0 } });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({});
+  });
+  it.each(["ready", "detached", "unknown"])("rejects the reserved field on a %s event before GO", async (event) => {
+    const result = await sandboxConsumerCase({ event: { event } });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({}); expect(result.go).toBe("");
+  });
+  it.each([{ prefixEvent: true }, { badReady: true }])("does not retain progress after an invalid admission sequence: %j", async (options) => {
+    const result = await sandboxConsumerCase(options);
+    expect(result.retained).toEqual({}); expect(result.go).toBe(""); expect(result.value).toBeNull();
+  });
+  it.each(["failure", "success"])("keeps the first snapshot when a contradictory later %s result arrives", async (followup) => {
+    const result = await sandboxConsumerCase({ stage: "version-exit", code: -1, followup });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({ stage: "version-exit", exitCode: -1 });
+    expect(result.value).toBeNull(); expect(result.operations).toEqual(["create", "start", "rm"]);
+  });
+  it("copies primitive fields before postchecks instead of retaining the decoded object", async () => {
+    const result = await sandboxConsumerCase({ stage: "sandbox-exit", code: 7, mutateAfterCapture: true });
+    expect(result.reason).toBeNull(); expect(result.retained).toEqual({ stage: "sandbox-exit", exitCode: 7 });
+    expect(result.wire).not.toContain("private-sandbox-discriminator-canary");
+  });
+  it.each([{ postcheck: true }, { removeFailure: true }])("retains validated evidence across a host failure: %j", async (options) => {
+    const result = await sandboxConsumerCase(options);
+    expect(result.reason).toBe("cleanup"); expect(result.retained).toEqual({ stage: "version-stderr" });
+    expect(result.value).toBeNull(); expect(result.pending).toBe("removeFailure" in options ? 1 : 0);
+  });
+  it.each(["list", "subclass", "prefilled"])("rejects a %s collector before container creation", async (collector) => {
+    const result = await sandboxConsumerCase({ collector });
+    expect(result.reason).toBe("diagnostic"); expect(result.operations).toEqual([]); expect(result.go).toBe("");
+  });
+  it("rejects a sandbox collector on another case and preserves mechanical tracing prohibition", async () => {
+    const wrong = await sandboxConsumerCase({ case: "bytes" });
+    expect(wrong.reason).toBe("diagnostic"); expect(wrong.operations).toEqual([]);
+    const traced = await sandboxConsumerCase({ mechanicalTrace: true });
+    expect(traced.reason).toBe("diagnostic"); expect(traced.operations).toEqual([]);
+  });
+  it.each([{ legacy: true }, { success: true }])("preserves legacy failure and successful row schema: %j", async (options) => {
+    const result = await sandboxConsumerCase(options);
+    expect(result.reason).toBeNull(); expect(result.retained).toEqual({});
+    expect(result.value).toEqual({ case: "sandbox", ok: "success" in options, providerRequests: 0 });
+    expect(result.operations).toEqual(["create", "start", "rm"]);
+  });
+  it("keeps first-result protection even when a direct sandbox caller omits the collector", async () => {
+    const result = await sandboxConsumerCase({ collector: "omit", followup: "success" });
+    expect(result.reason).toBe("output"); expect(result.value).toBeNull();
+  });
+});
+
+
+interface SandboxOrchestrationResult extends OrchestrationResult {
+  evidence: OrchestrationResult["evidence"] & { sandboxFailure?: Record<string, unknown> };
+  sandboxCollectors: Array<{ case: string; passed: boolean }>;
+  sandboxFieldBeforeEncode?: boolean;
+}
+async function sandboxOrchestrationCase(options: Record<string, unknown>): Promise<SandboxOrchestrationResult> {
+  return await orchestrationCase("sandbox-discriminator:" + JSON.stringify(options)) as SandboxOrchestrationResult;
+}
+describe("controlled reviewer overall sandbox failure evidence", () => {
+  it.each(sandboxFailureStages)("retains actual producer %s only in failed overall evidence and stops before auth", async (stage) => {
+    const result = await sandboxOrchestrationCase({ stage });
+    expect(result.status).toBe(1); expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "native-sandbox" });
+    expect(result.evidence.sandboxFailure).toEqual({ stage });
+    expect(result.evidence.cases.at(-1)).toEqual({ case: "sandbox", ok: false, providerRequests: 0 });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+    expect(result.providerRequests).toBe(0); expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+    expect(result.sandboxCollectors).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]
+      .map((caseName) => ({ case: caseName, passed: caseName === "sandbox" })));
+    expect(result.allRootsRemoved).toBe(true);
+    expect(JSON.stringify(result.evidence.cases)).not.toContain("sandboxFailure");
+    expect(JSON.stringify(result)).not.toContain("private-sandbox-discriminator-canary");
+  });
+  it.each(["postcheck", "remove", "aggregate"])("retains the fixture snapshot across %s without overriding host failure precedence", async (hostFailure) => {
+    const result = await sandboxOrchestrationCase({ stage: "sandbox-exit", code: -1, hostFailure });
+    expect(result.status).toBe(1); expect(result.evidence.reason).toBe("cleanup");
+    expect(result.evidence.cleanup).toBe(hostFailure !== "aggregate");
+    expect(result.evidence.sandboxFailure).toEqual({ stage: "sandbox-exit", exitCode: -1 });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+    expect(result.allRootsRemoved).toBe(true); expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+  });
+  it("retains the first failed snapshot when a later successful result contradicts it", async () => {
+    const result = await sandboxOrchestrationCase({ stage: "version-stderr", followup: true });
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "output",
+      sandboxFailure: { stage: "version-stderr" } });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+  });
+  it("keeps a malformed private marker out of overall evidence and errors", async () => {
+    const result = await sandboxOrchestrationCase({ malformed: true });
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "output" });
+    expect(result.evidence).not.toHaveProperty("sandboxFailure");
+    expect(JSON.stringify(result)).not.toContain("private-sandbox-discriminator-canary");
+  });
+  it("preserves the legacy failed result and full successful evidence schema", async () => {
+    const legacy = await sandboxOrchestrationCase({ legacy: true });
+    expect(legacy.evidence).toMatchObject({ ok: false, cleanup: true, reason: "native-sandbox" });
+    expect(legacy.evidence).not.toHaveProperty("sandboxFailure");
+    expect(legacy.evidence.cases.at(-1)).toEqual({ case: "sandbox", ok: false, providerRequests: 0 });
+    const success = await sandboxOrchestrationCase({ success: true });
+    const baseline = await orchestrationCase("success");
+    expect(success.status).toBe(0); expect(success.evidence).toEqual(baseline.evidence);
+    expect(success.evidence).not.toHaveProperty("sandboxFailure");
+    expect(success.sandboxCollectors.filter((item) => item.passed)).toEqual([{ case: "sandbox", passed: true }]);
+  });
+  it.each([0, 1])("keeps the prefix+JSON+LF limit with an optional marker and %i extra byte", async (wireExtra) => {
+    const result = await sandboxOrchestrationCase({ stage: "sandbox-exit", code: -255, wireExtra });
+    expect(result.sandboxFieldBeforeEncode).toBe(true);
+    expect(result.wireBytes).toBeLessThanOrEqual(65536);
+    if (wireExtra === 0) {
+      expect(result.wireBytes).toBe(65536);
+      expect(result.evidence.sandboxFailure).toEqual({ stage: "sandbox-exit", exitCode: -255 });
+    } else {
+      expect(result.evidence.reason).toBe("evidence-limit");
+      expect(result.evidence).not.toHaveProperty("sandboxFailure");
+    }
+    expect(result.allRootsRemoved).toBe(true);
+  });
+  it("bounds the largest allowed compact field addition at 58 bytes", () => {
+    const observations = sandboxFailureStages.flatMap<{ stage: string; exitCode?: number }>((stage) =>
+      stage === "version-exit" || stage === "sandbox-exit" ? [{ stage }, { stage, exitCode: -255 }] : [{ stage }]);
+    expect(Math.max(...observations.map((sandboxFailure) =>
+      Buffer.byteLength("," + JSON.stringify({ sandboxFailure }).slice(1, -1))))).toBe(58);
   });
 });

@@ -26,6 +26,7 @@ CASES = ('mechanical', 'bytes', 'inodes', 'detached', 'sandbox', 'status-api',
          'status-oauth', 'status-unknown', 'status-auto', 'status-keyring', 'api', 'persistence')
 MOCK_REQUESTS = 0
 ADMISSION = {'stage': 'platform'}
+SANDBOX_FAILURE = {}
 LIMITS = {'core': (resource.RLIMIT_CORE, 0), 'fsize': (resource.RLIMIT_FSIZE, 64 << 20),
           'nofile': (resource.RLIMIT_NOFILE, 256), 'nproc': (resource.RLIMIT_NPROC, 128),
           'as': (resource.RLIMIT_AS, 16 << 30), 'cpu': (resource.RLIMIT_CPU, 3600)}
@@ -38,6 +39,14 @@ def require(value):
 
 def emit(value):
     print(json.dumps(value, separators=(',', ':')), flush=True)
+
+
+def sandbox_stage(stage, code=None):
+    SANDBOX_FAILURE.clear()
+    SANDBOX_FAILURE['stage'] = stage
+    if (stage in ('version-exit', 'sandbox-exit') and
+            type(code) is int and -255 <= code <= 255):
+        SANDBOX_FAILURE['exitCode'] = code
 
 
 def classify_status(returncode, stdout, stderr):
@@ -214,12 +223,20 @@ def exhaustion(kind):
 
 
 def sandbox():
+    sandbox_stage('version-call')
     result, stdout, stderr = native(['--version'])
-    require(result == 0 and stdout.strip() == b'codex-cli 0.167.0' and stderr == b'')
+    sandbox_stage('version-exit', result)
+    require(result == 0)
+    sandbox_stage('version-stdout')
+    require(stdout.strip() == b'codex-cli 0.167.0')
+    sandbox_stage('version-stderr')
+    require(stderr == b'')
+    sandbox_stage('workspace-setup')
     workspace = ROOT / 'workspace'
     (workspace / 'public').write_text('public fixture')
     private = ROOT / 'private' / 'canary'
     private.write_text('synthetic private canary')
+    sandbox_stage('loopback-control')
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     listener.listen()
@@ -237,9 +254,12 @@ for operation in [lambda: Path({str(private)!r}).read_bytes(), lambda: Path('for
     else: raise RuntimeError('sandbox boundary failed')
 '''
     try:
+        sandbox_stage('sandbox-call')
         result, stdout, stderr = native([*policy(), 'sandbox', '--permission-profile', 'autoreview',
                                  '--cd', str(workspace), '--', '/usr/bin/python3', '-I', '-S', '-c', command])
+        sandbox_stage('sandbox-exit', result)
         require(result == 0)
+        sandbox_stage('listener-postcheck')
         listener.settimeout(0.1)
         try:
             accepted, _ = listener.accept()
@@ -248,7 +268,11 @@ for operation in [lambda: Path({str(private)!r}).read_bytes(), lambda: Path('for
         except TimeoutError:
             pass
     finally:
-        listener.close()
+        try:
+            listener.close()
+        except BaseException:
+            sandbox_stage('listener-close')
+            raise
 
 
 def file_auth():
@@ -371,17 +395,25 @@ def run_case(case):
 
 
 if __name__ == '__main__':
+    SANDBOX_FAILURE.clear()
     case = 'platform'
     try:
         parser = argparse.ArgumentParser()
         parser.add_argument('--case', choices=CASES, required=True)
         case = parser.parse_args().case
+        if case == 'sandbox':
+            sandbox_stage('gate')
         gate()
+        if case == 'sandbox':
+            sandbox_stage('dispatch')
         details = run_case(case)
+        SANDBOX_FAILURE.clear()
         emit({'event': 'result', 'case': case, 'ok': True, 'phase': case, **details})
     except BaseException:
         failure = {'event': 'result', 'case': case, 'ok': False, 'phase': 'native-sandbox' if case == 'sandbox' else case,
                    'reason': 'unsupported', 'providerRequests': MOCK_REQUESTS}
+        if case == 'sandbox' and SANDBOX_FAILURE:
+            failure['sandboxFailure'] = SANDBOX_FAILURE.copy()
         if case == 'mechanical' and ADMISSION['stage'] != 'ready':
             failure['admissionFailure'] = ADMISSION
         emit(failure)

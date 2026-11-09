@@ -37,6 +37,9 @@ PROCESS_MOUNT_SUBSTAGES = {'status-read', 'status-parse', 'capabilities', 'mount
                            'mountinfo-parse', 'root-ro', 'mounts-safe', 'combined-predicate'}
 PUBLIC_COMMAND_PHASES = {'image-history', 'mechanical-create', 'mechanical-start',
                          'mechanical-inspect-running', 'mechanical-inspect-stopped', 'mechanical-remove'}
+SANDBOX_FAILURE_STAGES = {'gate', 'dispatch', 'version-call', 'version-exit', 'version-stdout',
+                          'version-stderr', 'workspace-setup', 'loopback-control', 'sandbox-call',
+                          'sandbox-exit', 'listener-postcheck', 'listener-close'}
 
 
 def require(value, phase='mechanical'):
@@ -128,8 +131,11 @@ def auth_snapshot(directory):
     return [(p.name, tuple(getattr(p.stat(), field) for field in ('st_dev', 'st_ino', 'st_uid', 'st_gid', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')), sha(p.read_bytes())) for p in sorted(directory.iterdir())]
 
 
-def case_run(case, image, directory, containers, image_record, diagnostic=None):
+def case_run(case, image, directory, containers, image_record, diagnostic=None, sandbox_failure=None):
     require(diagnostic is None or case == 'mechanical', 'diagnostic')
+    require(sandbox_failure is None or (case == 'sandbox' and type(sandbox_failure) is dict and not sandbox_failure), 'diagnostic')
+    if case == 'sandbox' and sandbox_failure is None:
+        sandbox_failure = {}
     trace = diagnostic['commands'] if diagnostic is not None else None
     if diagnostic is not None:
         diagnostic['stage'] = 'mechanical-create'
@@ -167,6 +173,20 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None):
         nonlocal group
         data = json.loads(line)
         require(isinstance(data, dict) and len(events) < 4, 'output')
+        require(not (sandbox_failure and data.get('event') == 'result'), 'output')
+        if 'sandboxFailure' in data:
+            require(case == 'sandbox' and data.get('event') == 'result' and data.get('case') == 'sandbox' and
+                    data.get('ok') is False and data.get('phase') == 'native-sandbox' and
+                    type(data.get('providerRequests')) is int and data['providerRequests'] == 0, 'output')
+            failure = data['sandboxFailure']
+            require(type(failure) is dict and {'stage'} <= set(failure) <= {'stage', 'exitCode'} and
+                    type(failure.get('stage')) is str and failure['stage'] in SANDBOX_FAILURE_STAGES, 'output')
+            if 'exitCode' in failure:
+                require(failure['stage'] in {'version-exit', 'sandbox-exit'} and
+                        type(failure['exitCode']) is int and -255 <= failure['exitCode'] <= 255, 'output')
+            require((failure['stage'] == 'gate' and not events) or
+                    (group is not None and len(events) == 1 and events[0].get('event') == 'ready'), 'output')
+            sandbox_failure.update(failure)
         events.append(data)
         if data.get('event') == 'ready':
             if diagnostic is not None:
@@ -335,6 +355,7 @@ def main():
     os.umask(0o077)
     evidence = {'schema': 1, 'repository': 'OMT-Global/bootstrap', 'runId': os.environ['GITHUB_RUN_ID'], 'codexSourceCommit': artifacts.SOURCE, 'cases': [], 'ok': False, 'cleanup': False}
     containers, image, directory = [], None, None
+    sandbox_failure = {}
     try:
         directory = Path(tempfile.mkdtemp(prefix='bootstrap-reviewer-probe-'))
         ENV = {'PATH': '/usr/bin:/bin', 'HOME': str(directory), 'TMPDIR': str(directory), 'LANG': 'C.UTF-8', 'DOCKER_CONFIG': str(directory / 'docker-config'), 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
@@ -377,12 +398,15 @@ def main():
         image_record += command([*DOCKER, 'history', '--no-trunc', '--format', '{{json .}}', image], trace=diagnostic['commands'], phase='image-history').decode()
         require(re.fullmatch('sha256:[a-f0-9]{64}', evidence['image']), 'image')
         for case in ('mechanical', 'bytes', 'inodes', 'detached', 'sandbox', 'status-api', 'status-oauth', 'status-unknown', 'status-auto', 'status-keyring', 'api', 'persistence'):
-            result = case_run(case, image, directory, containers, image_record, diagnostic if case == 'mechanical' else None)
+            result = case_run(case, image, directory, containers, image_record,
+                              diagnostic if case == 'mechanical' else None, sandbox_failure if case == 'sandbox' else None)
             evidence['cases'].append(result)
             require(result['ok'], 'native-sandbox' if case == 'sandbox' else case)
         evidence['ok'] = True
     except BaseException as error:
         evidence['reason'] = str(error) if isinstance(error, Unsupported) else 'unsupported'
+        if sandbox_failure:
+            evidence['sandboxFailure'] = sandbox_failure.copy()
         if 'bootstrapStage' in evidence and type(error) is urllib.error.HTTPError:
             status = dict.get(object.__getattribute__(error, '__dict__'), 'code')
             if type(status) is int and status in {403, 404, 408, 429, 500, 502, 503, 504}:

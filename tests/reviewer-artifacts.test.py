@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -42,6 +43,32 @@ def bundles():
                 'messageSignature': {'messageDigest': {'algorithm': 'SHA2_256', 'digest': b64(b'z' * 32)},
                                      'signature': b64(signature)}}
     return legacy, standard
+
+
+DIAGNOSTIC_PREFIX = 'REVIEWER_ARTIFACT_DIAGNOSTIC '
+EXPECTED_DIAGNOSTIC_STAGES = ('workspace', 'clock', 'context', 'command', 'download-setup', 'download-open',
+                              'download-read', 'download-write', 'download-hash', 'layout', 'extract',
+                              'candidate-read', 'candidate-write', 'bundle-audit', 'cosign', 'finalize',
+                              'cleanup', 'evidence')
+
+
+def failure_records(case, lines):
+    case.assertEqual(len(lines), 2, 'failure must retain its summary and add one bounded diagnostic')
+    case.assertTrue(lines[0].startswith(DIAGNOSTIC_PREFIX))
+    diagnostic = json.loads(lines[0][len(DIAGNOSTIC_PREFIX):])
+    case.assertEqual(list(diagnostic), ['schema', 'stage', 'assetIndex', 'lastHttpState', 'lastHttpStatus'])
+    case.assertIs(type(diagnostic['schema']), int)
+    case.assertEqual(diagnostic['schema'], 1)
+    case.assertIn(diagnostic['stage'], EXPECTED_DIAGNOSTIC_STAGES)
+    case.assertIs(type(diagnostic['assetIndex']), int)
+    case.assertIn(diagnostic['assetIndex'], range(-1, 11))
+    case.assertIn(diagnostic['lastHttpState'], ('not-observed', 'response', 'http-error'))
+    case.assertIs(type(diagnostic['lastHttpStatus']), int)
+    case.assertTrue(diagnostic['lastHttpStatus'] == 0 or 100 <= diagnostic['lastHttpStatus'] <= 599)
+    case.assertEqual(lines[0], DIAGNOSTIC_PREFIX + json.dumps(diagnostic, separators=(',', ':')))
+    case.assertLessEqual(len((lines[0] + '\n').encode()), 192)
+    case.assertTrue(lines[1].startswith('REVIEWER_ARTIFACT_EVIDENCE '))
+    return diagnostic, json.loads(lines[1].split(' ', 1)[1])
 
 
 class ArtifactTests(unittest.TestCase):
@@ -388,9 +415,8 @@ class ArtifactTests(unittest.TestCase):
             with contextlib.redirect_stdout(captured):
                 self.assertFalse(artifacts.emit_evidence(evidence, raw))
             lines = captured.getvalue().splitlines()
-            self.assertEqual(len(lines), 1)
-            self.assertNotIn('REVIEWER_ARTIFACT_RAW ', lines[0])
-            summary = json.loads(lines[0].split(' ', 1)[1])
+            _, summary = failure_records(self, lines)
+            self.assertNotIn('REVIEWER_ARTIFACT_RAW ', '\n'.join(lines))
             self.assertNotIn('publicBundles', summary)
             self.assertFalse(summary.get('signatureVerified', False))
 
@@ -404,13 +430,11 @@ class ArtifactTests(unittest.TestCase):
             with contextlib.redirect_stdout(captured):
                 self.assertFalse(artifacts.emit_evidence(evidence, raw))
             lines = captured.getvalue().splitlines()
-            self.assertEqual(len(lines), 1)
-            self.assertTrue(lines[0].startswith('REVIEWER_ARTIFACT_EVIDENCE '))
-            summary = json.loads(lines[0].split(' ', 1)[1])
+            _, summary = failure_records(self, lines)
             self.assertFalse(summary['ok'])
             self.assertEqual(summary['reason'], 'evidence-limit')
             self.assertNotIn('publicBundles', summary)
-            self.assertNotIn('base64', lines[0])
+            self.assertNotIn('base64', '\n'.join(lines))
 
     def preparation_fixture(self, fail_verification=None, tamper=False, fail_cleanup=False, prepare=True,
                             mutate_after_verify=False, mutate_before_finish=False, mutate_payload_read=False):
@@ -551,13 +575,12 @@ class ArtifactTests(unittest.TestCase):
                 self.assertEqual(status, 1)
                 self.assertEqual(verifies, ['package', 'native', 'bwrap'][:index + 1])
                 self.assertTrue(removed)
-                self.assertEqual(len(lines), 1)
-                summary = json.loads(lines[0].split(' ', 1)[1])
+                _, summary = failure_records(self, lines)
                 self.assertEqual(summary['reason'], 'process')
                 self.assertTrue(summary['cleanup'])
                 self.assertNotIn('publicBundles', summary)
                 self.assertNotIn('signatureVerified', summary)
-                self.assertNotIn('base64', lines[0])
+                self.assertNotIn('base64', '\n'.join(lines))
 
     def test_preparation_rejects_immutable_tamper_before_candidate_write(self):
         status, lines, _, verifies, _, _, _, writes, removed = self.preparation_fixture(tamper=True)
@@ -565,7 +588,7 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(verifies, [])
         self.assertEqual(writes, [])
         self.assertTrue(removed)
-        summary = json.loads(lines[0].split(' ', 1)[1])
+        _, summary = failure_records(self, lines)
         self.assertEqual(summary['reason'], 'bundle/package/signature/mismatch')
         self.assertNotIn('publicBundles', summary)
 
@@ -574,13 +597,12 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(verifies, ['package', 'native', 'bwrap'])
         self.assertFalse(removed)
-        self.assertEqual(len(lines), 1)
-        summary = json.loads(lines[0].split(' ', 1)[1])
+        _, summary = failure_records(self, lines)
         self.assertEqual(summary['reason'], 'cleanup')
         self.assertFalse(summary['cleanup'])
         self.assertNotIn('publicBundles', summary)
         self.assertNotIn('signatureVerified', summary)
-        self.assertNotIn('base64', lines[0])
+        self.assertNotIn('base64', '\n'.join(lines))
 
     def test_candidate_change_during_third_verification_fails_stage_and_preparation(self):
         for prepare in (False, True):
@@ -589,13 +611,12 @@ class ArtifactTests(unittest.TestCase):
                 self.assertEqual(status, 1)
                 self.assertEqual(verifies, ['package', 'native', 'bwrap'])
                 self.assertTrue(removed)
-                self.assertEqual(len(lines), 1)
-                summary = json.loads(lines[0].split(' ', 1)[1])
+                _, summary = failure_records(self, lines)
                 self.assertEqual(summary['reason'], 'bundle/package/verified-bytes/mismatch')
                 self.assertTrue(summary['cleanup'])
                 self.assertNotIn('publicBundles', summary)
                 self.assertNotIn('signatureVerified', summary)
-                self.assertNotIn('base64', lines[0])
+                self.assertNotIn('base64', '\n'.join(lines))
 
     def test_audited_candidates_equal_created_pins_or_normalized_bytes(self):
         for prepare in (False, True):
@@ -604,7 +625,7 @@ class ArtifactTests(unittest.TestCase):
                 self.assertEqual(status, 1)
                 self.assertEqual(verifies, [])
                 self.assertTrue(removed)
-                summary = json.loads(lines[0].split(' ', 1)[1])
+                _, summary = failure_records(self, lines)
                 self.assertEqual(summary['reason'], 'bundle/bwrap/candidate-bytes/mismatch')
                 self.assertNotIn('publicBundles', summary)
                 self.assertNotIn('signatureVerified', summary)
@@ -696,5 +717,459 @@ class ArtifactTests(unittest.TestCase):
                     self.assertEqual(output.getvalue() + errors.getvalue(), '')
                     self.assertNotIn('signatureVerified', evidence)
                     self.assertNotIn('publicBundles', evidence)
+class FailureObservationTests(unittest.TestCase):
+    """Exercise real module paths with external boundaries replaced by inert fixtures."""
+
+    class PrivateFailure(RuntimeError):
+        def __str__(self):
+            raise AssertionError('exception text must not be inspected')
+
+        def __repr__(self):
+            raise AssertionError('exception repr must not be inspected')
+
+    def setUp(self):
+        artifacts.DEADLINE = time.monotonic() + 10
+        self.real_stage = artifacts.stage
+        self.real_acquire = artifacts.acquire
+        self.real_rmtree = artifacts.shutil.rmtree
+
+    def main_fixture(self, action, *, cleanup=None, temporary_error=None):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / 'owned'
+            root.mkdir(mode=0o700)
+            captured, errors = io.StringIO(), io.StringIO()
+
+            def stage(directory):
+                self.assertEqual(directory, root)
+                result = action(directory)
+                return result if isinstance(result, dict) and 'evidence' in result else {'evidence': {'signatureVerified': True}}
+
+            def remove(directory):
+                self.assertEqual(directory, root)
+                if cleanup is not None:
+                    cleanup(directory)
+                self.real_rmtree(directory)
+
+            temporary = mock.Mock(side_effect=temporary_error) if temporary_error is not None else mock.Mock(return_value=str(root))
+            with mock.patch.object(artifacts.sys, 'platform', 'linux'), \
+                    mock.patch.object(artifacts.os, 'umask', return_value=0o022), \
+                    mock.patch.object(artifacts.tempfile, 'mkdtemp', temporary), \
+                    mock.patch.object(artifacts, 'stage', side_effect=stage), \
+                    mock.patch.object(artifacts.shutil, 'rmtree', side_effect=remove), \
+                    mock.patch.object(artifacts, 'acquisition_clock', side_effect=lambda *args: contextlib.nullcontext()), \
+                    contextlib.redirect_stdout(captured), contextlib.redirect_stderr(errors):
+                status = artifacts.main(False)
+            return status, captured.getvalue().splitlines(), errors.getvalue(), root.exists()
+
+    @contextlib.contextmanager
+    def response_fixture(self, *, status=200, payload=b'body', fault=None, trace=None):
+        trace = trace if trace is not None else []
+        case = self
+
+        class Response:
+            reads = 0
+
+            def __enter__(self):
+                trace.append('response.enter')
+                return self
+
+            def __exit__(self, *args):
+                trace.append('response.exit')
+
+            @property
+            def status(self):
+                trace.append('status')
+                self.reads += 1
+                case.assertEqual(self.reads, 1, 'the original winning status operand must be read exactly once')
+                if fault == 'status':
+                    raise case.PrivateFailure()
+                return status
+
+            @property
+            def url(self):
+                trace.append('url')
+                if fault == 'url':
+                    raise case.PrivateFailure()
+                return 'https://github.com/public-fixture'
+
+            def read1(self, amount):
+                trace.append('read')
+                if fault == 'read':
+                    raise case.PrivateFailure()
+                result = self.payload
+                self.payload = b''
+                return result
+
+        response = Response()
+        response.payload = payload
+
+        class Output:
+            def __enter__(self):
+                trace.append('output.enter')
+                return self
+
+            def __exit__(self, *args):
+                trace.append('output.exit')
+
+            def write(self, data):
+                trace.append('write')
+                if fault == 'write':
+                    raise case.PrivateFailure()
+                case.assertEqual(data, payload)
+
+        class Target:
+            def open(self, mode):
+                case.assertEqual(mode, 'xb')
+                trace.append('target.open')
+                if fault == 'target-open':
+                    raise case.PrivateFailure()
+                return Output()
+
+        target = Target()
+
+        class Directory:
+            def __truediv__(self, name):
+                trace.append('target')
+                return target
+
+        def open_response(request, *, timeout):
+            case.assertEqual(timeout, 10)
+            trace.append('open')
+            if fault == 'open':
+                raise case.PrivateFailure()
+            return response
+
+        opener = mock.Mock()
+        opener.open.side_effect = open_response
+        with mock.patch.object(artifacts.ssl, 'create_default_context', return_value=object()), \
+                mock.patch.object(artifacts.urllib.request, 'build_opener', return_value=opener):
+            yield Directory(), target, trace
+
+    def download(self, directory, name='package.tar.gz', payload=b'body'):
+        return artifacts.download(directory, name, ('https://github.com/public-fixture', len(payload), artifacts.sha(payload)))
+
+    def test_actual_frontiers_report_fixed_operation_without_exception_data(self):
+        def clock(root):
+            with mock.patch.object(artifacts, 'acquisition_clock', side_effect=self.PrivateFailure()):
+                return self.real_stage(root)
+
+        def context(root):
+            with mock.patch.object(artifacts.os, 'uname', side_effect=self.PrivateFailure()):
+                return self.real_acquire(root)
+
+        def command(root):
+            with mock.patch.object(artifacts.subprocess, 'Popen', side_effect=self.PrivateFailure()):
+                return artifacts.command(['/fixed/public-fixture'])
+
+        def setup(root):
+            with mock.patch.object(artifacts.ssl, 'create_default_context', side_effect=self.PrivateFailure()):
+                return self.download(root)
+
+        def download_fault(kind):
+            def action(root):
+                with self.response_fixture(fault=kind) as (directory, _, trace):
+                    return self.download(directory)
+            return action
+
+        def digest(root):
+            digest = mock.Mock()
+            digest.hexdigest.side_effect = self.PrivateFailure()
+            with self.response_fixture(payload=b'') as (directory, _, _), \
+                    mock.patch.object(artifacts.hashlib, 'sha256', return_value=digest):
+                return artifacts.download(directory, 'package.tar.gz', ('https://github.com/public-fixture', 0, 'fixed'))
+
+        def acquire_fault(point):
+            def action(root):
+                real_mkdir = Path.mkdir
+
+                def mkdir(path, *args, **kwargs):
+                    if point == 'layout' and path == root / 'context':
+                        raise self.PrivateFailure()
+                    return real_mkdir(path, *args, **kwargs)
+
+                with mock.patch.dict(artifacts.os.environ, {'RELEASE_PROFILE': 'full', 'GITHUB_REPOSITORY': 'OMT-Global/bootstrap', 'GITHUB_RUN_ID': '123'}), \
+                        mock.patch.object(artifacts.os, 'uname', return_value=mock.Mock(machine='x86_64')), \
+                        mock.patch.object(artifacts, 'command', return_value=b'f' * 40), \
+                        mock.patch.object(artifacts, 'download'), \
+                        mock.patch.object(Path, 'mkdir', new=mkdir), \
+                        mock.patch.object(artifacts, 'extract', side_effect=self.PrivateFailure()):
+                    return self.real_acquire(root)
+            return action
+
+        def candidate_fault(point):
+            def action(root):
+                with mock.patch.object(artifacts, 'acquire', return_value=(root / 'package', {})):
+                    if point == 'candidate-read':
+                        with mock.patch.object(artifacts, 'BUNDLE_DIRECTORY', root / 'missing-pins'):
+                            return self.real_stage(root)
+                    with mock.patch.object(Path, 'write_bytes', side_effect=self.PrivateFailure()):
+                        return self.real_stage(root)
+            return action
+
+        def finish_fault(point):
+            def action(root):
+                package = root / 'package'
+                package.mkdir()
+                legacy, candidate = bundles()
+                data = json.dumps(candidate).encode()
+                (root / 'package.sigstore').write_text(json.dumps(legacy))
+                (root / 'package.standard.json').write_bytes(data)
+                assets = {**artifacts.ASSETS, 'package.tar.gz': ('https://github.com/public-fixture', 0, (b'z' * 32).hex())}
+                real_mkdir = Path.mkdir
+
+                def mkdir(path, *args, **kwargs):
+                    if point == 'finalize' and path == root / 'public-notices':
+                        raise self.PrivateFailure()
+                    return real_mkdir(path, *args, **kwargs)
+
+                with mock.patch.object(artifacts, 'binaries', return_value=[('package', root / 'public-binary')]), \
+                        mock.patch.object(artifacts, 'ASSETS', assets), \
+                        mock.patch.object(artifacts, 'verify_signatures'), \
+                        mock.patch.object(Path, 'mkdir', new=mkdir):
+                    if point == 'bundle-audit':
+                        with mock.patch.object(artifacts.json, 'loads', side_effect=self.PrivateFailure()):
+                            return artifacts.finish(root, package, {}, {'package': data})
+                    return artifacts.finish(root, package, {}, {'package': data})
+            return action
+
+        def cosign(root):
+            (root / 'cosign').write_bytes(b'synthetic; never executed')
+            with mock.patch.object(artifacts, 'binaries', return_value=[('package', root / 'public-binary')]), \
+                    mock.patch.object(artifacts.subprocess, 'Popen', side_effect=self.PrivateFailure()):
+                return artifacts.verify_signatures(root, root / 'package')
+
+        cases = [('workspace', None, self.PrivateFailure()), ('clock', clock, None), ('context', context, None),
+                 ('command', command, None), ('download-setup', setup, None), ('download-open', download_fault('open'), None),
+                 ('download-open', download_fault('target-open'), None), ('download-open', download_fault('status'), None),
+                 ('download-open', download_fault('url'), None), ('download-read', download_fault('read'), None),
+                 ('download-write', download_fault('write'), None), ('download-hash', digest, None),
+                 ('layout', acquire_fault('layout'), None), ('extract', acquire_fault('extract'), None),
+                 ('candidate-read', candidate_fault('candidate-read'), None), ('candidate-write', candidate_fault('candidate-write'), None),
+                 ('bundle-audit', finish_fault('bundle-audit'), None), ('cosign', cosign, None),
+                 ('finalize', finish_fault('finalize'), None)]
+        for stage, action, temporary_error in cases:
+            with self.subTest(stage=stage, action=action):
+                status, lines, errors, _ = self.main_fixture(action or (lambda root: None), temporary_error=temporary_error)
+                diagnostic, summary = failure_records(self, lines)
+                self.assertEqual(status, 1)
+                self.assertEqual(diagnostic['stage'], stage)
+                self.assertTrue(summary['cleanup'])
+                self.assertFalse(summary['ok'])
+                self.assertEqual(summary['reason'], 'bundle/package/pinned-file/shape' if stage == 'candidate-read' else 'unsupported')
+                self.assertEqual(errors, '')
+                self.assertNotIn('PrivateFailure', '\n'.join(lines))
+                self.assertNotIn('/fixed/public-fixture', '\n'.join(lines))
+                self.assertNotIn('https://', '\n'.join(lines))
+
+    def test_response_status_original_read_order_and_short_circuit_are_preserved(self):
+        for status, accepted, expected_suffix in [(200, True, ['status', 'url', 'read', 'write', 'read']),
+                                                   (403, False, ['status']), (True, False, ['status'])]:
+            with self.subTest(status=status), self.response_fixture(status=status) as (directory, target, trace):
+                if accepted:
+                    self.assertIs(self.download(directory), target)
+                else:
+                    with self.assertRaisesRegex(artifacts.Unsupported, '^download$'):
+                        self.download(directory)
+                self.assertEqual(trace, ['target', 'open', 'response.enter', 'target.open', 'output.enter',
+                                         *expected_suffix, 'output.exit', 'response.exit'])
+        class EqualTo200:
+            def __eq__(self, other):
+                self.assertion = other
+                return True
+
+            def __int__(self):
+                raise AssertionError('status must not be coerced')
+        status = EqualTo200()
+        with self.response_fixture(status=status) as (directory, target, trace):
+            self.assertIs(self.download(directory), target)
+            self.assertEqual(status.assertion, 200)
+            self.assertEqual(trace.count('status'), 1)
+            self.assertIn('url', trace)
+
+    def test_exact_http_error_owned_code_only_without_body_or_value_delegation(self):
+        accessed = []
+        class Body(io.BytesIO):
+            @property
+            def code(self):
+                accessed.append('body.code')
+                raise AssertionError('body code must not be delegated')
+
+            def read(self, *args):
+                accessed.append('body.read')
+                raise AssertionError('body must not be read')
+        class Uncoercible:
+            def __int__(self):
+                raise AssertionError('HTTP code must not be coerced')
+
+            def __repr__(self):
+                raise AssertionError('HTTP code repr must not be inspected')
+        class Subclass(urllib.error.HTTPError):
+            def __getattribute__(self, name):
+                if name == 'code' and object.__getattribute__(self, '__dict__').get('_trap_code', False):
+                    raise AssertionError('subclass code must not be delegated')
+                return super().__getattribute__(name)
+
+            def __str__(self):
+                raise AssertionError('HTTP error must not be formatted')
+        for value, expected in [(100, 100), (599, 599), (99, 0), (600, 0), (False, 0), ('403', 0), (Uncoercible(), 0), (None, 0)]:
+            body = Body(b'synthetic secret-looking body')
+            error = urllib.error.HTTPError('https://private.invalid/token', 403, 'secret header body', {}, body)
+            error.__dict__['code'] = value
+            if value is None:
+                del error.__dict__['code']
+            def action(root):
+                with mock.patch.object(artifacts.urllib.request, 'build_opener', return_value=mock.Mock(open=mock.Mock(side_effect=error))), \
+                        mock.patch.object(artifacts.ssl, 'create_default_context', return_value=object()):
+                    return self.download(root)
+            status, lines, errors, _ = self.main_fixture(action)
+            error.close()
+            diagnostic, summary = failure_records(self, lines)
+            self.assertEqual(status, 1)
+            self.assertEqual(summary['reason'], 'unsupported')
+            self.assertEqual(diagnostic['stage'], 'download-open')
+            self.assertEqual(diagnostic['assetIndex'], 0)
+            self.assertEqual(diagnostic['lastHttpState'], 'http-error')
+            self.assertEqual(diagnostic['lastHttpStatus'], expected)
+            self.assertEqual(errors, '')
+            self.assertNotIn('private.invalid', '\n'.join(lines))
+            self.assertNotIn('secret', '\n'.join(lines))
+            body.close()
+        error = Subclass('https://private.invalid/token', 403, 'private', {}, Body())
+        error.__dict__['_trap_code'] = True
+        status, lines, _, _ = self.main_fixture(lambda root: (_ for _ in ()).throw(error))
+        error.close()
+        diagnostic, summary = failure_records(self, lines)
+        self.assertEqual(diagnostic['lastHttpState'], 'not-observed')
+        self.assertEqual(diagnostic['lastHttpStatus'], 0)
+        self.assertEqual(summary['reason'], 'unsupported')
+        self.assertEqual(accessed, [])
+
+    def test_download_and_main_reset_last_http_observation(self):
+        def action(root):
+            with self.response_fixture(status=200) as (directory, _, _):
+                self.download(directory)
+            with mock.patch.object(artifacts.ssl, 'create_default_context', side_effect=self.PrivateFailure()):
+                self.download(root, 'package.sigstore')
+        _, lines, _, _ = self.main_fixture(action)
+        diagnostic, _ = failure_records(self, lines)
+        self.assertEqual(diagnostic, {'schema': 1, 'stage': 'download-setup', 'assetIndex': 1,
+                                      'lastHttpState': 'not-observed', 'lastHttpStatus': 0})
+        _, lines, _, _ = self.main_fixture(lambda root: (_ for _ in ()).throw(self.PrivateFailure()))
+        diagnostic, _ = failure_records(self, lines)
+        self.assertEqual(diagnostic, {'schema': 1, 'stage': 'workspace', 'assetIndex': -1,
+                                      'lastHttpState': 'not-observed', 'lastHttpStatus': 0})
+
+    def test_later_extract_failure_reports_last_http_observation_without_cause_claim(self):
+        payload = b'body'
+        assets = {'package.tar.gz': ('https://github.com/public-fixture', len(payload), artifacts.sha(payload))}
+        def action(root):
+            with mock.patch.dict(artifacts.os.environ, {'RELEASE_PROFILE': 'full', 'GITHUB_REPOSITORY': 'OMT-Global/bootstrap', 'GITHUB_RUN_ID': '123'}), \
+                    mock.patch.object(artifacts.os, 'uname', return_value=mock.Mock(machine='x86_64')), \
+                    mock.patch.object(artifacts, 'command', return_value=b'f' * 40), \
+                    mock.patch.object(artifacts, 'ASSETS', assets), \
+                    mock.patch.object(artifacts, 'extract', side_effect=self.PrivateFailure()), \
+                    self.response_fixture(payload=payload):
+                return self.real_acquire(root)
+        status, lines, _, _ = self.main_fixture(action)
+        diagnostic, summary = failure_records(self, lines)
+        self.assertEqual(status, 1)
+        self.assertEqual(summary['reason'], 'unsupported')
+        self.assertEqual(diagnostic, {'schema': 1, 'stage': 'extract', 'assetIndex': -1,
+                                      'lastHttpState': 'response', 'lastHttpStatus': 200})
+        self.assertNotIn('cause', diagnostic)
+
+    def test_cosign_selector_read_and_wait_failures_keep_cleanup_trace_without_execution(self):
+        for point in ('selector', 'read', 'wait'):
+            trace = []
+            process = mock.Mock(pid=123456)
+            process.poll.side_effect = lambda: trace.append('poll') or 0
+            for name in ('stdin', 'stdout', 'stderr'):
+                getattr(process, name).close.side_effect = lambda name=name: trace.append(name + '.close')
+            process.wait.side_effect = self.PrivateFailure() if point == 'wait' else lambda **kwargs: 0
+            key = mock.Mock(fd=11, fileobj=process.stdout, data=0)
+            selector = mock.MagicMock()
+            selector.__enter__.return_value = selector
+            selector.get_map.return_value = point == 'read'
+            selector.select.return_value = [(key, 0)]
+            def spawned(*args, **kwargs):
+                trace.append('spawn')
+                self.assertEqual(args, (['/never-executed/cosign'],))
+                self.assertTrue(kwargs['start_new_session'])
+                return process
+            def killed(pid, sig):
+                self.assertEqual(pid, process.pid)
+                self.assertEqual(sig, artifacts.signal.SIGKILL)
+                trace.append('killpg')
+            def action(root):
+                with mock.patch.object(artifacts.subprocess, 'Popen', side_effect=spawned), \
+                        mock.patch.object(artifacts.selectors, 'DefaultSelector', side_effect=self.PrivateFailure() if point == 'selector' else None,
+                                          return_value=selector), \
+                        mock.patch.object(artifacts.os, 'read', side_effect=self.PrivateFailure()), \
+                        mock.patch.object(artifacts.os, 'killpg', side_effect=killed):
+                    return artifacts.command(['/never-executed/cosign'], diagnostic='package')
+            with self.subTest(point=point):
+                status, lines, errors, _ = self.main_fixture(action)
+                diagnostic, summary = failure_records(self, lines)
+                self.assertEqual(status, 1)
+                self.assertEqual(diagnostic['stage'], 'cosign')
+                self.assertEqual(summary['reason'], 'unsupported')
+                self.assertTrue(summary['cleanup'])
+                self.assertEqual(errors, '')
+                self.assertEqual(trace, ['spawn', 'killpg', 'poll', 'stdin.close', 'stdout.close', 'stderr.close'])
+                self.assertEqual(process.wait.call_count, 1 if point == 'wait' else 0)
+                self.assertNotIn('REVIEWER_SIGNATURE_DIAGNOSTIC', '\n'.join(lines))
+
+    def test_failure_snapshot_precedes_cleanup_and_cleanup_reason_still_wins(self):
+        def action(root):
+            with self.response_fixture(status=200, fault='read') as (directory, _, _):
+                return self.download(directory)
+        def mutate(directory):
+            state = artifacts.__dict__.get('_OBSERVATION')
+            if isinstance(state, dict):
+                state.update(stage='cleanup', assetIndex=-1, lastHttpState='not-observed', lastHttpStatus=0)
+        _, lines, _, removed = self.main_fixture(action, cleanup=mutate)
+        diagnostic, summary = failure_records(self, lines)
+        self.assertEqual(diagnostic, {'schema': 1, 'stage': 'download-read', 'assetIndex': 0,
+                                      'lastHttpState': 'response', 'lastHttpStatus': 200})
+        self.assertTrue(summary['cleanup'])
+        self.assertFalse(removed)
+        def cleanup_failure(directory):
+            raise self.PrivateFailure()
+        _, lines, _, remains = self.main_fixture(action, cleanup=cleanup_failure)
+        diagnostic, summary = failure_records(self, lines)
+        self.assertEqual(summary['reason'], 'cleanup')
+        self.assertFalse(summary['cleanup'])
+        self.assertTrue(remains)
+        self.assertEqual(diagnostic, {'schema': 1, 'stage': 'cleanup', 'assetIndex': -1,
+                                      'lastHttpState': 'response', 'lastHttpStatus': 200})
+
+    def test_success_wire_and_evidence_limit_remain_unchanged(self):
+        result = {'evidence': {'fixture': 'synthetic-public-only', 'signatureVerified': True}}
+        status, lines, errors, remains = self.main_fixture(lambda root: result)
+        self.assertEqual(status, 0)
+        self.assertEqual(lines, ['REVIEWER_ARTIFACT_EVIDENCE {"schema":1,"preparation":false,"ok":true,"cleanup":true,"fixture":"synthetic-public-only","signatureVerified":true}'])
+        self.assertEqual(errors, '')
+        self.assertFalse(remains)
+        huge = {'evidence': {'signatureVerified': True, 'padding': 'x' * 262144}}
+        status, lines, _, _ = self.main_fixture(lambda root: huge)
+        diagnostic, summary = failure_records(self, lines)
+        self.assertEqual(status, 1)
+        self.assertEqual(diagnostic['stage'], 'evidence')
+        self.assertEqual(summary, {'schema': 1, 'preparation': False, 'ok': False, 'cleanup': True, 'reason': 'evidence-limit'})
+        self.assertLessEqual(len(('\n'.join(lines) + '\n').encode()), 262144)
+
+    def test_umask_failure_stays_outside_the_protected_main_boundary(self):
+        failure = self.PrivateFailure()
+        captured = io.StringIO()
+        with mock.patch.object(artifacts.os, 'umask', side_effect=failure), \
+                mock.patch.object(artifacts.tempfile, 'mkdtemp') as temporary, \
+                contextlib.redirect_stdout(captured):
+            with self.assertRaises(self.PrivateFailure) as observed:
+                artifacts.main(False)
+        self.assertIs(observed.exception, failure)
+        temporary.assert_not_called()
+        self.assertEqual(captured.getvalue(), '')
+
+
 if __name__ == '__main__':
     unittest.main()

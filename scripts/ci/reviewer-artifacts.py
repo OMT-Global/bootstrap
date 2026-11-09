@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -52,6 +53,12 @@ BUNDLE_PINS = {
 }
 BUNDLE_DIRECTORY = HERE / 'reviewer-artifact-bundles'
 IDENTITY = 'https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.167.0'
+ASSET_NAMES = tuple(ASSETS)
+DIAGNOSTIC_STAGES = ('workspace', 'clock', 'context', 'command', 'download-setup', 'download-open',
+                     'download-read', 'download-write', 'download-hash', 'layout', 'extract', 'candidate-read',
+                     'candidate-write', 'bundle-audit', 'cosign', 'finalize', 'cleanup', 'evidence')
+_OBSERVATION = {'stage': 'workspace', 'assetIndex': -1, 'lastHttpState': 'not-observed', 'lastHttpStatus': 0}
+_FAILURE = None
 
 
 class Unsupported(RuntimeError):
@@ -65,6 +72,16 @@ def require(value, phase='mechanical'):
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _observe(stage, asset_index=-1):
+    require(stage in DIAGNOSTIC_STAGES, 'diagnostic')
+    _OBSERVATION.update(stage=stage, assetIndex=asset_index)
+
+
+def _diagnostics(successful):
+    return [] if successful else ['REVIEWER_ARTIFACT_DIAGNOSTIC ' + json.dumps(
+        {'schema': 1, **(_FAILURE or {**_OBSERVATION, 'stage': 'evidence'})}, separators=(',', ':'))]
 
 
 def allowed_url(value):
@@ -81,6 +98,8 @@ class Redirect(urllib.request.HTTPRedirectHandler):
 
 
 def download(directory, name, specification):
+    _observe('download-setup', ASSET_NAMES.index(name) if name in ASSET_NAMES else -1)
+    _OBSERVATION.update(lastHttpState='not-observed', lastHttpStatus=0)
     url, expected_size, expected_hash = specification
     require(allowed_url(url), 'download')
     context = ssl.create_default_context(cafile='/etc/ssl/certs/ca-certificates.crt')
@@ -88,22 +107,29 @@ def download(directory, name, specification):
     target = directory / name
     digest, size = hashlib.sha256(), 0
     request = urllib.request.Request(url, headers={'User-Agent': 'Bootstrap-public-native-proof'})
+    _observe('download-open', _OBSERVATION['assetIndex'])
     with opener.open(request, timeout=10) as response, target.open('xb') as output:
-        require(response.status == 200 and allowed_url(response.url), 'download')
+        status = response.status
+        _OBSERVATION.update(lastHttpState='response', lastHttpStatus=status if type(status) is int and 100 <= status <= 599 else 0)
+        require(status == 200 and allowed_url(response.url), 'download')
         while True:
             require(time.monotonic() < DEADLINE, 'deadline')
+            _observe('download-read', _OBSERVATION['assetIndex'])
             block = response.read1(min(1 << 20, expected_size + 1 - size))
             if not block:
                 break
             size += len(block)
             require(size <= expected_size, 'download')
             digest.update(block)
+            _observe('download-write', _OBSERVATION['assetIndex'])
             output.write(block)
+    _observe('download-hash', _OBSERVATION['assetIndex'])
     require(size == expected_size and digest.hexdigest() == expected_hash, 'download')
     return target
 
 
 def command(arguments, timeout=60, limit=65536, diagnostic=None):
+    _observe('cosign' if diagnostic else 'command')
     end = min(time.monotonic() + timeout, DEADLINE)
     process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=ENV, start_new_session=True)
@@ -346,6 +372,7 @@ def binaries(directory, package):
 
 
 def verify_signatures(directory, package):
+    _observe('cosign')
     cosign = directory / 'cosign'
     cosign.chmod(0o700)
     for name, binary in binaries(directory, package):
@@ -378,6 +405,7 @@ def acquisition_clock(absolute_deadline=None):
 
 
 def acquire(directory):
+    _observe('context')
     global ENV
     require(sys.platform == 'linux' and os.uname().machine == 'x86_64' and os.getuid() > 0, 'platform')
     require(os.environ.get('RELEASE_PROFILE') == 'full' and os.environ.get('GITHUB_REPOSITORY') == 'OMT-Global/bootstrap' and
@@ -391,10 +419,12 @@ def acquire(directory):
     require(re.fullmatch('[a-f0-9]{40}', head), 'ci-context')
     for name, specification in ASSETS.items():
         download(directory, name, specification)
+    _observe('layout')
     context = directory / 'context'
     context.mkdir()
     package = context / 'verified-codex-package'
     package.mkdir()
+    _observe('extract')
     evidence = {'schema': 1, 'repository': 'OMT-Global/bootstrap', 'runId': os.environ['GITHUB_RUN_ID'], 'head': head,
                 'codexSourceCommit': SOURCE, 'package': extract(directory / 'package.tar.gz', package),
                 'stageSourceSha256': sha(Path(__file__).read_bytes()),
@@ -403,6 +433,7 @@ def acquire(directory):
 
 
 def finish(directory, package, evidence, expected_candidates):
+    _observe('bundle-audit')
     candidates = {}
     for name, _ in binaries(directory, package):
         candidates[name] = read_bundle(directory / (name + '.standard.json'), name, 'standard-file')
@@ -410,6 +441,7 @@ def finish(directory, package, evidence, expected_candidates):
                      ASSETS['package.tar.gz'][2] if name == 'package' else NATIVE['bin/codex' if name == 'native' else 'codex-resources/bwrap'], name)
         require(candidates[name] == expected_candidates[name], bundle_tag(name, 'candidate-bytes', 'mismatch'))
     verify_signatures(directory, package)
+    _observe('finalize')
     for name, data in candidates.items():
         require(read_bundle(directory / (name + '.standard.json'), name, 'standard-file') == data,
                 bundle_tag(name, 'verified-bytes', 'mismatch'))
@@ -427,12 +459,15 @@ def finish(directory, package, evidence, expected_candidates):
 def stage(directory, absolute_deadline=None):
     """Stage only verified public artifacts; caller owns the fresh directory and cleanup."""
     require(set(BUNDLE_PINS) == {'package', 'native', 'bwrap'}, 'metadata-unpinned')
+    _observe('clock')
     with acquisition_clock(absolute_deadline):
         package, evidence = acquire(directory)
         pinned = {}
         for name, (expected_size, expected_hash) in BUNDLE_PINS.items():
+            _observe('candidate-read')
             data = read_bundle(BUNDLE_DIRECTORY / (name + '.json'), name, 'pinned-file')
             require(len(data) == expected_size and sha(data) == expected_hash, bundle_tag(name, 'pinned-hash', 'mismatch'))
+            _observe('candidate-write')
             (directory / (name + '.standard.json')).write_bytes(data)
             pinned[name] = data
         return finish(directory, package, evidence, pinned)
@@ -440,6 +475,7 @@ def stage(directory, absolute_deadline=None):
 
 def prepare_metadata(directory):
     """Explicit public Rekor lookup; never called by stage() or its offline verifier."""
+    _observe('clock')
     with acquisition_clock():
         return prepare_with_clock(directory)
 
@@ -482,18 +518,23 @@ def emit_evidence(evidence, raw_payloads):
     raw_lines = ['REVIEWER_ARTIFACT_RAW ' + json.dumps({'schema': 1, 'artifact': name, **raw_payloads[name]}, separators=(',', ':'))
                  for name in ('package', 'native', 'bwrap') if name in raw_payloads]
     summary = 'REVIEWER_ARTIFACT_EVIDENCE ' + json.dumps(evidence, separators=(',', ':'))
-    if any(len(line.encode()) + 1 > 131072 for line in raw_lines) or sum(len(line.encode()) + 1 for line in [*raw_lines, summary]) > 262144:
+    diagnostics = _diagnostics(successful)
+    if any(len(line.encode()) + 1 > 131072 for line in raw_lines) or sum(len(line.encode()) + 1 for line in [*raw_lines, *diagnostics, summary]) > 262144:
         evidence = {'schema': 1, 'preparation': evidence['preparation'], 'ok': False,
                     'cleanup': evidence['cleanup'], 'reason': 'evidence-limit'}
         raw_lines = []
         summary = 'REVIEWER_ARTIFACT_EVIDENCE ' + json.dumps(evidence, separators=(',', ':'))
-    for line in [*raw_lines, summary]:
+        diagnostics = _diagnostics(False)
+    for line in [*raw_lines, *diagnostics, summary]:
         print(line, flush=True)
     return bool(evidence['ok'] and evidence['cleanup'])
 
 
 def main(prepare):
+    global _FAILURE, _OBSERVATION
     os.umask(0o077)
+    _FAILURE = None
+    _OBSERVATION = {'stage': 'workspace', 'assetIndex': -1, 'lastHttpState': 'not-observed', 'lastHttpStatus': 0}
     evidence = {'schema': 1, 'preparation': prepare, 'ok': False, 'cleanup': False}
     raw_payloads = {}
     temporary = None
@@ -508,6 +549,10 @@ def main(prepare):
         evidence['ok'] = True
     except BaseException as error:
         evidence['reason'] = str(error) if isinstance(error, Unsupported) else 'unsupported'
+        if type(error) is urllib.error.HTTPError:
+            status = dict.get(object.__getattribute__(error, '__dict__'), 'code')
+            _OBSERVATION.update(lastHttpState='http-error', lastHttpStatus=status if type(status) is int and 100 <= status <= 599 else 0)
+        _FAILURE = _OBSERVATION.copy()
     finally:
         started = time.monotonic()
         try:
@@ -519,6 +564,7 @@ def main(prepare):
             evidence['cleanup'] = True
         except BaseException:
             evidence.update(ok=False, reason='cleanup')
+            _FAILURE = {**_OBSERVATION, 'stage': 'cleanup', 'assetIndex': -1}
     return 0 if emit_evidence(evidence, raw_payloads) else 1
 
 

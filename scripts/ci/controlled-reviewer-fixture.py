@@ -25,6 +25,7 @@ CODEX = '/opt/codex/bin/codex'
 CASES = ('mechanical', 'bytes', 'inodes', 'detached', 'sandbox', 'status-api',
          'status-oauth', 'status-unknown', 'status-auto', 'status-keyring', 'api', 'persistence')
 MOCK_REQUESTS = 0
+ADMISSION = {'stage': 'platform'}
 LIMITS = {'core': (resource.RLIMIT_CORE, 0), 'fsize': (resource.RLIMIT_FSIZE, 64 << 20),
           'nofile': (resource.RLIMIT_NOFILE, 256), 'nproc': (resource.RLIMIT_NPROC, 128),
           'as': (resource.RLIMIT_AS, 16 << 30), 'cpu': (resource.RLIMIT_CPU, 3600)}
@@ -92,12 +93,18 @@ def native(args, input_bytes=b'', cap=16384):
 
 
 def gate():
+    ADMISSION.clear()
+    ADMISSION['stage'] = 'platform'
     require(sys.platform == 'linux' and os.getpid() == 1 and os.getuid() != 0)
     os.umask(0o077)
+    ADMISSION['stage'] = 'inherited-as'
     address_space = resource.getrlimit(resource.RLIMIT_AS)
+    ADMISSION['addressSpace'] = {'soft': address_space[0], 'hard': address_space[1]}
     require(address_space == (16 << 30, 16 << 30))
+    ADMISSION['stage'] = 'resource-setters'
     for limit, value in LIMITS.values():
         resource.setrlimit(limit, (value, value))
+    ADMISSION['stage'] = 'environment-directories'
     os.environ.clear()
     os.environ.update(PATH='/opt/codex/bin:/opt/codex/codex-resources:/usr/local/bin:/usr/bin:/bin',
                       HOME=str(ROOT / 'home'), TMPDIR=str(ROOT / 'tmp'),
@@ -108,6 +115,7 @@ def gate():
         target = ROOT / ('xdg-' + kind.lower())
         target.mkdir(mode=0o700)
         os.environ['XDG_' + kind + '_HOME'] = str(target)
+    ADMISSION['stage'] = 'process-mounts'
     status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
     caps_zero = all(int(status[name].strip(), 16) == 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
     mounts = [line.split() for line in Path('/proc/self/mountinfo').read_text().splitlines()]
@@ -116,16 +124,21 @@ def gate():
                       (row[4] == '/proc' or row[4].startswith('/proc/')) or not os.access(row[4], os.W_OK) or
                       stat.S_ISCHR(os.stat(row[4]).st_mode) for row in mounts)
     require(root_ro and mounts_safe and caps_zero and status['NoNewPrivs'].strip() == '1')
+    ADMISSION['stage'] = 'shared-memory'
     require(not os.path.exists('/dev/shm') or not os.access('/dev/shm', os.W_OK))
+    ADMISSION['stage'] = 'tmpfs'
     fs = os.statvfs(ROOT)
     raw = ctypes.create_string_buffer(256)
     require(ctypes.CDLL(None).statfs(bytes(ROOT), raw) == 0)
     magic = ctypes.cast(raw, ctypes.POINTER(ctypes.c_long))[0]
     require(magic == 0x01021994 and 0 < fs.f_blocks * fs.f_frsize <= 256 << 20 and 0 < fs.f_files <= 16384)
+    ADMISSION['stage'] = 'cgroup'
     values = {name: Path('/sys/fs/cgroup', name).read_text().strip()
               for name in ('memory.max', 'memory.swap.max', 'pids.max', 'cpu.max')}
     require(values == {'memory.max': '2147483648', 'memory.swap.max': '0', 'pids.max': '128', 'cpu.max': '200000 100000'})
+    ADMISSION['stage'] = 'architecture'
     require(sys.version_info >= (3, 11) and os.uname().machine == 'x86_64')
+    ADMISSION['stage'] = 'package-binaries'
     for name in ('bin/codex', 'bin/codex-code-mode-host', 'bin/codex-exec-server', 'codex-resources/bwrap', 'codex-path/rg'):
         file = Path('/opt/codex', name)
         info = file.lstat()
@@ -134,6 +147,7 @@ def gate():
         with file.open('rb') as source:
             header = source.read(20)
         require(header[:7] == b'\x7fELF\x02\x01\x01' and header[18:20] == b'\x3e\x00')
+    ADMISSION['stage'] = 'ready'
     emit({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), 'pid1': True,
           'root_ro': root_ro, 'mounts_safe': mounts_safe, 'caps_zero': caps_zero, 'no_new_privs': True,
           'tmpfs': {'type': magic, 'bytes': fs.f_blocks * fs.f_frsize, 'inodes': fs.f_files},
@@ -337,6 +351,9 @@ if __name__ == '__main__':
         details = run_case(case)
         emit({'event': 'result', 'case': case, 'ok': True, 'phase': case, **details})
     except BaseException:
-        emit({'event': 'result', 'case': case, 'ok': False, 'phase': 'native-sandbox' if case == 'sandbox' else case,
-              'reason': 'unsupported', 'providerRequests': MOCK_REQUESTS})
+        failure = {'event': 'result', 'case': case, 'ok': False, 'phase': 'native-sandbox' if case == 'sandbox' else case,
+                   'reason': 'unsupported', 'providerRequests': MOCK_REQUESTS}
+        if case == 'mechanical' and ADMISSION['stage'] != 'ready':
+            failure['admissionFailure'] = ADMISSION
+        emit(failure)
         sys.exit(1)

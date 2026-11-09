@@ -136,7 +136,8 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
                 callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(),
                     'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), io.BytesIO())
                 callback(json.dumps({'event': 'result', 'case': 'api', 'ok': mode != 'api-failure',
-                    'providerRequests': 0 if mode == 'api-failure' else 2, 'mockMethods': methods}).encode(), io.BytesIO())
+                    'providerRequests': 0 if mode == 'api-failure' else 2, 'mockMethods': methods,
+                    **({'admissionFailure': {'raw': 'private-later-case-canary'}} if mode == 'api-extra-admission' else {})}).encode(), io.BytesIO())
                 state['running'] = False
             return b''
         probe.command = command
@@ -182,6 +183,14 @@ describe("controlled reviewer driver regressions", () => {
     expect(result.rejected).toBe(false);
     expect(result.cleanupCalled).toBe(true);
     expect(result.result).toMatchObject({ ok: false, providerRequests: 0, mockMethods: { GET: 0, POST: 0 } });
+  });
+  it("does not publish an admission-shaped field from a later untraced API fixture", async () => {
+    const result = await driverCase("api-extra-admission", { GET: 1, POST: 1 });
+    expect(result.rejected).toBe(false);
+    expect(result.cleanupCalled).toBe(true);
+    expect(result.result).not.toHaveProperty("admissionFailure");
+    expect(result.result).not.toHaveProperty("fixtureAdmissionFailure");
+    expect(JSON.stringify(result)).not.toContain("private-later-case-canary");
   });
   it.each([
     { GET: 1, POST: 1, DELETE: 0 }, { GET: true, POST: 1 }, { GET: 0.5, POST: 1.5 },
@@ -295,6 +304,7 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             forbidden()
         return real_read_bytes(path)
 
+    actual_case_run = probe.case_run
     def command(arguments, **kwargs):
         if arguments[0] == '/usr/bin/git':
             return b'a' * 40 + b'\n'
@@ -313,10 +323,16 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             return json.dumps([{'Id': 'sha256:' + 'b' * 64}]).encode()
         if operation == 'image' and arguments[4] == 'rm' and mode == 'image-cleanup-failure':
             raise probe.Unsupported('injected-image-cleanup-failure')
+        if operation == 'start' and mode in ('admission-failure', 'admission-cleanup-failure'):
+            kwargs['on_line'](json.dumps({'event': 'result', 'case': 'mechanical', 'ok': False, 'providerRequests': 0,
+                'admissionFailure': {'stage': 'inherited-as', 'addressSpace': {'soft': -1, 'hard': -1}}}).encode(), io.BytesIO())
         return b''
 
     def case_run(case, *args):
         state['caseOrder'].append(case)
+        if mode in ('admission-failure', 'admission-cleanup-failure'):
+            assert case == 'mechanical'
+            return actual_case_run(case, *args)
         result = {'case': case, 'ok': not (mode == 'native-unsupported' and case == 'sandbox'), 'providerRequests': 0}
         if case == 'api':
             result.update(providerRequests=2, mockMethods={'GET': 1, 'POST': 1})
@@ -325,7 +341,7 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
         return result
 
     def rmtree(path, *args, **kwargs):
-        if mode == 'temp-cleanup-failure' and Path(path) in state['roots']:
+        if mode in ('temp-cleanup-failure', 'admission-cleanup-failure') and Path(path) in state['roots']:
             raise OSError('injected temporary cleanup failure')
         return real_rmtree(path, *args, **kwargs)
 
@@ -428,7 +444,9 @@ interface OrchestrationResult {
   utf8PrefixWithoutBom: boolean;
   evidence: { ok: boolean; cleanup: boolean; reason?: string; signatureVerified?: boolean;
     stageSourceSha256?: string; bundles?: Record<string, { bytes: number; sha256: string }>;
-    package?: { packageNoticesPreserved: Record<string, string> }; cases: { providerRequests: number }[] };
+    package?: { packageNoticesPreserved: Record<string, string> }; cases: { providerRequests: number }[];
+    preAuthDiagnostic?: { fixtureAdmissionFailure?: { stage: string; addressSpace?: { soft: number; hard: number } };
+      readyEventSeen: boolean; resultEventSeen: boolean; resultOk: boolean | null; failureStage?: string; stage: string } };
 }
 
 async function orchestrationCase(mode: string): Promise<OrchestrationResult> {
@@ -533,6 +551,21 @@ describe("controlled reviewer artifact orchestration", () => {
     expect(result.outputEvents.slice(0, 3)).toEqual(["report", "wire-write", "wire-flush"]);
     expect(result.emittedWhileRootPresent).toBe(false);
     expect(result.reportWrittenWhileRootPresent).toBe(false);
+  });
+
+  it.each(["admission-failure", "admission-cleanup-failure"])("retains fixture and host failures separately through outer cleanup for %s", async (mode) => {
+    const result = await orchestrationCase(mode);
+    expect(result.status).toBe(1);
+    expect(result.caseOrder).toEqual(["mechanical"]);
+    expect(result.providerRequests).toBe(0);
+    expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+    expect(result.evidence).toMatchObject({ ok: false, reason: "cleanup", cleanup: mode === "admission-failure" });
+    expect(result.evidence.preAuthDiagnostic).toMatchObject({
+      fixtureAdmissionFailure: { stage: "inherited-as", addressSpace: { soft: -1, hard: -1 } },
+      readyEventSeen: false, resultEventSeen: true, resultOk: false,
+      failureStage: "post-case-cgroup", stage: "container-removed"
+    });
+    expect(result.allRootsRemoved).toBe(mode === "admission-failure");
   });
 });
 
@@ -756,12 +789,15 @@ def processes(specifications):
     assert all(child.killed and child.stdin.closed and child.stdout.closed and child.stderr.closed for child in created)
 
 
-def mechanical(mode, include_history=False, capture=None):
+def mechanical(mode, include_history=False, capture=None, failure_fields=None):
     diagnostic = {'stage': 'image-history', 'commands': [], 'readyEventSeen': False,
                   'resultEventSeen': False, 'resultOk': None}
     ready = json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(),
                        'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode() + b'\n'
-    result = json.dumps({'event': 'result', 'case': 'mechanical', 'ok': mode != 'pre-ready', 'providerRequests': 0}).encode() + b'\n'
+    pre_ready = mode in ('pre-ready', 'pre-ready-remove')
+    failed_result = pre_ready or mode == 'post-ready-failure'
+    result = json.dumps({'event': 'result', 'case': 'mechanical', 'ok': not failed_result, 'providerRequests': 0,
+                         **(failure_fields or {})}).encode() + b'\n'
     running = json.dumps([{'State': {'Running': True, 'Pid': 123},
                            'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}]).encode()
     stopped = json.dumps([{'State': {'Running': False}}]).encode()
@@ -772,12 +808,12 @@ def mechanical(mode, include_history=False, capture=None):
         if launcher_exit is not None:
             queue.append((b'', b'public synthetic launcher failure', launcher_exit))
         else:
-            queue.append((result if mode == 'pre-ready' else ready + result, b'', 1 if mode == 'pre-ready' else 0))
-        if mode != 'pre-ready' and launcher_exit is None:
+            queue.append((result if pre_ready else ready + result, b'', 1 if failed_result else 0))
+        if not pre_ready and launcher_exit is None:
             queue.append((running, b'', 0))
-        if mode not in ('pre-ready', 'cgroup') and launcher_exit is None:
+        if not pre_ready and mode != 'cgroup' and launcher_exit is None:
             queue.append((stopped, b'', 0))
-        queue.append((b'', b'public remove diagnostic', 17 if mode == 'remove' else 0))
+        queue.append((b'', b'public remove diagnostic', 17 if mode in ('remove', 'pre-ready-remove') else 0))
     with tempfile.TemporaryDirectory(prefix='bootstrap-public-diagnostic-fixture-') as temporary:
         pending = []
         def cgroup(pid):
@@ -906,6 +942,63 @@ class PublicDiagnosticTests(unittest.TestCase):
                 self.assertEqual(diagnostic['commands'][1]['exitCode'], code)
                 self.assertEqual(capture, {'commands': 3, 'inputWrites': [b'', b'', b'']})
 
+    def test_optional_admission_payload_preserves_absence_and_retains_valid_observed_bounds(self):
+        diagnostic, value, reason, pending = mechanical('pre-ready')
+        self.assertEqual(reason, 'cleanup')
+        self.assertEqual(diagnostic['failureStage'], 'post-case-cgroup')
+        self.assertNotIn('fixtureAdmissionFailure', diagnostic)
+        stages = ('platform', 'inherited-as', 'resource-setters', 'environment-directories', 'process-mounts',
+                  'shared-memory', 'tmpfs', 'cgroup', 'architecture', 'package-binaries')
+        payloads = [{'stage': stage} for stage in stages]
+        payloads += [{'stage': 'inherited-as', 'addressSpace': {'soft': number, 'hard': number}}
+                     for number in (-1, 0, (1 << 64) - 1)]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                capture = {}
+                diagnostic, value, reason, pending = mechanical('pre-ready', capture=capture,
+                    failure_fields={'admissionFailure': payload})
+                self.assertEqual(reason, 'cleanup')
+                self.assertEqual(diagnostic['fixtureAdmissionFailure'], payload)
+                self.assertEqual(diagnostic['failureStage'], 'post-case-cgroup')
+                self.assertEqual(diagnostic['stage'], 'container-removed')
+                self.assertEqual((diagnostic['readyEventSeen'], diagnostic['resultEventSeen'], diagnostic['resultOk']), (False, True, False))
+                self.assertEqual(pending, [])
+                self.assertEqual(capture, {'commands': 3, 'inputWrites': [b'', b'', b'']})
+
+    def test_malformed_present_admission_fields_fail_before_retention_and_go(self):
+        malformed = [None, [], True, {}, {'stage': 'ready'}, {'stage': 'unknown'}, {'stage': True},
+                     {'stage': 'platform', 'raw': 'private-admission-canary'},
+                     {'stage': 'inherited-as', 'addressSpace': None}, {'stage': 'inherited-as', 'addressSpace': []}]
+        pairs = [{}, {'soft': 0}, {'soft': 0, 'hard': 0, 'extra': 0}, {'soft': True, 'hard': 0},
+                 {'soft': 0.0, 'hard': 0}, {'soft': '0', 'hard': 0}, {'soft': -2, 'hard': 0}, {'soft': 1 << 64, 'hard': 0}]
+        malformed += [{'stage': 'inherited-as', 'addressSpace': pair} for pair in pairs]
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                capture = {}
+                diagnostic, value, reason, pending = mechanical('pre-ready', capture=capture,
+                    failure_fields={'admissionFailure': payload})
+                self.assertEqual(reason, 'output')
+                self.assertNotIn('fixtureAdmissionFailure', diagnostic)
+                self.assertNotIn('private-admission-canary', json.dumps(diagnostic))
+                self.assertEqual(diagnostic['stage'], 'container-removed')
+                self.assertEqual(pending, [])
+                self.assertEqual(capture, {'commands': 3, 'inputWrites': [b'', b'', b'']})
+
+    def test_post_ready_privacy_and_cleanup_failure_do_not_overwrite_fixture_facts(self):
+        private = {'raw': 'private-admission-canary'}
+        diagnostic, value, reason, pending = mechanical('post-ready-failure', failure_fields={'admissionFailure': private})
+        self.assertIsNone(reason)
+        self.assertFalse(value['ok'])
+        self.assertNotIn('fixtureAdmissionFailure', diagnostic)
+        self.assertNotIn('private-admission-canary', json.dumps([diagnostic, value]))
+        payload = {'stage': 'inherited-as', 'addressSpace': {'soft': -1, 'hard': -1}}
+        diagnostic, value, reason, pending = mechanical('pre-ready-remove', failure_fields={'admissionFailure': payload})
+        self.assertEqual(reason, 'process')
+        self.assertTrue(pending)
+        self.assertEqual(diagnostic['fixtureAdmissionFailure'], payload)
+        self.assertEqual(diagnostic['failureStage'], 'post-case-cgroup')
+        self.assertEqual(diagnostic['stage'], 'mechanical-remove')
+
 
 log = io.StringIO()
 result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(PublicDiagnosticTests))
@@ -922,7 +1015,7 @@ describe("controlled reviewer public pre-auth diagnostic", () => {
       cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
     });
-    expect(JSON.parse(result.stdout)).toEqual({ testCases: 9,
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 12,
       publicPhases: ["image-history", "mechanical-create", "mechanical-start", "mechanical-inspect-running",
         "mechanical-inspect-stopped", "mechanical-remove"],
       nativeDockerAuthNetworkProcesses: 0, allProcessesWereFakePopen: true });
@@ -932,6 +1025,7 @@ describe("controlled reviewer public pre-auth diagnostic", () => {
 
 const addressSpaceHarness = String.raw`
 """Inherited address-space fixtures; every resource setter and Linux observation is mocked."""
+import ast
 import contextlib
 import ctypes
 import importlib.util
@@ -960,6 +1054,10 @@ fixture = load('inherited_address_space_fixture', 'controlled-reviewer-fixture.p
 host = load('inherited_address_space_host', 'controlled-reviewer-probe.py')
 LIMIT = 17179869184
 PAIR = {'soft': LIMIT, 'hard': LIMIT}
+CANARY = 'fixture-private-admission-canary'
+tree = ast.parse(Path(fixture.__file__).read_text())
+entry = next(node for node in tree.body if isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'")
+ENTRY = compile(ast.fix_missing_locations(ast.Module(body=entry.body, type_ignores=[])), fixture.__file__, 'exec')
 
 
 @contextlib.contextmanager
@@ -1027,6 +1125,65 @@ def host_case(fields):
     return state, value, reason
 
 
+@contextlib.contextmanager
+def mocked_gate(fault=None):
+    values = {'memory.max': '2147483648', 'memory.swap.max': '0', 'pids.max': '128', 'cpu.max': '200000 100000'}
+    status = '\n'.join(name + ': 0' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')) + '\nNoNewPrivs: 1\n'
+    elf = b'\x7fELF\x02\x01\x01' + bytes(11) + b'\x3e\x00'
+    original_mkdir = Path.mkdir
+    with tempfile.TemporaryDirectory(prefix='bootstrap-as-full-gate-fixture-') as temporary:
+        def read_text(path, *args, **kwargs):
+            if str(path) == '/proc/self/status':
+                if fault == 'process-mounts':
+                    raise OSError(CANARY)
+                return status
+            if str(path) == '/proc/self/mountinfo':
+                return '1 0 0:0 / / ro - ext4 root ro\n2 1 0:1 / ' + temporary + ' rw - tmpfs tmpfs rw\n'
+            if fault == 'cgroup':
+                raise OSError(CANARY)
+            return values[path.name]
+        def mkdir(path, *args, **kwargs):
+            if fault == 'environment-directories':
+                raise OSError(CANARY)
+            return original_mkdir(path, *args, **kwargs)
+        def setter(resource, value):
+            if fault == 'resource-setters':
+                raise OSError(CANARY)
+        def statfs(path, raw):
+            ctypes.cast(raw, ctypes.POINTER(ctypes.c_long))[0] = 0x01021994
+            return 0
+        pair = (-1, -1) if fault == 'inherited-as' else (LIMIT, LIMIT)
+        with admission(pair, setter) as (order, emit, native), \
+                mock.patch.object(fixture, 'ROOT', Path(temporary)), \
+                mock.patch.object(fixture.os, 'getpid', return_value=2 if fault == 'platform' else 1), \
+                mock.patch.object(fixture.os, 'environ', {}), \
+                mock.patch.object(Path, 'read_text', read_text), mock.patch.object(Path, 'mkdir', mkdir), \
+                mock.patch.object(Path, 'lstat', side_effect=OSError(CANARY) if fault == 'package-binaries' else None,
+                    return_value=types.SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0, st_nlink=1)), \
+                mock.patch.object(Path, 'open', side_effect=lambda *args, **kwargs: io.BytesIO(elf)), \
+                mock.patch.object(fixture.os.path, 'exists', return_value=fault == 'shared-memory'), \
+                mock.patch.object(fixture.os, 'access', return_value=fault == 'shared-memory'), \
+                mock.patch.object(fixture.os, 'statvfs', return_value=types.SimpleNamespace(f_blocks=0 if fault == 'tmpfs' else 64, f_frsize=4096, f_files=16384)), \
+                mock.patch.object(fixture.ctypes, 'CDLL', return_value=types.SimpleNamespace(statfs=statfs)), \
+                mock.patch.object(fixture.os, 'uname', return_value=types.SimpleNamespace(machine=CANARY if fault == 'architecture' else 'x86_64')), \
+                mock.patch.object(fixture.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(b'BAD\n' if fault == 'after-ready' else b'GO\n'))):
+            emitted = []
+            emit.side_effect = lambda value: emitted.append(json.loads(json.dumps(value)))
+            yield order, emit, native, emitted
+
+
+def fixture_entry(case):
+    with mock.patch.object(fixture.sys, 'argv', ['fixture', '--case', case]), \
+            mock.patch.object(fixture, 'run_case', side_effect=RuntimeError(CANARY)) as run_case:
+        try:
+            exec(ENTRY, fixture.__dict__)
+        except SystemExit as error:
+            assert error.code == 1
+        else:
+            raise AssertionError('failure fixture did not exit')
+        return run_case.call_count
+
+
 class InheritedAddressSpaceTests(unittest.TestCase):
     def test_invalid_inherited_pairs_fail_before_any_setter_ready_or_native_call(self):
         for pair in ((-1, -1), (LIMIT, -1), (-1, LIMIT), (LIMIT - 1, LIMIT - 1),
@@ -1059,37 +1216,68 @@ class InheritedAddressSpaceTests(unittest.TestCase):
             native.assert_not_called()
 
     def test_ready_reports_the_measured_inherited_pair_after_the_unchanged_mocked_gate(self):
-        values = {'memory.max': '2147483648', 'memory.swap.max': '0', 'pids.max': '128', 'cpu.max': '200000 100000'}
-        status = '\n'.join(name + ': 0' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')) + '\nNoNewPrivs: 1\n'
-        elf = b'\x7fELF\x02\x01\x01' + bytes(11) + b'\x3e\x00'
-        with tempfile.TemporaryDirectory(prefix='bootstrap-as-full-gate-fixture-') as temporary:
-            def read_text(path, *args, **kwargs):
-                if str(path) == '/proc/self/status':
-                    return status
-                if str(path) == '/proc/self/mountinfo':
-                    return '1 0 0:0 / / ro - ext4 root ro\n2 1 0:1 / ' + temporary + ' rw - tmpfs tmpfs rw\n'
-                return values[path.name]
-            def statfs(path, raw):
-                ctypes.cast(raw, ctypes.POINTER(ctypes.c_long))[0] = 0x01021994
-                return 0
-            with admission((LIMIT, LIMIT), lambda resource, value: None) as (order, emit, native), \
-                    mock.patch.object(fixture, 'ROOT', Path(temporary)), \
-                    mock.patch.object(fixture.os, 'environ', {}), \
-                    mock.patch.object(Path, 'read_text', read_text), \
-                    mock.patch.object(Path, 'lstat', return_value=types.SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0, st_nlink=1)), \
-                    mock.patch.object(Path, 'open', side_effect=lambda *args, **kwargs: io.BytesIO(elf)), \
-                    mock.patch.object(fixture.os.path, 'exists', return_value=False), \
-                    mock.patch.object(fixture.os, 'access', return_value=False), \
-                    mock.patch.object(fixture.os, 'statvfs', return_value=types.SimpleNamespace(f_blocks=64, f_frsize=4096, f_files=16384)), \
-                    mock.patch.object(fixture.ctypes, 'CDLL', return_value=types.SimpleNamespace(statfs=statfs)), \
-                    mock.patch.object(fixture.os, 'uname', return_value=types.SimpleNamespace(machine='x86_64')), \
-                    mock.patch.object(fixture.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(b'GO\n'))):
-                fixture.gate()
-                expected = [('get', fixture.resource.RLIMIT_AS)] + [('set', resource, (value, value)) for resource, value in fixture.LIMITS.values()]
-                self.assertEqual(order, expected)
-                emit.assert_called_once()
-                self.assertEqual(emit.call_args.args[0]['addressSpace'], PAIR)
-                self.assertTrue(emit.call_args.args[0]['pid1'])
+        with mocked_gate() as (order, emit, native, emitted):
+            fixture.gate()
+            expected = [('get', fixture.resource.RLIMIT_AS)] + [('set', resource, (value, value)) for resource, value in fixture.LIMITS.values()]
+            self.assertEqual(order, expected)
+            emit.assert_called_once()
+            self.assertEqual(emit.call_args.args[0]['addressSpace'], PAIR)
+            self.assertTrue(emit.call_args.args[0]['pid1'])
+            native.assert_not_called()
+
+    def test_actual_catch_publishes_each_admission_stage_without_ready_native_or_private_text(self):
+        stages = ('platform', 'inherited-as', 'resource-setters', 'environment-directories', 'process-mounts',
+                  'shared-memory', 'tmpfs', 'cgroup', 'architecture', 'package-binaries')
+        for stage in stages:
+            with self.subTest(stage=stage), mocked_gate(stage) as (order, emit, native, emitted):
+                self.assertEqual(fixture_entry('mechanical'), 0)
+                self.assertEqual(len(emitted), 1)
+                failure = emitted[0]
+                self.assertEqual((failure['event'], failure['case'], failure['ok'], failure['providerRequests']), ('result', 'mechanical', False, 0))
+                self.assertEqual(set(failure), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests', 'admissionFailure'})
+                self.assertEqual((failure['phase'], failure['reason']), ('mechanical', 'unsupported'))
+                expected = {'stage': stage}
+                if stage != 'platform':
+                    expected['addressSpace'] = {'soft': -1, 'hard': -1} if stage == 'inherited-as' else PAIR
+                self.assertEqual(failure['admissionFailure'], expected)
+                self.assertNotIn(CANARY, json.dumps(emitted))
+                setters = [entry for entry in order if entry[0] == 'set']
+                self.assertEqual(len(setters), 0 if stage in ('platform', 'inherited-as') else 1 if stage == 'resource-setters' else len(fixture.LIMITS))
+                native.assert_not_called()
+
+    def test_getter_failure_has_no_invented_pair_and_next_gate_resets_stale_admission(self):
+        with mocked_gate() as (order, emit, native, emitted):
+            with mock.patch.object(fixture.resource, 'getrlimit', side_effect=OSError(CANARY)):
+                self.assertEqual(fixture_entry('mechanical'), 0)
+            self.assertEqual(emitted[0]['admissionFailure'], {'stage': 'inherited-as'})
+            self.assertEqual(order, [])
+            native.assert_not_called()
+        with mocked_gate() as (order, emit, native, emitted):
+            fixture.gate()
+            self.assertEqual(fixture.ADMISSION['stage'], 'ready')
+        with mocked_gate('platform') as (order, emit, native, emitted):
+            self.assertEqual(fixture_entry('mechanical'), 0)
+            self.assertEqual(emitted[0]['admissionFailure'], {'stage': 'platform'})
+            self.assertNotIn('addressSpace', emitted[0]['admissionFailure'])
+
+    def test_nonmechanical_and_post_ready_failure_publication_remains_private(self):
+        for case in fixture.CASES:
+            if case == 'mechanical':
+                continue
+            with self.subTest(case=case), mocked_gate('platform') as (order, emit, native, emitted):
+                self.assertEqual(fixture_entry(case), 0)
+                self.assertNotIn('admissionFailure', emitted[0])
+                self.assertEqual(set(emitted[0]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
+                self.assertNotIn(CANARY, json.dumps(emitted))
+                self.assertEqual(order, [])
+                native.assert_not_called()
+        for fault, calls in (('after-ready', 0), (None, 1)):
+            with self.subTest(fault=fault), mocked_gate(fault) as (order, emit, native, emitted):
+                self.assertEqual(fixture_entry('mechanical'), calls)
+                self.assertEqual(emitted[0]['event'], 'ready')
+                self.assertNotIn('admissionFailure', emitted[-1])
+                self.assertEqual(set(emitted[-1]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
+                self.assertNotIn(CANARY, json.dumps(emitted))
                 native.assert_not_called()
 
     def test_host_rejects_malformed_pairs_before_go_and_retains_the_valid_mechanical_pair(self):
@@ -1129,7 +1317,7 @@ describe("controlled reviewer inherited address space", () => {
       cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
     });
-    expect(JSON.parse(result.stdout)).toEqual({ testCases: 5, actualResourceSetters: 0, nativeOrLauncherProcesses: 0 });
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 8, actualResourceSetters: 0, nativeOrLauncherProcesses: 0 });
   });
 
   it("uses the fixed prlimit exec form before Python with no shell, PID selector or fallback", async () => {

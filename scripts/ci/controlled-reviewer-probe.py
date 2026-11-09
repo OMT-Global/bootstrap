@@ -29,6 +29,9 @@ CLEANUP_DEADLINE = 0.0
 ENV = {}
 DOCKER = []
 EVIDENCE_PREFIX = 'CONTROLLED_REVIEWER_EVIDENCE '
+MECHANICAL_ADMISSION_STAGES = {'platform', 'inherited-as', 'resource-setters',
+                               'environment-directories', 'process-mounts', 'shared-memory',
+                               'tmpfs', 'cgroup', 'architecture', 'package-binaries'}
 PUBLIC_COMMAND_PHASES = {'image-history', 'mechanical-create', 'mechanical-start',
                          'mechanical-inspect-running', 'mechanical-inspect-stopped', 'mechanical-remove'}
 
@@ -183,6 +186,15 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None):
             require(type(data.get('ok')) is bool and type(data.get('providerRequests')) is int and 0 <= data['providerRequests'] <= 8, 'output')
             if diagnostic is not None:
                 diagnostic.update(stage='fixture-result', resultEventSeen=True, resultOk=data['ok'])
+                if not diagnostic['readyEventSeen'] and not data['ok'] and 'admissionFailure' in data:
+                    failure = data.get('admissionFailure')
+                    require(type(failure) is dict and set(failure) in ({'stage'}, {'stage', 'addressSpace'}) and
+                            type(failure.get('stage')) is str and failure['stage'] in MECHANICAL_ADMISSION_STAGES, 'output')
+                    if 'addressSpace' in failure:
+                        space = failure['addressSpace']
+                        require(type(space) is dict and set(space) == {'soft', 'hard'} and
+                                all(type(value) is int and -1 <= value < (1 << 64) for value in space.values()), 'output')
+                    diagnostic['fixtureAdmissionFailure'] = failure
         elif data.get('event') == 'detached':
             require(case == 'detached' and group and len((group / 'cgroup.procs').read_text().split()) >= 2)
             command([*DOCKER, 'kill', '--signal', 'KILL', name])

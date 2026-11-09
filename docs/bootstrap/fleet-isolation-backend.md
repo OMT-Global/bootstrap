@@ -19,12 +19,16 @@ The code-owned limits are explicit:
 | Source | 10,000 total file/directory entries, path depth 32, 512 MiB total |
 | Public Git bundle | 64 MiB |
 | Package / lock JSON | 1 MiB / 16 MiB |
+| Candidate branch | 4,096 ASCII bytes |
+| Copied input storage | 1,536 MiB; 65,536 inodes |
 | Dependency archives | 1,000 archives, 64 MiB each, 512 MiB total |
 | Execution | 15 minutes per phase, 60 minutes absolute per backend call; 2 CPUs, 4 GiB memory, 256 PIDs |
 | Phase temporary storage | 256 MiB; executable only in actual hook/check containers |
 | Storage keeper | 0.1 CPU, 64 MiB memory/swap, 16 PIDs, 1 MiB non-executable temporary filesystem |
 | Download | 30 seconds per archive |
 | Retained Docker output | 8 MiB across the run |
+
+The input volume retains the complete 512 MiB source, 512 MiB archive and 64 MiB bundle budgets together. Its generated manifest is finite: branch names have a 4,096-byte ASCII limit; other strings, paths and entry counts already have explicit limits. Even allowing six JSON bytes per input byte, 10,000 path descriptors plus the remaining fields fit below 256 MiB. At most 11,003 regular files add less than 44 MiB of 4 KiB page tails, including setup and manifest. Thus 1,536 MiB exceeds the full payload, generated data and page-rounding bound without reducing accepted source, path or archive budgets. The input-only inode limit covers at most 11,007 materialized objects including its root. Inode/dentry kernel memory and host/cgroup charging remain separate resources; this storage calculation does not prove a whole-run RAM bound. The actual kernel mount/options and complete pipeline remain part of required Linux acceptance.
 
 The cache, input, source, temporary, dependency, and build filesystems also have fixed bounds in the profile. An unsupported write location or exhausted bound fails rather than widening access. A trusted inert `-storage` container continuously holds all three Docker local-driver tmpfs volumes from before data copy through completion. It uses the same non-root, network-disabled, read-only-root, capability-free controls as the worker containers. The supervisor verifies its live state before preparation, before each phase, and before returning evidence; death or deadline expiry blocks success. The host watchdog and keeper timer share the same absolute deadline from backend entry.
 

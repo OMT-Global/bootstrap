@@ -532,8 +532,9 @@ fi
       for (const volume of volumes) {
         expect(volume.Driver).toBe("local"); expect(volume.Options.type).toBe("tmpfs"); expect(volume.Options.device).toBe("tmpfs");
         expect(volume.Options.o).toContain("nosuid,nodev");
-        const bytes = volume.Name.endsWith("-source") ? 1024 ** 3 : volume.Name.endsWith("-cache") ? 512 * 1024 ** 2 : 768 * 1024 ** 2;
+        const bytes = volume.Name.endsWith("-source") ? 1024 ** 3 : volume.Name.endsWith("-cache") ? 512 * 1024 ** 2 : 1536 * 1024 ** 2;
         expect(volume.Options.o).toContain(`size=${bytes}`);
+        expect(volume.Options.o.includes("nr_inodes=65536")).toBe(volume.Name.endsWith("-input"));
       }
       await dockerCommand(["kill", storage]);
       expect(JSON.parse(await dockerCommand(["inspect", "--format", "{{json .State}}", storage])).Running).toBe(false);

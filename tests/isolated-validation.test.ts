@@ -176,6 +176,30 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     expect(calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm")).toHaveLength(6);
     await expect(access(calls[0]!.cwd)).rejects.toThrow();
   }, 15_000);
+  it("provisions input storage for every admitted payload plus bounded metadata and page tails", async () => {
+    const fake = await fakeDocker(); await validateIsolatedNode(fixture());
+    const volumes = (await fake.calls()).filter(({ args }) => args[0] === "volume" && args[1] === "create");
+    const options = (suffix: string) => {
+      const args = volumes.find(({ args }) => args.at(-1).endsWith(suffix))!.args as string[];
+      return args.find((value) => value.startsWith("o=size="))!.slice(2).split(",");
+    };
+    const input = options("-input"), size = Number(input.find((value) => value.startsWith("size="))!.slice(5));
+    const payload = ISOLATION_LIMITS.sourceBytes + ISOLATION_LIMITS.downloadBytes + ISOLATION_LIMITS.bundleBytes;
+    // JSON escaping of every permitted path is covered; generated strings are separately bounded.
+    const fileDescriptor = Buffer.byteLength(JSON.stringify({ path: "\u0001".repeat(4096), mode: "100755", sha256: "a".repeat(64) })) + 1;
+    const metadata = ISOLATION_LIMITS.files * fileDescriptor + 1024 ** 2;
+    const regularFiles = ISOLATION_LIMITS.files + ISOLATION_LIMITS.archives + 3;
+    const pageTails = regularFiles * (4096 - 1);
+    expect(metadata).toBeLessThan(256 * 1024 ** 2);
+    expect(size).toBeGreaterThanOrEqual(payload + metadata + Buffer.byteLength(CONTAINER_SETUP) + pageTails);
+    expect(size).toBe(1536 * 1024 ** 2);
+    expect(input).toContain("nr_inodes=65536");
+    expect(65536).toBeGreaterThanOrEqual(ISOLATION_LIMITS.entries + ISOLATION_LIMITS.archives + 7);
+    expect(options("-source")).toContain(`size=${1024 ** 3}`);
+    expect(options("-cache")).toContain(`size=${512 * 1024 ** 2}`);
+    expect(options("-source").some((value) => value.startsWith("nr_inodes="))).toBe(false);
+    expect(options("-cache").some((value) => value.startsWith("nr_inodes="))).toBe(false);
+  });
   it("keeps all three bounded volumes mounted with inert, confined, finite-lived storage code", async () => {
     const fake = await fakeDocker(); await validateIsolatedNode(fixture());
     const calls = await fake.calls();

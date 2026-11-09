@@ -235,6 +235,13 @@ describe("frozen Node isolation profile", () => {
     expect(() => freezeNodeValidation({ ...fixture(), branch })).toThrow();
   });
 
+  it("bounds the generated manifest branch field at its ASCII byte boundary", () => {
+    const input = fixture(), branch = `codex/${"a".repeat(4096 - "codex/".length)}`;
+    expect(Buffer.byteLength(branch)).toBe(4096);
+    expect(freezeNodeValidation({ ...input, branch }).branch).toBe(branch);
+    expect(() => freezeNodeValidation({ ...input, branch: `${branch}a` })).toThrow();
+  });
+
   it("requires a valid public base and bounded DCO message", () => {
     for (const change of [{ profile: "arbitrary" }, { baseCommit: "HEAD" }, { baseBundle: Buffer.alloc(0) },
       { commitMessage: "missing DCO" }, { commitMessage: `Signed-off-by: Fixture <fixture@example.com>\n${"x".repeat(16_384)}` },

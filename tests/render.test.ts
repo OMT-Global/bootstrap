@@ -48,9 +48,9 @@ describe("renderManagedFiles", () => {
       const prWorkflow = files.find((file) => file.path === ".github/workflows/pr-fast-ci.yml");
       const extendedValidationWorkflow = files.find((file) => file.path === ".github/workflows/extended-validation.yml");
       expect(prWorkflow?.contents).toContain("name: CI Gate");
-      expect(prWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
+      expect(prWorkflow?.contents).toContain("dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3");
       expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
-      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
+      expect(extendedValidationWorkflow?.contents).toContain("dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3");
       expect(extendedValidationWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
       expect(prWorkflow?.contents).toContain("types: [opened, edited, synchronize, reopened, ready_for_review]");
       expect(prWorkflow?.contents).toContain("pull_request_review:");
@@ -290,13 +290,13 @@ describe("renderManagedFiles", () => {
     expect(workflow?.contents).toContain("permissions:\n  contents: read");
     expect(workflow?.contents).toContain("if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'\n    runs-on: ubuntu-latest");
     expect(workflow?.contents).toContain("dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0");
-    expect(workflow?.contents).toContain("codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4");
+    expect(workflow?.contents).toContain("codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2");
     expect(workflow?.contents).toContain("language: javascript-typescript");
     expect(workflow?.contents).toContain("build-mode: none");
     expect(workflow?.contents).toContain("runner: ubuntu-latest");
     expect(workflow?.contents).toContain("languages: ${{ matrix.language }}\n          build-mode: ${{ matrix.build-mode }}");
     expect(workflow?.contents).toContain('category: "/language:${{ matrix.language }}"');
-    expect(workflow?.contents).toContain("anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0");
+    expect(workflow?.contents).toContain("anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3");
     expect(workflow?.contents).toContain("if: github.event_name == 'push' || github.event_name == 'schedule'");
     expect(workflow?.contents).not.toContain("workflow_dispatch");
     expect(workflow?.contents).not.toContain("secrets.");
@@ -308,7 +308,7 @@ describe("renderManagedFiles", () => {
     expect(model?.contents).toContain("GitHub-hosted isolation");
     expect(model?.contents).toContain("private-vulnerability-reporting");
 
-    expect(workflow?.contents).toContain("sbom:\n    if: github.event_name == 'push' || github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write");
+    expect(workflow?.contents).toContain("sbom:\n    if: github.event_name == 'push' || github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read");
   });
 
   it("routes Swift CodeQL analysis to macOS autobuild", () => {
@@ -443,7 +443,7 @@ describe("renderManagedFiles", () => {
     expect(renderedManifest?.contents).toContain("version: 2");
     expect(renderedManifest?.contents).toContain("capabilities:");
     expect(renderedManifest?.contents).not.toContain("\nrelease:\n");
-    expect(prWorkflow?.contents).toContain("dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4");
+    expect(prWorkflow?.contents).toContain("dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3");
     expect(prWorkflow?.contents).not.toContain("dorny/paths-filter@v3");
     expect(claudeWorkflow?.contents).toContain("name: Claude Code");
     expect(claudeWorkflow?.contents).toContain("anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1");

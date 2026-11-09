@@ -645,7 +645,7 @@ describe("runConformance", () => {
     expect(baselineEvidence).toContain("CodeQL analysis category does not preserve per-language evidence");
     expect(baselineEvidence).toContain("SBOM inputs do not preserve the managed SPDX JSON artifact contract");
     expect(baselineEvidence).toContain("codeql lacks contents: read or security-events: write");
-    expect(baselineEvidence).toContain("sbom lacks contents: write");
+    expect(baselineEvidence).toContain("sbom lacks read-only contents permission");
     expect(baselineEvidence).toContain("codeql has no approved security executor boundary");
     expect(baselineEvidence).toContain("sbom has no approved security executor boundary");
     expect(forkEvidence).toContain("does not use GitHub-hosted isolation");
@@ -738,6 +738,56 @@ describe("runConformance", () => {
     expect(pinFailures.map((entry) => entry.evidence.join(" ")).join(" ")).not.toContain("ignored/example");
     expect(pinFailures.find((entry) => entry.evidence[0]?.includes("docker://alpine:latest"))?.remediation).toContain("64-character sha256 digest");
     expect(pinFailures.find((entry) => entry.evidence[0]?.includes("uses must be a string"))?.remediation).toContain("malformed uses value");
+  });
+
+  it.each([
+    ["OMT-Global", "flow", "OMT-Global/flow"],
+    ["OMT-Global", "flow", "omt-global/FLOW"],
+    ["omt-global", "FLOW", "OMT-Global/fLoW"]
+  ])("accepts immutable same-repository reusable workflows for %s/%s called as %s", async (owner, name, repository) => {
+    const directory = await fixtureDirectory();
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows"), { recursive: true }));
+    await writeFile(path.join(directory, ".github/workflows/ci.yml"), [
+      "jobs:",
+      "  trusted:",
+      `    uses: ${repository}/.github/workflows/trusted-flow.yml@92199ad3b33c4c1d3d0d70e1d5839bc799715e35`,
+      "  alternate:",
+      `    uses: ${repository}/.github/workflows/trusted-flow.yaml@${"a".repeat(40)}`,
+      "  third-party:",
+      "    steps:",
+      `      - uses: actions/checkout@${"b".repeat(40)} # v4`
+    ].join("\n"));
+    const manifest = normalizeManifest({ project: { name, owner }, archetype: { kind: "generic-empty" } });
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-ACTION-PIN-001")).toEqual([
+      expect.objectContaining({ severity: "pass", classification: "conformant" })
+    ]);
+  });
+
+  it.each([
+    ["mutable same-repository callee", "OMT-Global/flow/.github/workflows/trusted-flow.yml@main", "is not pinned to a 40-character SHA"],
+    ["mutable mixed-case same-repository callee", "omt-global/FLOW/.github/workflows/trusted-flow.yml@main", "is not pinned to a 40-character SHA"],
+    ["wrong-case workflow root", `omt-global/FLOW/.GITHUB/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["wrong-case workflow directory", `omt-global/FLOW/.github/WORKFLOWS/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["wrong-case workflow extension", `omt-global/FLOW/.github/workflows/trusted-flow.YML@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["other repository in the same organization", `OMT-Global/other/.github/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["repository prefix collision", `OMT-Global/flow-other/.github/workflows/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["same-repository action", `OMT-Global/flow/action@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["nested workflow path", `OMT-Global/flow/.github/workflows/nested/trusted-flow.yml@${"a".repeat(40)}`, "lacks readable release metadata"],
+    ["third-party action without metadata", `actions/checkout@${"a".repeat(40)}`, "lacks readable release metadata"]
+  ])("retains the action-pin guard for %s", async (_name, reference, diagnostic) => {
+    const directory = await fixtureDirectory();
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(path.join(directory, ".github/workflows"), { recursive: true }));
+    await writeFile(path.join(directory, ".github/workflows/ci.yml"), `jobs:\n  check:\n    uses: ${reference}\n`);
+    const manifest = normalizeManifest({ project: { name: "flow", owner: "OMT-Global" }, archetype: { kind: "generic-empty" } });
+
+    const report = await runConformance(manifest, directory);
+
+    expect(report.results.filter((entry) => entry.ruleId === "PRS-ACTION-PIN-001")).toEqual([
+      expect.objectContaining({ severity: "blocking", evidence: [expect.stringContaining(`${reference} ${diagnostic}`)] })
+    ]);
   });
 
   it("rejects a symlinked workflow root without reading outside the repository", async () => {

@@ -41,7 +41,12 @@ export const githubCapabilitySnapshotSchema = z.object({
     status: z.enum(["supported", "unsupported", "misconfigured"]),
     evidence: capabilityReportTextSchema,
     remediation: capabilityReportTextSchema,
-    dependencyReviewEnabled: z.boolean().optional()
+    dependencyReviewEnabled: z.boolean().optional(),
+    defaultSetup: z.object({
+      state: z.enum(["configured", "not-configured"]),
+      languages: z.array(z.enum(["actions", "javascript-typescript", "python", "ruby", "c-cpp", "csharp", "rust", "go", "swift"])),
+      githubHosted: z.boolean()
+    }).strict().optional()
   }))
 }).superRefine((snapshot, context) => {
   const seen = new Set<string>();
@@ -55,6 +60,9 @@ export const githubCapabilitySnapshotSchema = z.object({
         path: ["observations", index, "dependencyReviewEnabled"],
         message: "dependencyReviewEnabled is valid only for the dependency-graph observation."
       });
+    }
+    if (observation.defaultSetup !== undefined && observation.control !== "code-scanning") {
+      context.addIssue({ code: "custom", path: ["observations", index, "defaultSetup"], message: "defaultSetup is valid only for the code-scanning observation." });
     }
     seen.add(observation.control);
   });
@@ -661,6 +669,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 
     const root = asYamlNode(document.contents);
     const jobs = resolveYamlNode(yamlMappingEntry(root, "jobs", document)?.valueNode, document);
+    const advancedCodeql = manifest.ci.codeqlSetup !== "default";
     const requiredJobActionSequences = [
       {
         job: "dependency-review",
@@ -684,7 +693,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
           { prefix: "anchore/sbom-action@", requiredInputs: ["path", "format", "artifact-name", "upload-release-assets"], optionalInputs: ["upload-artifact"] }
         ]
       }
-    ];
+    ].filter((requirement) => advancedCodeql || requirement.job !== "codeql");
     const requiredJobNames = new Set(requiredJobActionSequences.map((requirement) => requirement.job));
     for (const requirement of requiredJobActionSequences) {
       if (!workflowValid || !jobHasExactActionSequence(jobs, requirement.job, requirement.actions, document)) {
@@ -765,27 +774,27 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
     const codeqlBuildModeMatch = includedCodeqlMatrix
       ? codeqlBuildMode === "${{ matrix.build-mode }}"
       : codeqlBuildMode === "none";
-    if (!codeqlLanguagesMatch || codeqlMatrixHasUnexpectedAxes ||
-      jobActionField(jobs, "codeql", "github/codeql-action/init@", "languages", document) !== "${{ matrix.language }}") {
+    if (advancedCodeql && (!codeqlLanguagesMatch || codeqlMatrixHasUnexpectedAxes ||
+      jobActionField(jobs, "codeql", "github/codeql-action/init@", "languages", document) !== "${{ matrix.language }}")) {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL languages do not match ci.codeqlLanguages`,
         remediation: "Configure the repository CodeQL languages explicitly and restore the managed per-language matrix and init step."
       });
     }
-    if (!codeqlBuildModeMatch) {
+    if (advancedCodeql && !codeqlBuildModeMatch) {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL build modes do not match the managed per-language contract`,
         remediation: "Restore build-mode: none for no-build languages and autobuild for Go or Swift."
       });
     }
-    if (jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "category", document) !== "/language:${{ matrix.language }}") {
+    if (advancedCodeql && jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "category", document) !== "/language:${{ matrix.language }}") {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL analysis category does not preserve per-language evidence`,
         remediation: "Restore the managed /language:${{ matrix.language }} analysis category."
       });
     }
     const codeqlUpload = jobActionField(jobs, "codeql", "github/codeql-action/analyze@", "upload", document);
-    if (codeqlUpload !== undefined && codeqlUpload !== true) {
+    if (advancedCodeql && codeqlUpload !== undefined && codeqlUpload !== true) {
       baselineFailures.push({
         evidence: `${workflowPath} CodeQL analysis upload is disabled`,
         remediation: "Remove upload: false from the managed CodeQL analyze step so default-branch results remain verifiable."
@@ -859,7 +868,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
     if (!mappingPermissionsAreReadOnly(dependencyPermissions, document)) {
       forkFailures.push({ evidence: "dependency-review job permissions are not read-only", remediation: "Restrict the pull-request job to read-only contents and pull-request permissions." });
     }
-    for (const trustedJob of ["codeql", "sbom"]) {
+    for (const trustedJob of advancedCodeql ? ["codeql", "sbom"] : ["sbom"]) {
       if (jobCondition(jobs, trustedJob, document) !== trustedSecurityJobCondition) {
         forkFailures.push({ evidence: `${trustedJob} is not restricted to approved trusted events`, remediation: `Restrict ${trustedJob} to push and schedule events.` });
       }
@@ -868,12 +877,12 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       }
     }
     const codeqlPermissions = jobField(jobs, "codeql", "permissions", document);
-    if (!mappingHasPermission(codeqlPermissions, "contents", "read", document) || !mappingHasPermission(codeqlPermissions, "security-events", "write", document)) {
+    if (advancedCodeql && (!mappingHasPermission(codeqlPermissions, "contents", "read", document) || !mappingHasPermission(codeqlPermissions, "security-events", "write", document))) {
       baselineFailures.push({ evidence: "codeql lacks contents: read or security-events: write", remediation: "Grant the trusted CodeQL job contents: read and security-events: write so it can upload analysis." });
     }
     const sbomPermissions = jobField(jobs, "sbom", "permissions", document);
-    if (!mappingHasPermission(sbomPermissions, "contents", "write", document)) {
-      baselineFailures.push({ evidence: "sbom lacks contents: write", remediation: "Grant the trusted SBOM job contents: write so the pinned action can upload its workflow artifact." });
+    if (!mappingHasPermission(sbomPermissions, "contents", "read", document) || !mappingPermissionsAreReadOnly(sbomPermissions, document)) {
+      baselineFailures.push({ evidence: "sbom lacks read-only contents permission", remediation: "Grant only contents: read; the pinned SBOM action uploads an Actions artifact without release or dependency-snapshot writes." });
     }
     if (isMap(jobs)) {
       for (const pair of jobs.items) {
@@ -914,6 +923,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 async function actionPinResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
   const shaPattern = /^[0-9a-f]{40}$/;
   const inventory = await workflowFiles(targetDir);
+  const sameRepositorySlug = `${manifest.project.owner}/${manifest.project.name}`.toLowerCase();
   const internalWorkflowRepos = new Set([
     manifest.release.reusableWorkflowRepo,
     manifest.ci.aiAttestation.reusableWorkflowRepo
@@ -976,7 +986,11 @@ async function actionPinResults(manifest: BootstrapManifest, targetDir: string):
       const action = reference.value.slice(0, separator);
       const ref = reference.value.slice(separator + 1);
       if (action.startsWith("./")) continue;
-      const isInternalWorkflow = [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
+      const actionSegments = action.split("/");
+      const isSameRepositoryWorkflow = actionSegments.slice(0, 2).join("/").toLowerCase() === sameRepositorySlug &&
+        /^\.github\/workflows\/[^/]+\.ya?ml$/.test(actionSegments.slice(2).join("/"));
+      const isInternalWorkflow = isSameRepositoryWorkflow ||
+        [...internalWorkflowRepos].some((repo) => action === repo || action.startsWith(`${repo}/`));
       checked += 1;
       if (!shaPattern.test(ref)) {
         addFailure(
@@ -1048,6 +1062,33 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
   results.push(...(await publicSecurityResults(manifest, targetDir)).map((entry) => applyWaiver(entry, securityBaselineWaiver)));
 
   const githubCapabilities = githubCapabilitySnapshotSchema.parse(options.githubCapabilities ?? { schemaVersion: 1, observations: [] });
+  if (manifest.project.visibility === "public") {
+    const scanning = githubCapabilities.observations.find((entry) => entry.control === "code-scanning");
+    const setup = scanning?.defaultSetup;
+    const usesDefaultSetup = manifest.ci.codeqlSetup === "default";
+    if (usesDefaultSetup || setup?.state === "configured") {
+      const missingProof = usesDefaultSetup && setup === undefined &&
+        (scanning === undefined || scanning.status === "supported");
+      const validDefaultSetup = usesDefaultSetup && scanning?.status === "supported" &&
+        setup?.state === "configured" && setup.githubHosted && manifest.ci.codeqlLanguages.length > 0 &&
+        manifest.ci.codeqlLanguages.every((language) => setup.languages.includes(language));
+      const setupResult = result(
+        "PRS-CODEQL-SETUP-001",
+        validDefaultSetup ? "pass" : "blocking",
+        [validDefaultSetup
+          ? `CodeQL default setup: authorized GitHub-hosted analyzed coverage for ${manifest.ci.codeqlLanguages.join(", ")}`
+          : !usesDefaultSetup
+            ? "CodeQL advanced mode conflicts with observed configured default setup; GitHub rejects advanced uploads."
+            : missingProof
+              ? "CodeQL default setup: no authorized configured, analyzed-language, and GitHub-hosted execution proof provided."
+              : "CodeQL default setup: observed state, successful language coverage, status, or hosted execution does not satisfy the declared contract."],
+        "Verify configured default setup, successful analysis for every declared language, and actual GitHub-hosted execution; record that authorized observation without changing modes implicitly.",
+        validDefaultSetup ? "conformant" : missingProof ? "unverified" : "misconfigured"
+      );
+      // Replacement proof and mode consistency are separate from capability availability exceptions.
+      results.push(setupResult);
+    }
+  }
   if (manifest.project.visibility === "public") {
     const observedControls = new Set(githubCapabilities.observations.map((entry) => entry.control));
     for (const control of publicSecurityCapabilityControls) {

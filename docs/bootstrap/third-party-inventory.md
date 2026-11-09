@@ -52,3 +52,12 @@ The [byte-identical MIT adoption record](bootstrap-license-adoption-proposal.md)
 ## Independent Stage A refresh, 2026-11-09
 
 The package and lock from #214 are being validated independently against main `334272f8fb2d9e1b0e3de0739b3f44fc7c90eeb7`. The Stage A installed-package counts, rehashed tarballs and audit results above remain timestamped historical observations; they are not fresh installation, current vulnerability-absence or new legal-ownership claims. The replacement PR records its own validation and audit results. This refresh preserves all production ranges, production lock records, existing legal outputs and the original inventory text; it does not import ownership state or include the unmerged release-source component.
+
+
+## Independent Stage B development toolchain
+
+This Stage B source starts at accepted main `d68051b9` (the PR230 tree), preserving the entire preceding inventory and PR230 addenda. The exact original PR216 package and complete lock select Vitest 4.1.12 and Vite 7.3.8, retain esbuild 0.28.1/PostCSS 8.5.23/NanoID 3.3.18/source-map-js 1.2.2, and remove Tinypool/vite-node. The full lock contains 106 entries including the root. All five runtime ranges, eight complete nonroot production records/integrities, package scripts/bin/engines, unrelated development roots, MIT bytes, legal templates and ten existing production notice records remain unchanged.
+
+Development distributions remain separate from the production notice inventory and the original owner confirmation. If those distributions are shipped, preserve complete upstream Vitest/Vite/Rollup license and component notices and TypeScript's ThirdPartyNoticeText.txt; a package-level MIT label does not replace bundled notices. Original PR216 at `b13e1c0d841dd6d468be3433196591d3e9f21991` records its earlier installed legal files, tarballs and graph. Those observations, including its 55-package count and zero full/runtime audits, are historical and are not fresh installation or audit evidence for this independent source.
+
+Fresh fixed-lock installation, graph, ordinary compatibility, complete-diff review and full/production audit results belong to the replacement PR evidence at its actual head. Report later residual findings explicitly; neither the old zero-audit result nor this version selection establishes vulnerability absence or completes the broader issue 63 acceptance. The approved ownership boundary and production attribution are not expanded by this development-toolchain stage.

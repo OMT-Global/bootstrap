@@ -50,6 +50,33 @@ function extra(input: NodeValidationInput, entry: IsolatedSourceFile): void { (i
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("frozen Node isolation profile", () => {
+  it.each(["matching", "conflicting"])("rejects a root shrinkwrap with a %s graph before execution", (graph) => {
+    const input = fixture(); dependency(input);
+    const shrinkwrap = contents(input, "package-lock.json");
+    if (graph === "conflicting") shrinkwrap.packages["node_modules/example"].resolved = "https://registry.npmjs.org/other/-/other-2.0.0.tgz";
+    extra(input, file("npm-shrinkwrap.json", JSON.stringify(shrinkwrap)));
+    expect(() => freezeNodeValidation(input)).toThrow("Root npm shrinkwrap is unsupported.");
+  });
+
+  it("rejects root shrinkwrap before parsing the otherwise selected package-lock", () => {
+    const input = fixture();
+    extra(input, file("npm-shrinkwrap.json", "{}"));
+    const index = input.files.findIndex((entry) => entry.path === "package-lock.json");
+    (input.files as IsolatedSourceFile[])[index] = file("package-lock.json", "not JSON");
+    expect(() => freezeNodeValidation(input)).toThrow("Root npm shrinkwrap is unsupported.");
+  });
+
+  it("keeps the package-lock graph and an ordinary nested shrinkwrap file intact", () => {
+    const input = fixture(); dependency(input);
+    const selected = freezeNodeValidation(input);
+    expect(selected.archives).toEqual([{ url: archiveUrl, integrity }]);
+    const nested = file("test-fixtures/npm-shrinkwrap.json", "opaque nested source, not a root install lock");
+    extra(input, nested);
+    const frozen = freezeNodeValidation(input);
+    expect(frozen.archives).toEqual(selected.archives);
+    expect(frozen.files.find((entry) => entry.path === nested.path)?.bytes).toEqual(nested.bytes);
+  });
+
   it("distinguishes prepared-hook and final-check evidence requests", () => {
     const prepared = fixture();
     expect(freezeNodeValidation(prepared)).toMatchObject({ phase: "prepared-hook" });
@@ -233,6 +260,13 @@ describe("frozen Node isolation profile", () => {
 
   it.each(["main", "codex/a..b", "codex/a//b", "codex/a.lock", "codex/a.", "codex/a@{b", "codex/a\nother"])("rejects unsupported branch %j", (branch) => {
     expect(() => freezeNodeValidation({ ...fixture(), branch })).toThrow();
+  });
+
+  it("bounds the generated manifest branch field at its ASCII byte boundary", () => {
+    const input = fixture(), branch = `codex/${"a".repeat(4096 - "codex/".length)}`;
+    expect(Buffer.byteLength(branch)).toBe(4096);
+    expect(freezeNodeValidation({ ...input, branch }).branch).toBe(branch);
+    expect(() => freezeNodeValidation({ ...input, branch: `${branch}a` })).toThrow();
   });
 
   it("requires a valid public base and bounded DCO message", () => {

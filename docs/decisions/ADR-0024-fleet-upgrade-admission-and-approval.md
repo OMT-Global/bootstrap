@@ -1,6 +1,6 @@
 # ADR-0024: Fleet upgrade admission and offline approval authentication
 
-Status: Accepted (admission and authentication prerequisite only)
+Status: Accepted
 
 - Date: 2026-11-09
 - Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62)

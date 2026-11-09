@@ -421,6 +421,7 @@ const manifestSchema = z.object({
         .optional(),
       classMigration: z
         .object({
+          from: z.enum(["application", "tooling"]).optional(),
           target: z.enum(["cli", "library", "service", "infrastructure", "github-action", "specification", "documentation"])
         })
         .optional(),
@@ -687,6 +688,16 @@ function mergeAdditionalWorkflows(
 function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapManifest["repo"] {
   const legacyClass = repo?.class === "application" || repo?.class === "tooling" ? repo.class : undefined;
   const canonicalClass = repo?.class && !legacyClass ? (repo.class as RepoClass) : undefined;
+  const migration = repo?.classMigration;
+  if (legacyClass && migration?.from && migration.from !== legacyClass) {
+    throw new Error("repo.classMigration.from must match the declared legacy repository class.");
+  }
+  if (canonicalClass && migration && (!migration.from || migration.target !== canonicalClass)) {
+    throw new Error("Canonical repo.classMigration requires its legacy from class and a target matching repo.class.");
+  }
+  if (migration && !legacyClass && !canonicalClass) {
+    throw new Error("repo.classMigration requires an explicit repository class.");
+  }
   if (legacyClass && !repo?.classMigration) {
     throw new Error(
       `Legacy repository class \"${legacyClass}\" requires repo.classMigration.target; choose its canonical Flow repository class explicitly.`
@@ -700,7 +711,10 @@ function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapM
           classMigration: { from: legacyClass, target: repo?.classMigration?.target as RepoClass }
         }
       : canonicalClass
-        ? { class: canonicalClass }
+        ? {
+            class: canonicalClass,
+            ...(migration?.from ? { classMigration: { from: migration.from, target: migration.target } } : {})
+          }
         : {}),
     managedPaths: repo?.managedPaths ?? [],
     ...(repo?.docs
@@ -1159,9 +1173,15 @@ function serializableManifest(manifest: BootstrapManifest): BootstrapManifest | 
 }
 
 export function stringifyManifest(manifest: BootstrapManifest): string {
-  return YAML.stringify(serializableManifest(manifest), {
-    lineWidth: 100
+  const document = new YAML.Document(serializableManifest(manifest));
+  YAML.visit(document, {
+    Scalar(_key, scalar) {
+      if (typeof scalar.value === "string" && scalar.value.includes("\t")) {
+        scalar.type = YAML.Scalar.QUOTE_DOUBLE;
+      }
+    }
   });
+  return document.toString({ lineWidth: 100 });
 }
 
 export function resolveManifestPath(input?: string): string {

@@ -207,20 +207,50 @@ function inventory(payload: Data): Inventory {
   if (roots.length + files.length > 10000) invalid();
   ordered(files.map(file => `${file.rootId}\0${file.path}`));
   const byPath = new Map(files.map(file => [`${file.rootId}\0${file.path}`, file]));
+  const directories = new Set(roots.map(root => `${root.id}\0`));
   for (const file of files) {
     const parts = (file.path as string).split("/");
-    if (parts.slice(0, -1).some((_, index) => byPath.has(`${file.rootId}\0${parts.slice(0, index + 1).join("/")}`))) invalid();
-    let current = file;
-    const seen = new Set<Data>();
-    for (let links = 0; current.kind === "symlink"; links++) {
-      if (links >= 8 || seen.has(current)) invalid();
-      seen.add(current);
-      const target = path.posix.normalize(path.posix.join(path.posix.dirname(current.path as string), current.target as string));
-      if (target === ".." || target.startsWith("../")) invalid();
-      const next = byPath.get(`${current.rootId}\0${target}`);
-      if (!next) invalid();
-      current = next;
+    for (let end = 1; end < parts.length; end++) {
+      const key = `${file.rootId}\0${parts.slice(0, end).join("/")}`;
+      if (byPath.has(key)) invalid();
+      directories.add(key);
     }
+  }
+  for (const file of files) {
+    if (file.kind !== "symlink") continue;
+    const parent = (file.path as string).split("/").slice(0, -1);
+    let pending = (file.target as string).split("/");
+    const seen = new Set<Data>([file]);
+    let links = 1;
+    let terminal: Data | undefined;
+    for (let index = 0; index < pending.length; index++) {
+      // Even '.'/'..'/empty separators traverse the current directory first.
+      if (!directories.has(`${file.rootId}\0${parent.join("/")}`)) invalid();
+      const component = pending[index]!;
+      if (component === "" || component === ".") continue;
+      if (component === "..") {
+        if (!parent.length) invalid();
+        parent.pop();
+        continue;
+      }
+      const name = [...parent, component].join("/");
+      const key = `${file.rootId}\0${name}`;
+      const next = byPath.get(key);
+      if (next?.kind === "symlink") {
+        if (links >= 8 || seen.has(next)) invalid();
+        seen.add(next);
+        links++;
+        pending = [...(next.target as string).split("/"), ...pending.slice(index + 1)];
+        index = -1;
+        continue;
+      }
+      parent.push(component);
+      if (next?.kind === "regular") {
+        if (index !== pending.length - 1) invalid();
+        terminal = next;
+      } else if (!directories.has(key)) invalid();
+    }
+    if (!terminal) invalid();
   }
   const slices = roots.map(root => ({
     root: { id: root.id, purpose: root.purpose, path: root.path },

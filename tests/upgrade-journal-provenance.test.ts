@@ -15,6 +15,25 @@ async function fixture(options: { sameKey?: boolean; disabled?: boolean; empty?:
   const h = await copyHarness(options.empty ? [] : approvers.anchors); harnesses.push(h);
   return { h, approvers, data: await approvalFixture(h, approvers) };
 }
+async function signedDependencyLink(target: string, options: {
+  links?: readonly (readonly [string, string])[]; regularPaths?: readonly string[];
+} = {}) {
+  const { h, data } = await fixture();
+  for (const [linkPath, linkTarget] of options.links ?? []) data.payload.files.push({
+    rootId: "runtime", path: linkPath, kind: "symlink", mode: 0o777, target: linkTarget,
+  });
+  for (const filePath of options.regularPaths ?? []) data.payload.files.push({
+    rootId: "runtime", path: filePath, kind: "regular", mode: 0o644, size: 6, sha256: sha("nested"),
+  });
+  data.payload.files.push({ rootId: "runtime", path: "sub/package-link", kind: "symlink", mode: 0o777, target });
+  data.payload.files.sort((left, right) => {
+    const a = `${left.rootId}\0${left.path}`, b = `${right.rootId}\0${right.path}`;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  // Rebind every inventory/evidence digest and produce both real Ed25519 signatures.
+  await data.persist();
+  return h;
+}
 async function outcome(h: CopyHarness) {
   return h.run<{ kind: string; reason?: string }>(`
     const p=await import(${moduleImport(h, "upgrade-journal-provenance")});
@@ -111,6 +130,35 @@ describe("fixed offline approval authentication facts", () => {
     data.payload.files.push({ rootId: "runtime", path: "sub/package-link", kind: "symlink", mode: 0o777, target: "../package.json" });
     await data.persist();
     expect(await outcome(h)).toEqual({ kind: "authenticated" });
+  });
+
+  it.each([
+    ["regular-before-parent", "../package.json/../package.json", []],
+    ["regular-before-dot", "../package.json/.", []],
+    ["regular-trailing-separator", "../package.json/", []],
+    ["missing-before-parent", "../missing/../package.json", []],
+    ["intermediate-link-before-parent", "alias/../../package.json", [["sub/alias", "../package.json"]]],
+    ["intermediate-link-before-dot", "alias/.", [["sub/alias", "../package.json"]]],
+    ["intermediate-link-escape", "alias/../../package.json", [["sub/alias", "../../outside"]]],
+    ["component-self-cycle", "alias", [["sub/alias", "alias/../../package.json"]]],
+    ["component-mutual-cycle", "first", [["sub/first", "second/../../package.json"], ["sub/second", "first/../../package.json"]]],
+  ] as const)("rejects coherently rebound and signed link traversal %s", async (_fault, target, links) => {
+    const h = await signedDependencyLink(target, { links });
+    expect(await outcome(h)).toEqual({ kind: "unsupported", reason: "invalid-approval" });
+  });
+
+  it.each(["../nested/../package.json", "../nested//./../package.json"])("accepts signed directory traversal backed by a real inventoried descendant: %s", async (target) => {
+    const h = await signedDependencyLink(target, { regularPaths: ["nested/leaf.json"] });
+    expect(await outcome(h)).toEqual({ kind: "authenticated" });
+  });
+
+  it.each([8, 9])("preserves the exact signed link expansion boundary at %i links", async (count) => {
+    const links: [string, string][] = Array.from({ length: count - 1 }, (_, index) => [
+      `sub/hop-${index}`, index + 1 < count - 1 ? `hop-${index + 1}` : "../package.json",
+    ]);
+    const h = await signedDependencyLink("hop-0", { links });
+    expect(await outcome(h)).toEqual(count === 8
+      ? { kind: "authenticated" } : { kind: "unsupported", reason: "invalid-approval" });
   });
 
   it.each(["source", "startup", "storage", "digest", "body-size"] as const)("rejects exact evidence mismatch %s", async (fault) => {

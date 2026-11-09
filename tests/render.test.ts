@@ -16,6 +16,32 @@ function autoMergeEvidenceLines(body: string): string {
 }
 
 describe("renderManagedFiles", () => {
+  it("retains explicit release protection in the rendered manifest without changing other assets", () => {
+    const raw = {
+      project: { name: "release-example", owner: "acme", defaultBranch: "trunk" },
+      archetype: { kind: "generic-empty" },
+      github: { reviewers: ["unrelated-default-reviewer"] }
+    };
+    const policy = {
+      reviewers: ["release-reviewer", "acme/release-team"],
+      requireApproval: true,
+      preventSelfReview: true,
+      branches: ["trunk"]
+    };
+    const plainFiles = renderManagedFiles(normalizeManifest(raw as never));
+    const configuredFiles = renderManagedFiles(normalizeManifest({
+      ...raw,
+      environments: { "release-publish": policy }
+    } as never));
+    const rendered = configuredFiles.find((file) => file.path === "project.bootstrap.yaml");
+    expect(rendered).toBeDefined();
+    const document = parseDocument(rendered!.contents);
+    expect(document.errors).toEqual([]);
+    expect(document.toJSON().environments["release-publish"]).toEqual(policy);
+    expect(configuredFiles.filter((file) => file.path !== "project.bootstrap.yaml"))
+      .toEqual(plainFiles.filter((file) => file.path !== "project.bootstrap.yaml"));
+  });
+
   const archetypes = ["nextjs-web", "node-ts-service", "python-service", "generic-empty"] as const;
 
   for (const kind of archetypes) {

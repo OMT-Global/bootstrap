@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { applyGitHub, planGitHub } from "../src/github/provision.js";
+import { GitHubClient } from "../src/github/client.js";
 import { DEFAULT_ISSUE_LABELS, normalizeManifest } from "../src/manifest.js";
+import type { CommandResult, CommandRunner } from "../src/lib/process.js";
 
 const PUBLIC_REPO_ENDPOINT = "/repos/acme/example";
 const CODE_SCANNING_ENDPOINT = `${PUBLIC_REPO_ENDPOINT}/code-scanning/analyses?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100`;
@@ -44,6 +46,27 @@ function publicPlanClient(
 }
 
 describe("GitHub provisioning", () => {
+  it("includes optional release-publish in the static plan without claiming live protection", async () => {
+    const manifest = normalizeManifest({
+      project: { name: "example", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      environments: {
+        "release-publish": {
+          reviewers: ["alice"], requireApproval: true, preventSelfReview: true, branches: ["main"]
+        }
+      }
+    } as never);
+    const actions = await planGitHub(manifest, {
+      isAvailable: async () => false,
+      isAuthenticated: async () => false
+    } as never);
+    const release = actions.find((action) => action.id === "environment-release-publish");
+    expect(release).toBeDefined();
+    expect(release?.description).toContain("create or verify");
+    expect(release?.description).toContain("protected branches");
+    expect(release?.description).toContain("unverified");
+  });
+
   it("produces a static plan when gh is unavailable", async () => {
     const manifest = normalizeManifest({
       project: {
@@ -737,4 +760,298 @@ describe("GitHub provisioning", () => {
       }
     ]);
   });
+});
+
+const RELEASE_ENDPOINT = "/repos/acme/example/environments/release-publish";
+const BRANCH_ENDPOINT = "/repos/acme/example/branches/main";
+type ReleaseCall = { method: string; endpoint: string; payload?: unknown };
+
+function releaseManifest(reviewers = ["alice"]) {
+  return normalizeManifest({
+    project: { name: "example", owner: "acme", visibility: "private" },
+    archetype: { kind: "generic-empty" },
+    github: { createRepo: false, reviewers: [] },
+    environments: {
+      "release-publish": { reviewers, requireApproval: true, preventSelfReview: true, branches: ["main"] }
+    }
+  } as never);
+}
+
+function releaseRemote(reviewers = [{ type: "User", reviewer: { id: 7 } }]) {
+  return {
+    name: "release-publish",
+    protection_rules: [{ type: "required_reviewers", prevent_self_review: true, reviewers }],
+    deployment_branch_policy: { protected_branches: true, custom_branch_policies: false }
+  };
+}
+
+const protectedBranch = { name: "main", protected: true };
+const classicProtection = { url: `https://api.github.com${BRANCH_ENDPOINT}/protection`, enforce_admins: { enabled: true } };
+
+function releaseClient(options: {
+  environments?: unknown[];
+  branch?: unknown;
+  protection?: unknown;
+  user?: unknown;
+  branchRead?: (read: number) => unknown;
+  readError?: Error;
+  putError?: Error;
+} = {}) {
+  const calls: ReleaseCall[] = [];
+  let reads = 0;
+  let branchReads = 0;
+  const client = {
+    isAvailable: async () => true,
+    isAuthenticated: async () => true,
+    getReleaseEnvironment: async () => {
+      calls.push({ method: "GET", endpoint: RELEASE_ENDPOINT });
+      if (options.readError) throw options.readError;
+      return (options.environments ?? [undefined, releaseRemote()])[reads++];
+    },
+    tryApi: async (method: string, endpoint: string) => {
+      calls.push({ method, endpoint });
+      return endpoint === PUBLIC_REPO_ENDPOINT ? { ...publicRepo(), private: true, visibility: "private" } : undefined;
+    },
+    api: async (method: string, endpoint: string, payload?: unknown) => {
+      calls.push({ method, endpoint, payload });
+      if (endpoint === "/users/acme") return { login: "acme", type: "User" };
+      if (endpoint.startsWith("/users/")) return "user" in options ? options.user : { id: 7, type: "User" };
+      if (endpoint.startsWith("/orgs/") && endpoint.includes("/teams/")) return { id: 7 };
+      if (method === "GET" && endpoint === BRANCH_ENDPOINT) {
+        return options.branchRead ? options.branchRead(++branchReads) : "branch" in options ? options.branch : protectedBranch;
+      }
+      if (method === "GET" && endpoint === `${BRANCH_ENDPOINT}/protection`) {
+        return "protection" in options ? options.protection : classicProtection;
+      }
+      if (method === "PUT" && endpoint === RELEASE_ENDPOINT && options.putError) throw options.putError;
+      return {};
+    }
+  };
+  return { calls, client };
+}
+
+function releaseWrites(calls: ReleaseCall[]) {
+  return calls.filter((call) => call.endpoint === RELEASE_ENDPOINT && call.method !== "GET");
+}
+
+describe("strict optional release-publish provisioning", () => {
+  it("adds a read-only authenticated plan with the protected-branches and broad-writer limits", async () => {
+    const { calls, client } = releaseClient();
+    const actions = await planGitHub(releaseManifest(), client as never);
+    const release = actions.find((action) => action.id === "environment-release-publish");
+    expect(release?.description).toContain("protected branches");
+    expect(release?.description).toContain("unverified");
+    expect(release?.description).toContain("Administrators");
+    expect(release?.description).toContain("broad writer");
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+    expect(calls.some((call) => call.endpoint === RELEASE_ENDPOINT)).toBe(false);
+  });
+
+  it("creates the absent target once with full protections and verifies it", async () => {
+    const { calls, client } = releaseClient();
+    const actions = await applyGitHub(releaseManifest(), client as never);
+    expect(releaseWrites(calls)).toEqual([{
+      method: "PUT", endpoint: RELEASE_ENDPOINT,
+      payload: {
+        wait_timer: 0, reviewers: [{ type: "User", id: 7 }], prevent_self_review: true,
+        deployment_branch_policy: { protected_branches: true, custom_branch_policies: false }
+      }
+    }]);
+    expect(calls.filter((call) => call.endpoint === BRANCH_ENDPOINT && call.method === "GET")).toHaveLength(2);
+    expect(actions.find((action) => action.id === "environment-release-publish")?.description).toContain("at readback");
+    const identityIndex = calls.findIndex((call) => call.endpoint === "/users/alice");
+    expect(calls.findIndex((call) => call.method !== "GET")).toBeGreaterThan(identityIndex);
+  });
+
+  it("does not rewrite matching existing policy and preserves additional protections", async () => {
+    const existing = releaseRemote();
+    const value = { ...existing, protection_rules: [...existing.protection_rules, { type: "wait_timer", wait_timer: 30 }] };
+    const { calls, client } = releaseClient({ environments: [value] });
+    const actions = await applyGitHub(releaseManifest(), client as never);
+    expect(releaseWrites(calls)).toEqual([]);
+    expect(value.protection_rules).toHaveLength(2);
+    expect(actions.find((action) => action.id === "environment-release-publish")?.description).toContain("without rewriting");
+    expect(actions.find((action) => action.id === "environment-release-publish")?.description).toContain("outside this capability");
+  });
+
+  it("compares typed identities independently of order", async () => {
+    const existing = releaseRemote([{ type: "Team", reviewer: { id: 7 } }, { type: "User", reviewer: { id: 7 } }]);
+    const { calls, client } = releaseClient({ environments: [existing] });
+    await applyGitHub(releaseManifest(["alice", "acme/release"]), client as never);
+    expect(releaseWrites(calls)).toEqual([]);
+    expect(calls.some((call) => call.endpoint === "/orgs/acme/teams/release")).toBe(true);
+  });
+
+  for (const invalid of [null, {}, { reviewers: [] }, { requireApproval: false }, { preventSelfReview: false }, { branches: [] }, { branches: ["other"] }, { extra: true }]) {
+    it(`rejects programmatic invalid policy before any API call: ${JSON.stringify(invalid)}`, async () => {
+      const manifest = releaseManifest();
+      (manifest.environments as Record<string, unknown>)["release-publish"] = invalid === null || Object.keys(invalid).length === 0
+        ? invalid : { ...manifest.environments["release-publish"], ...invalid };
+      const { calls, client } = releaseClient();
+      await expect(applyGitHub(manifest, client as never)).rejects.toThrow("release-publish");
+      expect(calls).toEqual([]);
+      await expect(planGitHub(manifest, client as never)).rejects.toThrow("release-publish");
+      expect(calls).toEqual([]);
+    });
+  }
+
+  for (const user of [undefined, {}, { id: 0, type: "User" }, { id: -1, type: "User" }, { id: 1.5, type: "User" }, { id: Number.MAX_SAFE_INTEGER + 1, type: "User" }, { id: "7", type: "User" }, { id: 7, type: "Organization" }, { id: 7, type: "Bot" }]) {
+    it(`rejects invalid resolved user identity before any mutation: ${JSON.stringify(user)}`, async () => {
+      const { calls, client } = releaseClient({ user });
+      await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("unique valid user/team");
+      expect(calls.every((call) => call.method === "GET")).toBe(true);
+    });
+  }
+
+  for (const reviewers of [["alice", "@alice"], ["acme/release/extra"], ["acme:release:extra"], ["../alice"]]) {
+    it(`rejects aliases or ambiguous reviewer targets before mutations: ${reviewers.join(",")}`, async () => {
+      const { calls, client } = releaseClient();
+      await expect(applyGitHub(releaseManifest(reviewers), client as never)).rejects.toThrow("unique valid user/team");
+      expect(calls.every((call) => call.method === "GET")).toBe(true);
+    });
+  }
+
+  for (const branch of [undefined, {}, { name: "other", protected: true }, { name: "main", protected: false }, { name: "main", protected: "true" }]) {
+    it(`blocks the release target without a verified protected default branch: ${JSON.stringify(branch)}`, async () => {
+      const { calls, client } = releaseClient({ branch });
+      await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("no verified classic protection");
+      expect(releaseWrites(calls)).toEqual([]);
+      expect(calls.some((call) => call.endpoint === RELEASE_ENDPOINT)).toBe(false);
+    });
+  }
+
+  for (const protection of [
+    undefined, {}, { url: "" }, { url: "https://api.github.com/protection", enforce_admins: {} },
+    { ...classicProtection, url: "invalid" },
+    { ...classicProtection, url: `http://api.github.com${BRANCH_ENDPOINT}/protection` },
+    { ...classicProtection, url: "https://api.github.com/repos/acme/example/branches/other/protection" }
+  ]) {
+    it(`rejects missing or malformed classic protection proof: ${JSON.stringify(protection)}`, async () => {
+      const { calls, client } = releaseClient({ protection });
+      await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("no verified classic protection");
+      expect(releaseWrites(calls)).toEqual([]);
+    });
+  }
+
+  const mismatches: Array<[string, () => unknown]> = [
+    ["missing environment", () => undefined],
+    ["wrong name", () => ({ ...releaseRemote(), name: "prod" })],
+    ["malformed environment", () => null],
+    ["missing rules", () => ({ ...releaseRemote(), protection_rules: undefined })],
+    ["empty rules", () => ({ ...releaseRemote(), protection_rules: [] })],
+    ["malformed rule", () => ({ ...releaseRemote(), protection_rules: [null] })],
+    ["duplicate reviewer rules", () => ({ ...releaseRemote(), protection_rules: [...releaseRemote().protection_rules, ...releaseRemote().protection_rules] })],
+    ["self-review allowed", () => ({ ...releaseRemote(), protection_rules: [{ ...releaseRemote().protection_rules[0], prevent_self_review: false }] })],
+    ["missing reviewers", () => ({ ...releaseRemote(), protection_rules: [{ type: "required_reviewers", prevent_self_review: true }] })],
+    ["wrong reviewer", () => releaseRemote([{ type: "User", reviewer: { id: 8 } }])],
+    ["wrong reviewer type", () => releaseRemote([{ type: "Team", reviewer: { id: 7 } }])],
+    ["invalid reviewer id", () => releaseRemote([{ type: "User", reviewer: { id: 0 } }])],
+    ["extra reviewer", () => releaseRemote([{ type: "User", reviewer: { id: 7 } }, { type: "User", reviewer: { id: 8 } }])],
+    ["wrong branch flags", () => ({ ...releaseRemote(), deployment_branch_policy: { protected_branches: false, custom_branch_policies: false } })],
+    ["custom branch policies", () => ({ ...releaseRemote(), deployment_branch_policy: { protected_branches: true, custom_branch_policies: true } })],
+    ["missing branch flags", () => ({ ...releaseRemote(), deployment_branch_policy: {} })]
+  ];
+  for (const [description, value] of mismatches) {
+    it(`does not report success after an incorrect readback: ${description}`, async () => {
+      const { calls, client } = releaseClient({ environments: [undefined, value()] });
+      await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("potentially partial");
+      expect(releaseWrites(calls)).toHaveLength(1);
+    });
+    if (description !== "missing environment") {
+      it(`preserves conflicting existing environment: ${description}`, async () => {
+        const { calls, client } = releaseClient({ environments: [value()] });
+        await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("separate review");
+        expect(releaseWrites(calls)).toEqual([]);
+      });
+    }
+  }
+
+  it("does not retry a protection-plan-limited release PUT with a bare payload", async () => {
+    const { calls, client } = releaseClient({ putError: new Error("billing plan required reviewers protection rule HTTP422 BODY_CANARY") });
+    await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("potentially partial");
+    expect(releaseWrites(calls)).toHaveLength(1);
+    expect(releaseWrites(calls)[0]?.payload).not.toEqual({});
+  });
+
+  it("rejects duplicate typed reviewer identities even when the count matches", async () => {
+    const duplicate = releaseRemote([{ type: "User", reviewer: { id: 7 } }, { type: "User", reviewer: { id: 7 } }]);
+    const { calls, client } = releaseClient({ environments: [duplicate] });
+    await expect(applyGitHub(releaseManifest(["alice", "acme/release"]), client as never)).rejects.toThrow("separate review");
+    expect(releaseWrites(calls)).toEqual([]);
+  });
+
+  it("rechecks protection after the environment write and stops on intervening loss", async () => {
+    const { calls, client } = releaseClient({ branchRead: (read) => ({ name: "main", protected: read === 1 }) });
+    await expect(applyGitHub(releaseManifest(), client as never)).rejects.toThrow("potentially partial");
+    expect(releaseWrites(calls)).toHaveLength(1);
+  });
+});
+
+function releaseHttpClient(environmentResponse: (read: number) => CommandResult) {
+  const calls: ReleaseCall[] = [];
+  let reads = 0;
+  const runner: CommandRunner = async (_command, args = [], options) => {
+    if (args[0] !== "api") return { stdout: "", stderr: "", exitCode: 0 };
+    const endpoint = args.find((arg) => arg.startsWith("/"))!;
+    const method = args[args.indexOf("--method") + 1]!;
+    calls.push({ method, endpoint, ...(options?.input ? { payload: JSON.parse(options.input) } : {}) });
+    if (endpoint === RELEASE_ENDPOINT && method === "GET") return environmentResponse(++reads);
+    let body: unknown = {};
+    if (endpoint === PUBLIC_REPO_ENDPOINT) body = { ...publicRepo(), private: true, visibility: "private" };
+    if (endpoint === "/users/acme") body = { login: "acme", type: "User" };
+    if (endpoint === "/users/alice") body = { id: 7, type: "User" };
+    if (endpoint === BRANCH_ENDPOINT && method === "GET") body = protectedBranch;
+    if (endpoint === `${BRANCH_ENDPOINT}/protection` && method === "GET") body = classicProtection;
+    return { stdout: JSON.stringify(body), stderr: "", exitCode: 0 };
+  };
+  return { calls, client: new GitHubClient({ runner }) };
+}
+
+function framedResponse(status: number, body: string, stderr = "", exitCode = status === 200 ? 0 : 1): CommandResult {
+  return { stdout: `HTTP/2.0 ${status} ${status === 200 ? "OK" : "Not Found"}\nContent-Type: application/json\r\n\r\n${body}`, stderr, exitCode };
+}
+
+describe("release absence uses captured HTTP status in the actual client", () => {
+  const missing = JSON.stringify({ message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" });
+  it("accepts actual endpoint404, writes once and validates the actual client readback", async () => {
+    const { calls, client } = releaseHttpClient((read) => read === 1
+      ? framedResponse(404, missing, "gh: Not Found (HTTP 404)\n")
+      : framedResponse(200, JSON.stringify(releaseRemote())));
+    const actions = await applyGitHub(releaseManifest(), client);
+    expect(releaseWrites(calls)).toHaveLength(1);
+    expect(actions.some((action) => action.id === "environment-release-publish")).toBe(true);
+  });
+
+  it("stops with safe partial-state diagnostics when actual readback fails after PUT", async () => {
+    const { calls, client } = releaseHttpClient((read) => read === 1
+      ? framedResponse(404, missing, "gh: Not Found (HTTP 404)\n")
+      : framedResponse(500, '{"message":"BODY_CANARY"}', "HEADER_CANARY HTTP 500\n"));
+    let error: unknown;
+    try {
+      await applyGitHub(releaseManifest(), client);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("potentially partial");
+    expect((error as Error).message).not.toMatch(/BODY_CANARY|HEADER_CANARY/);
+    expect(releaseWrites(calls)).toHaveLength(1);
+  });
+
+  const errors: Array<[string, CommandResult]> = [
+    ["raw text404", { stdout: missing, stderr: "HTTP 404", exitCode: 1 }],
+    ["body404 with HTTP200", framedResponse(200, missing)],
+    ["malformed404 JSON", framedResponse(404, '{"message":', "gh: Not Found (HTTP 404)\n")],
+    ["malformed200 JSON", framedResponse(200, " ".repeat(404) + "invalid")],
+    ["transport failure mentioning404", framedResponse(404, missing, "transport failed HTTP 404\n")],
+    ["HTTP403", framedResponse(403, missing, "gh: Forbidden (HTTP 403)\n")],
+    ["HTTP500", framedResponse(500, missing, "gh: Server error (HTTP 500)\n")]
+  ];
+  for (const [name, response] of errors) {
+    it(`does not create an environment on ${name}`, async () => {
+      const { calls, client } = releaseHttpClient(() => response);
+      await expect(applyGitHub(releaseManifest(), client)).rejects.toThrow("release-publish");
+      expect(releaseWrites(calls)).toEqual([]);
+    });
+  }
 });

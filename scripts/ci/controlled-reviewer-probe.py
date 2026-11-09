@@ -29,6 +29,8 @@ CLEANUP_DEADLINE = 0.0
 ENV = {}
 DOCKER = []
 EVIDENCE_PREFIX = 'CONTROLLED_REVIEWER_EVIDENCE '
+PUBLIC_COMMAND_PHASES = {'image-history', 'mechanical-create', 'mechanical-start',
+                         'mechanical-inspect-running', 'mechanical-inspect-stopped', 'mechanical-remove'}
 
 
 def require(value, phase='mechanical'):
@@ -40,9 +42,17 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def command(arguments, timeout=60, limit=1 << 20, on_line=None, cleanup=False):
+def command(arguments, timeout=60, limit=1 << 20, on_line=None, cleanup=False, trace=None, phase=None):
     end = min(time.monotonic() + timeout, CLEANUP_DEADLINE if cleanup and CLEANUP_DEADLINE else DEADLINE)
     require(time.monotonic() < end, 'cleanup' if cleanup else 'deadline')
+    observation = None
+    if trace is not None:
+        require(type(trace) is list and len(trace) < 6 and phase in PUBLIC_COMMAND_PHASES, 'diagnostic')
+        observation = {'phase': phase, 'exitCode': None, 'exitObservedBeforeCleanup': False,
+                       'stdoutBytes': 0, 'stderrBytes': 0, 'stdoutSha256': sha(b''), 'stderrSha256': sha(b''),
+                       'streamsComplete': False}
+        trace.append(observation)
+        digests = [hashlib.sha256(), hashlib.sha256()]
     process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=ENV, start_new_session=True)
     result, pending, total = bytearray(), bytearray(), 0
@@ -59,6 +69,9 @@ def command(arguments, timeout=60, limit=1 << 20, on_line=None, cleanup=False):
                         continue
                     total += len(block)
                     require(total <= limit, 'output')
+                    if observation is not None:
+                        observation['stdoutBytes' if key.data == 0 else 'stderrBytes'] += len(block)
+                        digests[key.data].update(block)
                     if key.data == 0:
                         if on_line:
                             pending.extend(block)
@@ -68,24 +81,32 @@ def command(arguments, timeout=60, limit=1 << 20, on_line=None, cleanup=False):
                                 on_line(line, process.stdin)
                         else:
                             result.extend(block)
+            if observation is not None:
+                observation['streamsComplete'] = True
             require(not pending, 'output')
             code = process.wait(timeout=2)
             require(code == 0 or on_line and code in (1, 137), 'process')
             return bytes(result)
     finally:
+        if observation is not None:
+            observation['exitCode'] = process.poll()
+            observation['exitObservedBeforeCleanup'] = observation['exitCode'] is not None
+            observation['stdoutSha256'], observation['stderrSha256'] = (value.hexdigest() for value in digests)
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         if process.poll() is None:
             process.wait(timeout=2)
+        if observation is not None and observation['exitCode'] is None:
+            observation['exitCode'] = process.poll()
         process.stdin.close()
         process.stdout.close()
         process.stderr.close()
 
 
-def inspect(name):
-    return json.loads(command([*DOCKER, 'inspect', name]))[0]
+def inspect(name, trace=None, phase=None):
+    return json.loads(command([*DOCKER, 'inspect', name], trace=trace, phase=phase))[0]
 
 
 def cgroup_for(pid):
@@ -101,7 +122,11 @@ def auth_snapshot(directory):
     return [(p.name, tuple(getattr(p.stat(), field) for field in ('st_dev', 'st_ino', 'st_uid', 'st_gid', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')), sha(p.read_bytes())) for p in sorted(directory.iterdir())]
 
 
-def case_run(case, image, directory, containers, image_record):
+def case_run(case, image, directory, containers, image_record, diagnostic=None):
+    require(diagnostic is None or case == 'mechanical', 'diagnostic')
+    trace = diagnostic['commands'] if diagnostic is not None else None
+    if diagnostic is not None:
+        diagnostic['stage'] = 'mechanical-create'
     name = 'bootstrap-reviewer-' + uuid.uuid4().hex
     arguments = [*DOCKER, 'create', '--name', name, '-i', '--read-only', '--network', 'none', '--cap-drop', 'ALL',
                  '--security-opt', 'no-new-privileges', '--memory', '2147483648', '--memory-swap', '2147483648',
@@ -128,7 +153,7 @@ def case_run(case, image, directory, containers, image_record):
             arguments += ['--mount', f'type=bind,src={target},dst=/operator/.codex/{target.name},readonly']
         before = auth_snapshot(auth)
     containers.append(name)
-    command([*arguments, image, '--case', case])
+    command([*arguments, image, '--case', case], trace=trace, phase='mechanical-create' if trace is not None else None)
     events, group = [], None
 
     def event(line, stdin):
@@ -137,27 +162,40 @@ def case_run(case, image, directory, containers, image_record):
         require(isinstance(data, dict) and len(events) < 4, 'output')
         events.append(data)
         if data.get('event') == 'ready':
+            if diagnostic is not None:
+                diagnostic.update(stage='ready-validation', readyEventSeen=True)
             require(len(events) == 1 and data.get('uid') == os.getuid() and data.get('gid') == os.getgid())
-            observed = inspect(name)
+            observed = inspect(name) if trace is None else inspect(name, trace, 'mechanical-inspect-running')
             require(observed['State']['Running'] and observed['HostConfig']['NetworkMode'] == 'none' and observed['HostConfig']['ReadonlyRootfs'])
+            if diagnostic is not None:
+                diagnostic['stage'] = 'host-cgroup'
             group = cgroup_for(observed['State']['Pid'])
+            if diagnostic is not None:
+                diagnostic['stage'] = 'fixture-running'
             if before and 'OPENAI_API_KEY' in value:
                 require(value['OPENAI_API_KEY'] not in json.dumps(observed) + image_record, 'privacy')
             stdin.write(b'GO\n')
             stdin.flush()
         elif data.get('event') == 'result':
             require(type(data.get('ok')) is bool and type(data.get('providerRequests')) is int and 0 <= data['providerRequests'] <= 8, 'output')
+            if diagnostic is not None:
+                diagnostic.update(stage='fixture-result', resultEventSeen=True, resultOk=data['ok'])
         elif data.get('event') == 'detached':
             require(case == 'detached' and group and len((group / 'cgroup.procs').read_text().split()) >= 2)
             command([*DOCKER, 'kill', '--signal', 'KILL', name])
     try:
-        command([*DOCKER, 'start', '-a', '-i', name], on_line=event, timeout=70)
+        if diagnostic is not None:
+            diagnostic['stage'] = 'mechanical-start'
+        command([*DOCKER, 'start', '-a', '-i', name], on_line=event, timeout=70, trace=trace, phase='mechanical-start' if trace is not None else None)
+        if diagnostic is not None:
+            diagnostic['stage'] = 'post-case-cgroup'
         require(group is not None, 'cleanup')
         end = time.monotonic() + 2
         while group.exists() and (group / 'cgroup.procs').read_text().strip() and time.monotonic() < end:
             time.sleep(0.02)
         require(not group.exists() or not (group / 'cgroup.procs').read_text().strip(), 'cleanup')
-        require(not inspect(name)['State']['Running'], 'cleanup')
+        observed = inspect(name) if trace is None else inspect(name, trace, 'mechanical-inspect-stopped')
+        require(not observed['State']['Running'], 'cleanup')
         if case != 'detached':
             result = events[-1]
             require(result.get('event') == 'result' and result.get('case') == case and type(result.get('ok')) is bool, 'native-sandbox' if case == 'sandbox' else case)
@@ -175,9 +213,17 @@ def case_run(case, image, directory, containers, image_record):
             require(sum(methods.values()) == result['providerRequests'] and (not result['ok'] or methods['POST'] > 0), 'output')
             public['mockMethods'] = methods
         return public
+    except BaseException:
+        if diagnostic is not None:
+            diagnostic['failureStage'] = diagnostic['stage']
+        raise
     finally:
-        command([*DOCKER, 'rm', '-f', name], cleanup=True, timeout=20)
+        if diagnostic is not None:
+            diagnostic['stage'] = 'mechanical-remove'
+        command([*DOCKER, 'rm', '-f', name], cleanup=True, timeout=20, trace=trace, phase='mechanical-remove' if trace is not None else None)
         containers.remove(name)
+        if diagnostic is not None:
+            diagnostic['stage'] = 'container-removed'
 
 
 def self_test():
@@ -273,10 +319,12 @@ def main():
         command([*DOCKER, 'build', '--network', 'none', '--pull=false', '--tag', image, str(context)], timeout=180, limit=4 << 20)
         image_record = command([*DOCKER, 'image', 'inspect', image]).decode()
         evidence['image'] = json.loads(image_record)[0]['Id']
-        image_record += command([*DOCKER, 'history', '--no-trunc', '--format', '{{json .}}', image]).decode()
+        diagnostic = {'stage': 'image-history', 'commands': [], 'readyEventSeen': False, 'resultEventSeen': False, 'resultOk': None}
+        evidence['preAuthDiagnostic'] = diagnostic
+        image_record += command([*DOCKER, 'history', '--no-trunc', '--format', '{{json .}}', image], trace=diagnostic['commands'], phase='image-history').decode()
         require(re.fullmatch('sha256:[a-f0-9]{64}', evidence['image']), 'image')
         for case in ('mechanical', 'bytes', 'inodes', 'detached', 'sandbox', 'status-api', 'status-oauth', 'status-unknown', 'status-auto', 'status-keyring', 'api', 'persistence'):
-            result = case_run(case, image, directory, containers, image_record)
+            result = case_run(case, image, directory, containers, image_record, diagnostic if case == 'mechanical' else None)
             evidence['cases'].append(result)
             require(result['ok'], 'native-sandbox' if case == 'sandbox' else case)
         evidence['ok'] = True

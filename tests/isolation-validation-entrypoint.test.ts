@@ -660,3 +660,239 @@ describe("controlled reviewer evidence byte limit", () => {
     expect(result).toEqual({ rejected: true, reason: "evidence-limit", emittedBytes: 0 });
   });
 });
+
+
+const publicDiagnosticHarness = String.raw`
+"""Public diagnostic proposal fixtures: FakePopen only, never a native/Docker/auth adapter."""
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+import types
+import unittest
+from unittest import mock
+
+source = Path.cwd() / 'scripts/ci/controlled-reviewer-probe.py'
+spec = importlib.util.spec_from_file_location('public_diagnostic_under_test', source)
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+PHASES = ('image-history', 'mechanical-create', 'mechanical-start',
+          'mechanical-inspect-running', 'mechanical-inspect-stopped', 'mechanical-remove')
+FIELDS = {'phase', 'exitCode', 'exitObservedBeforeCleanup', 'stdoutBytes', 'stderrBytes',
+          'stdoutSha256', 'stderrSha256', 'streamsComplete'}
+
+
+@contextlib.contextmanager
+def processes(specifications):
+    remaining, registry, created = list(specifications), {}, []
+    class Stream:
+        def __init__(self, fd, content):
+            self.fd, self.content, self.closed = fd, content, False
+            registry[fd] = self
+        def fileno(self):
+            return self.fd
+        def close(self):
+            self.closed = True
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            if not remaining:
+                raise AssertionError('unexpected fake command')
+            stdout, stderr, self.desired_exit = remaining.pop(0)
+            self.pid, self.returncode, self.killed = 5000 + len(created), None, False
+            self.stdin = io.BytesIO()
+            self.stdout = Stream(self.pid * 2, stdout)
+            self.stderr = Stream(self.pid * 2 + 1, stderr)
+            created.append(self)
+        def wait(self, timeout):
+            if self.returncode is None:
+                self.returncode = self.desired_exit
+            return self.returncode
+        def poll(self):
+            return self.returncode
+    class Selector:
+        def __init__(self):
+            self.entries = {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def register(self, stream, events, data):
+            self.entries[stream.fd] = types.SimpleNamespace(fd=stream.fd, fileobj=stream, data=data)
+        def unregister(self, stream):
+            del self.entries[stream.fd]
+        def get_map(self):
+            return self.entries
+        def select(self, timeout):
+            return [(entry, 1) for entry in list(self.entries.values())]
+    def read(fd, amount):
+        stream = registry[fd]
+        result, stream.content = stream.content[:amount], stream.content[amount:]
+        return result
+    def kill(pid, sig):
+        child = next(child for child in created if child.pid == pid)
+        child.killed = True
+        if child.returncode is None:
+            child.returncode = -9
+    with mock.patch.object(probe.subprocess, 'Popen', FakePopen), \
+            mock.patch.object(probe.selectors, 'DefaultSelector', Selector), \
+            mock.patch.object(probe.os, 'read', side_effect=read), \
+            mock.patch.object(probe.os, 'killpg', side_effect=kill):
+        yield created
+    assert not remaining
+    assert all(child.killed and child.stdin.closed and child.stdout.closed and child.stderr.closed for child in created)
+
+
+def mechanical(mode, include_history=False):
+    diagnostic = {'stage': 'image-history', 'commands': [], 'readyEventSeen': False,
+                  'resultEventSeen': False, 'resultOk': None}
+    ready = json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid()}).encode() + b'\n'
+    result = json.dumps({'event': 'result', 'case': 'mechanical', 'ok': mode != 'pre-ready', 'providerRequests': 0}).encode() + b'\n'
+    running = json.dumps([{'State': {'Running': True, 'Pid': 123},
+                           'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}]).encode()
+    stopped = json.dumps([{'State': {'Running': False}}]).encode()
+    queue = [(b'public history', b'', 0)] if include_history else []
+    queue += [(b'public container id', b'public synthetic create diagnostic', 17 if mode == 'create' else 0)]
+    if mode != 'create':
+        queue.append((result if mode == 'pre-ready' else ready + result, b'', 1 if mode == 'pre-ready' else 0))
+        if mode != 'pre-ready':
+            queue.append((running, b'', 0))
+        if mode not in ('pre-ready', 'cgroup'):
+            queue.append((stopped, b'', 0))
+        queue.append((b'', b'public remove diagnostic', 17 if mode == 'remove' else 0))
+    with tempfile.TemporaryDirectory(prefix='bootstrap-public-diagnostic-fixture-') as temporary:
+        pending = []
+        def cgroup(pid):
+            if mode == 'cgroup':
+                raise probe.Unsupported('mechanical')
+            return Path(temporary) / 'absent-synthetic-cgroup'
+        with processes(queue), mock.patch.object(probe, 'cgroup_for', side_effect=cgroup):
+            if include_history:
+                probe.command(['never-executed', 'history'], trace=diagnostic['commands'], phase='image-history')
+            try:
+                value = probe.case_run('mechanical', 'synthetic-image', Path(temporary), pending, '', diagnostic)
+                reason = None
+            except probe.Unsupported as error:
+                value, reason = None, str(error)
+        return diagnostic, value, reason, pending
+
+
+class PublicDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        probe.DEADLINE = probe.CLEANUP_DEADLINE = time.monotonic() + 10
+        probe.ENV, probe.DOCKER = {'PUBLIC_TEST_SENTINEL': 'environment-must-not-be-published'}, ['never-executed']
+
+    def test_all_six_nonzero_phases_keep_only_public_counts_hashes_and_observed_exit(self):
+        stdout, stderr = b'public raw stdout DO_NOT_PUBLISH\n', b'public raw stderr DO_NOT_PUBLISH\n'
+        for phase in PHASES:
+            with self.subTest(phase=phase), processes([(stdout, stderr, 17)]):
+                trace = []
+                with self.assertRaisesRegex(probe.Unsupported, '^process$'):
+                    probe.command(['never-executed', 'argument-must-not-be-published'], trace=trace, phase=phase)
+                self.assertEqual(trace, [{'phase': phase, 'exitCode': 17, 'exitObservedBeforeCleanup': True,
+                    'stdoutBytes': len(stdout), 'stderrBytes': len(stderr), 'stdoutSha256': hashlib.sha256(stdout).hexdigest(),
+                    'stderrSha256': hashlib.sha256(stderr).hexdigest(), 'streamsComplete': True}])
+                self.assertEqual(set(trace[0]), FIELDS)
+                self.assertNotIn('DO_NOT_PUBLISH', json.dumps(trace))
+                self.assertNotIn('must-not-be-published', json.dumps(trace))
+
+    def test_start_exit_one_and_137_remain_accepted_with_the_existing_line_protocol(self):
+        for code in (1, 137):
+            with self.subTest(code=code), processes([(b'public-line\n', b'', code)]):
+                trace, lines = [], []
+                self.assertEqual(probe.command(['never-executed'], on_line=lambda line, stdin: lines.append(line),
+                    trace=trace, phase='mechanical-start'), b'')
+                self.assertEqual(lines, [b'public-line'])
+                self.assertEqual(trace[0]['exitCode'], code)
+                self.assertTrue(trace[0]['exitObservedBeforeCleanup'] and trace[0]['streamsComplete'])
+
+    def test_untraced_commands_do_not_hash_or_change_stdout(self):
+        with processes([(b'public stdout', b'public stderr', 0)]), \
+                mock.patch.object(probe.hashlib, 'sha256', side_effect=AssertionError('untraced hashing')):
+            self.assertEqual(probe.command(['never-executed']), b'public stdout')
+
+    def test_enum_and_six_entry_cap_fail_before_any_process_object(self):
+        for trace, phase in (([], 'status-api'), ([], None), ([{}] * 6, 'image-history')):
+            with self.subTest(phase=phase, count=len(trace)), processes([]):
+                before = list(trace)
+                with self.assertRaisesRegex(probe.Unsupported, '^diagnostic$'):
+                    probe.command(['never-executed'], trace=trace, phase=phase)
+                self.assertEqual(trace, before)
+
+    def test_output_and_deadline_controls_still_abort_and_identify_observer_cleanup(self):
+        trace = []
+        with processes([(b'x' * 80, b'', 0)]):
+            with self.assertRaisesRegex(probe.Unsupported, '^output$'):
+                probe.command(['never-executed'], limit=32, trace=trace, phase='mechanical-create')
+        self.assertFalse(trace[0]['streamsComplete'] or trace[0]['exitObservedBeforeCleanup'])
+        self.assertEqual(trace[0]['exitCode'], -9)
+        self.assertEqual(trace[0]['stdoutBytes'], 0)
+        self.assertEqual(trace[0]['stdoutSha256'], hashlib.sha256(b'').hexdigest())
+        trace = []
+        probe.DEADLINE = 1
+        with processes([(b'', b'', 0)]), mock.patch.object(probe.time, 'monotonic', side_effect=[0, 0, 2]):
+            with self.assertRaisesRegex(probe.Unsupported, '^deadline$'):
+                probe.command(['never-executed'], trace=trace, phase='mechanical-start')
+        self.assertFalse(trace[0]['streamsComplete'] or trace[0]['exitObservedBeforeCleanup'])
+        self.assertEqual(trace[0]['exitCode'], -9)
+
+    def test_mechanical_failure_stages_survive_cleanup_and_retained_names(self):
+        for mode, stage, ready, result, ok, retained in (
+                ('create', 'mechanical-create', False, False, None, True),
+                ('pre-ready', 'post-case-cgroup', False, True, False, False),
+                ('cgroup', 'host-cgroup', True, False, None, False),
+                ('remove', 'mechanical-remove', True, True, True, True)):
+            with self.subTest(mode=mode):
+                diagnostic, value, reason, pending = mechanical(mode)
+                self.assertIsNone(value)
+                self.assertIsNotNone(reason)
+                self.assertEqual(diagnostic.get('failureStage', diagnostic['stage']), stage)
+                self.assertEqual((diagnostic['readyEventSeen'], diagnostic['resultEventSeen'], diagnostic['resultOk']), (ready, result, ok))
+                self.assertEqual(bool(pending), retained)
+                if not retained:
+                    self.assertEqual(diagnostic['stage'], 'container-removed')
+
+    def test_history_and_complete_mechanical_use_exactly_the_six_public_slots(self):
+        diagnostic, value, reason, pending = mechanical('success', include_history=True)
+        self.assertIsNone(reason)
+        self.assertEqual(value, {'case': 'mechanical', 'ok': True, 'providerRequests': 0})
+        self.assertEqual(pending, [])
+        self.assertEqual([entry['phase'] for entry in diagnostic['commands']], list(PHASES))
+        self.assertTrue(diagnostic['readyEventSeen'] and diagnostic['resultEventSeen'] and diagnostic['resultOk'])
+        self.assertNotIn('failureStage', diagnostic)
+        self.assertEqual(diagnostic['stage'], 'container-removed')
+
+    def test_diagnostics_are_rejected_before_auth_or_native_cases(self):
+        with tempfile.TemporaryDirectory(prefix='bootstrap-no-auth-diagnostic-fixture-') as temporary, processes([]):
+            for case in ('sandbox', 'status-api', 'api', 'persistence'):
+                with self.subTest(case=case), self.assertRaisesRegex(probe.Unsupported, '^diagnostic$'):
+                    probe.case_run(case, 'synthetic-image', Path(temporary), [], '', {'commands': []})
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+
+log = io.StringIO()
+result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(PublicDiagnosticTests))
+if not result.wasSuccessful():
+    print(log.getvalue(), file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({'testCases': result.testsRun, 'publicPhases': list(PHASES),
+                  'nativeDockerAuthNetworkProcesses': 0, 'allProcessesWereFakePopen': True}))
+`;
+
+describe("controlled reviewer public pre-auth diagnostic", () => {
+  it("records bounded public command metadata and failure stages using only fake process fixtures", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", publicDiagnosticHarness], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 8,
+      publicPhases: ["image-history", "mechanical-create", "mechanical-start", "mechanical-inspect-running",
+        "mechanical-inspect-stopped", "mechanical-remove"],
+      nativeDockerAuthNetworkProcesses: 0, allProcessesWereFakePopen: true });
+  });
+});

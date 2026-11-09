@@ -696,7 +696,7 @@ interface OrchestrationResult {
   evidence: { ok: boolean; cleanup: boolean; reason?: string; signatureVerified?: boolean;
     bootstrapStage?: string; bootstrapHttpStatus?: number;
     stageSourceSha256?: string; bundles?: Record<string, { bytes: number; sha256: string }>;
-    package?: { packageNoticesPreserved: Record<string, string> }; cases: { providerRequests: number }[];
+    package?: { packageNoticesPreserved: Record<string, string> }; cases: { case: string; providerRequests: number }[];
     preAuthDiagnostic?: { fixtureAdmissionFailure?: { stage: string; addressSpace?: { soft: number; hard: number };
       processMounts?: { substage: string; capsZero?: boolean; rootRo?: boolean; mountsSafe?: boolean; noNewPrivs?: boolean } };
       readyEventSeen: boolean; resultEventSeen: boolean; resultOk: boolean | null; failureStage?: string; stage: string } };

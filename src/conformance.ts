@@ -788,7 +788,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
     const expectedCodeqlMatrix = manifest.ci.codeqlLanguages.map((language) => ({
       language,
       buildMode: language === "go" || language === "swift" ? "autobuild" : "none",
-      runner: language === "swift" ? "macos-14" : "ubuntu-latest"
+      runner: language === "swift" ? "macos-14" : (manifest.ci.githubHostedImage ?? "ubuntu-latest")
     }));
     const includedCodeqlMatrix = isSeq(codeqlMatrixInclude)
       ? codeqlMatrixInclude.items.map((rawEntry) => {
@@ -810,7 +810,7 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
             entry.buildMode === expected.buildMode && entry.runner === expected.runner;
         })
       : codeqlMatrixLanguages !== undefined &&
-        expectedCodeqlMatrix.every((entry, index) => entry.buildMode === "none" && entry.runner === "ubuntu-latest" && entry.language === codeqlMatrixLanguages[index]) &&
+        expectedCodeqlMatrix.every((entry, index) => entry.buildMode === "none" && entry.runner === (manifest.ci.githubHostedImage ?? "ubuntu-latest") && entry.language === codeqlMatrixLanguages[index]) &&
         codeqlMatrixLanguages.length === expectedCodeqlMatrix.length;
     const codeqlMatrixHasUnexpectedAxes = isMap(codeqlMatrix) &&
       (isSeq(codeqlMatrixInclude)

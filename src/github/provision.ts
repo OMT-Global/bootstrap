@@ -1,4 +1,5 @@
 import type { BootstrapManifest, PlannedGitHubAction } from "../types.js";
+import { releaseEnvironmentPolicyError } from "../manifest.js";
 import { GitHubClient } from "./client.js";
 
 interface GitHubRepo {
@@ -451,6 +452,155 @@ async function resolveReviewerIdentities(
   return Promise.all(reviewers.map((reviewer) => resolveReviewerIdentity(client, reviewer, owner)));
 }
 
+function releaseEnvironmentPlan(): PlannedGitHubAction {
+  return {
+    id: "environment-release-publish",
+    description: "Optional release-publish: create or verify explicit reviewer protections for protected branches; remote state is unverified. Administrators and coordinated configuration writers are trusted; apply github remains a broad writer."
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function resolveReleaseReviewers(
+  client: GitHubClient,
+  reviewers: string[]
+): Promise<ReviewerIdentity[]> {
+  try {
+    const identities = await Promise.all(
+      reviewers.map(async (raw): Promise<ReviewerIdentity> => {
+        const match = /^@?([^/@:\s]+)(?:[/:]([^/@:\s]+))?$/.exec(raw);
+        if (!match || [match[1], match[2]].some((part) => part === "." || part === "..")) {
+          throw new Error();
+        }
+        const target = encodeURIComponent(match[1]!);
+        const team = match[2];
+        const response = await client.api<unknown>(
+          "GET",
+          team === undefined ? `/users/${target}` : `/orgs/${target}/teams/${encodeURIComponent(team)}`
+        );
+        if (
+          !isObject(response) || !Number.isSafeInteger(response.id) || (response.id as number) <= 0 ||
+          (team === undefined && response.type !== "User")
+        ) {
+          throw new Error();
+        }
+        return { type: team === undefined ? "User" : "Team", id: response.id as number };
+      })
+    );
+    if (new Set(identities.map((identity) => `${identity.type}:${identity.id}`)).size !== identities.length) {
+      throw new Error();
+    }
+    return identities;
+  } catch {
+    throw new Error("release-publish reviewers could not be resolved to unique valid user/team identities.");
+  }
+}
+
+async function verifyReleaseBranchProtection(
+  manifest: BootstrapManifest,
+  client: GitHubClient
+): Promise<void> {
+  const endpoint = `/repos/${encodeURIComponent(manifest.project.owner)}/${encodeURIComponent(manifest.project.name)}/branches/${encodeURIComponent(manifest.project.defaultBranch)}`;
+  try {
+    const branch = await client.api<unknown>("GET", endpoint);
+    const protection = await client.api<unknown>("GET", `${endpoint}/protection`);
+    if (
+      !isObject(branch) || branch.name !== manifest.project.defaultBranch || branch.protected !== true ||
+      !isObject(protection) || typeof protection.url !== "string" || protection.url.trim() === "" ||
+      !isObject(protection.enforce_admins) || typeof protection.enforce_admins.enabled !== "boolean"
+    ) {
+      throw new Error();
+    }
+    const protectionUrl = new URL(protection.url);
+    const protectionPath = /\/repos\/([^/]+)\/([^/]+)\/branches\/(.+)\/protection$/.exec(protectionUrl.pathname);
+    // GitHub canonicalizes repository casing; branch identity remains case-sensitive.
+    if (
+      protectionUrl.protocol !== "https:" || !protectionPath ||
+      decodeURIComponent(protectionPath[1]!).toLowerCase() !== manifest.project.owner.toLowerCase() ||
+      decodeURIComponent(protectionPath[2]!).toLowerCase() !== manifest.project.name.toLowerCase() ||
+      decodeURIComponent(protectionPath[3]!) !== manifest.project.defaultBranch
+    ) {
+      throw new Error();
+    }
+  } catch {
+    throw new Error("release-publish default branch has no verified classic protection.");
+  }
+}
+
+function releaseEnvironmentMatches(value: unknown, reviewers: ReviewerIdentity[]): boolean {
+  if (
+    !isObject(value) || value.name !== "release-publish" || !Array.isArray(value.protection_rules) ||
+    !value.protection_rules.every((rule) => isObject(rule) && typeof rule.type === "string")
+  ) {
+    return false;
+  }
+  const rules = value.protection_rules.filter((rule) => rule.type === "required_reviewers");
+  const rule: unknown = rules[0];
+  if (
+    rules.length !== 1 || !isObject(rule) || rule.prevent_self_review !== true ||
+    !Array.isArray(rule.reviewers) || rule.reviewers.length !== reviewers.length
+  ) {
+    return false;
+  }
+  const actual = new Set<string>();
+  for (const entry of rule.reviewers) {
+    if (
+      !isObject(entry) || (entry.type !== "User" && entry.type !== "Team") || !isObject(entry.reviewer) ||
+      !Number.isSafeInteger(entry.reviewer.id) || (entry.reviewer.id as number) <= 0
+    ) {
+      return false;
+    }
+    actual.add(`${entry.type}:${entry.reviewer.id}`);
+  }
+  return actual.size === reviewers.length &&
+    reviewers.every((identity) => actual.has(`${identity.type}:${identity.id}`)) &&
+    isObject(value.deployment_branch_policy) && value.deployment_branch_policy.protected_branches === true &&
+    value.deployment_branch_policy.custom_branch_policies === false;
+}
+
+async function applyReleaseEnvironment(
+  manifest: BootstrapManifest,
+  client: GitHubClient,
+  reviewers: ReviewerIdentity[]
+): Promise<PlannedGitHubAction> {
+  await verifyReleaseBranchProtection(manifest, client);
+  const existing = await client.getReleaseEnvironment<unknown>(manifest.project.owner, manifest.project.name);
+  if (existing !== undefined) {
+    if (!releaseEnvironmentMatches(existing, reviewers)) {
+      throw new Error("release-publish protection conflicts with the requested policy; separate review is required.");
+    }
+    await verifyReleaseBranchProtection(manifest, client);
+    return {
+      id: "environment-release-publish",
+      description: "Verified existing release-publish modeled protections without rewriting. Other remote protections and administrator bypass remain outside this capability."
+    };
+  }
+
+  // GitHub has no atomic create-if-absent API; trusted configuration writers must coordinate.
+  const endpoint = `/repos/${encodeURIComponent(manifest.project.owner)}/${encodeURIComponent(manifest.project.name)}/environments/release-publish`;
+  try {
+    await client.api("PUT", endpoint, {
+      wait_timer: 0,
+      reviewers,
+      prevent_self_review: true,
+      deployment_branch_policy: { protected_branches: true, custom_branch_policies: false }
+    });
+    const observed = await client.getReleaseEnvironment<unknown>(manifest.project.owner, manifest.project.name);
+    if (!releaseEnvironmentMatches(observed, reviewers)) {
+      throw new Error();
+    }
+    await verifyReleaseBranchProtection(manifest, client);
+  } catch {
+    throw new Error("release-publish apply is potentially partial: write or protection verification failed; review the remote state before any retry.");
+  }
+  return {
+    id: "environment-release-publish",
+    description: "Created release-publish and verified its modeled reviewer and protected-branch rules at readback. Other remote protections and administrator bypass remain outside this capability."
+  };
+}
+
 async function getOwner(client: GitHubClient, owner: string): Promise<GitHubOwner> {
   return client.api<GitHubOwner>("GET", `/users/${owner}`);
 }
@@ -485,6 +635,11 @@ export async function planGitHub(
   manifest: BootstrapManifest,
   client = new GitHubClient()
 ): Promise<PlannedGitHubAction[]> {
+  const releaseEnvironment = manifest.environments["release-publish"];
+  const releaseError = releaseEnvironmentPolicyError(releaseEnvironment, manifest.project.defaultBranch);
+  if (releaseError) {
+    throw new Error(releaseError);
+  }
   const actions: PlannedGitHubAction[] = [];
   const isAvailable = await client.isAvailable();
   const isAuthenticated = isAvailable ? await client.isAuthenticated() : false;
@@ -524,6 +679,9 @@ export async function planGitHub(
         description: `Ensure ${manifest.github.issueLabels.length} issue labels exist for issue routing, risk, status, and review gates.`
       }
     );
+    if (releaseEnvironment !== undefined) {
+      actions.push(releaseEnvironmentPlan());
+    }
     return actions;
   }
 
@@ -574,6 +732,9 @@ export async function planGitHub(
     description: `Ensure environments dev, stage, and prod exist with ${manifest.github.reviewers.length} default reviewer target(s).`
   });
   actions.push(await planIssueLabels(manifest, client));
+  if (releaseEnvironment !== undefined) {
+    actions.push(releaseEnvironmentPlan());
+  }
 
   return actions;
 }
@@ -582,12 +743,21 @@ export async function applyGitHub(
   manifest: BootstrapManifest,
   client = new GitHubClient()
 ): Promise<PlannedGitHubAction[]> {
+  const releaseEnvironment = manifest.environments["release-publish"];
+  const releaseError = releaseEnvironmentPolicyError(releaseEnvironment, manifest.project.defaultBranch);
+  if (releaseError) {
+    throw new Error(releaseError);
+  }
   if (!(await client.isAvailable())) {
     throw new Error("gh CLI is not available.");
   }
   if (!(await client.isAuthenticated())) {
     throw new Error("gh CLI is not authenticated. Run `gh auth login` first.");
   }
+
+  const releaseReviewers = releaseEnvironment === undefined
+    ? undefined
+    : await resolveReleaseReviewers(client, releaseEnvironment.reviewers);
 
   const repo = await getRepo(client, manifest.project.owner, manifest.project.name);
   const owner = await getOwner(client, manifest.project.owner);
@@ -749,6 +919,10 @@ export async function applyGitHub(
         description: `Created ${environmentName} environment without protection rules because the current GitHub plan does not support protected environments on this private repository.`
       });
     }
+  }
+
+  if (releaseReviewers !== undefined) {
+    actions.push(await applyReleaseEnvironment(manifest, client, releaseReviewers));
   }
 
   for (const label of manifest.github.issueLabels) {

@@ -144,7 +144,7 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
       const sizes: Record<string, number> = { "/tmp": (keeper ? 1 : 256) * 1024 ** 2 };
       if (phase === "prepare") sizes["/install"] = 512 * 1024 ** 2;
       if (phase === "hook" || phase === "check") Object.assign(sizes, {
-        "/npm-cache": 512 * 1024 ** 2, "/repo/project/node_modules": 512 * 1024 ** 2, "/repo/project/dist": 128 * 1024 ** 2
+        "/npm-cache": 1024 ** 3, "/repo/project/node_modules": 512 * 1024 ** 2, "/repo/project/dist": 128 * 1024 ** 2
       });
       const mounts = args.flatMap((value: string, index: number) => value === "--tmpfs" ? [args[index + 1] as string] : []);
       expect(mounts.map((mount: string) => mount.split(":")[0]).sort()).toEqual(Object.keys(sizes).sort());
@@ -195,10 +195,50 @@ describe("isolated Docker supervisor lifecycle (controlled CLI, not confinement 
     expect(size).toBe(1536 * 1024 ** 2);
     expect(input).toContain("nr_inodes=65536");
     expect(65536).toBeGreaterThanOrEqual(ISOLATION_LIMITS.entries + ISOLATION_LIMITS.archives + 7);
-    expect(options("-source")).toContain(`size=${1024 ** 3}`);
-    expect(options("-cache")).toContain(`size=${512 * 1024 ** 2}`);
+    expect(options("-source")).toContain(`size=${2 * 1024 ** 3}`);
+    expect(options("-cache")).toContain(`size=${1024 ** 3}`);
     expect(options("-source").some((value) => value.startsWith("nr_inodes="))).toBe(false);
     expect(options("-cache").some((value) => value.startsWith("nr_inodes="))).toBe(false);
+  });
+  it("reserves source storage for the worktree, separate Git objects and bundle bookkeeping", async () => {
+    const fake = await fakeDocker(); await validateIsolatedNode(fixture());
+    const call = (await fake.calls()).find(({ args }) => args[0] === "volume" && args[1] === "create" && args.at(-1).endsWith("-source"))!;
+    const option = (call.args as string[]).find((value) => value.startsWith("o=size="))!;
+    const size = Number(option.slice(7).split(",")[0]);
+    // An engineering reserve under the existing bounds, not a promise for every Git input or total RAM.
+    const entries = ISOLATION_LIMITS.entries, page = 4096;
+    const worktree = ISOLATION_LIMITS.sourceBytes;
+    const looseObjectsAndTrees = Math.ceil(worktree * 1.2) + entries * (4096 + 1024);
+    const pageTails = (2 * entries + 4) * (page - 1);
+    const indexAndLocks = 2 * entries * (4096 + 128);
+    const packAndIndexes = 5 * ISOLATION_LIMITS.bundleBytes;
+    const fixedGitTemporary = 16 * 1024 ** 2;
+    const envelope = worktree + looseObjectsAndTrees + pageTails + indexAndLocks + packAndIndexes + fixedGitTemporary;
+    expect(1024 ** 3).toBeLessThan(2 * worktree + ISOLATION_LIMITS.bundleBytes);
+    expect(size).toBeGreaterThanOrEqual(envelope);
+  });
+  it("reserves the same finite cache headroom for preparation and both fresh phases", async () => {
+    const fake = await fakeDocker();
+    await validateIsolatedNode(fixture(true, "prepared-hook"));
+    await validateIsolatedNode(fixture());
+    const calls = await fake.calls();
+    const caches = calls.filter(({ args }) => args[0] === "volume" && args[1] === "create" && args.at(-1).endsWith("-cache"));
+    expect(caches).toHaveLength(2);
+    const size = (options: string) => Number(options.match(/(?:^|,)size=(\d+)(?:,|$)/)![1]);
+    const seededFileAndIndexTails = ISOLATION_LIMITS.archives * ((4096 - 1) + 4096);
+    // Reserve one compressed restaging archive and finite temporary/install room; expansion can still fail closed.
+    const ordinaryCacheEnvelope = ISOLATION_LIMITS.downloadBytes + seededFileAndIndexTails + ISOLATION_LIMITS.archiveBytes + 256 * 1024 ** 2;
+    expect(ISOLATION_LIMITS.downloadBytes).toBeLessThan(ordinaryCacheEnvelope);
+    const pristineSizes = caches.map(({ args }) => size((args as string[]).find((value) => value.startsWith("o=size="))!.slice(2)));
+    for (const bytes of pristineSizes) expect(bytes).toBeGreaterThanOrEqual(ordinaryCacheEnvelope);
+    const phases = calls.filter(({ args }) => args[0] === "create" && ["hook", "check"].includes(args.at(-1)));
+    expect(phases.map(({ args }) => args.at(-1))).toEqual(["hook", "check"]);
+    for (const { args } of phases) {
+      const cache = (args as string[]).find((value) => value.startsWith("/npm-cache:"))!;
+      expect(size(cache.split(":")[1]!)).toBe(pristineSizes[0]);
+      expect(cache.split(":")[1]!.split(",")).toContain("noexec");
+      expect((args as string[]).some((value) => value.startsWith("type=volume,") && value.includes("dst=/pristine-cache,readonly"))).toBe(true);
+    }
   });
   it("keeps all three bounded volumes mounted with inert, confined, finite-lived storage code", async () => {
     const fake = await fakeDocker(); await validateIsolatedNode(fixture());

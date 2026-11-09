@@ -87,7 +87,7 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
     demand((await run(["version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"], 15_000)).trim() === "linux/amd64", "The Docker server does not match the supported platform.");
     demand((await run(["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", NODE_ISOLATION_IMAGE], 15_000)).trim() === "linux/amd64", "The pinned toolchain image is not available for Linux/amd64.");
     const source = `${id}-source`, cache = `${id}-cache`, data = `${id}-input`;
-    for (const [name, size] of [[source, 1024 ** 3], [cache, 512 * 1024 ** 2], [data, 1536 * 1024 ** 2]] as const) {
+    for (const [name, size] of [[source, 2 * 1024 ** 3], [cache, 1024 ** 3], [data, 1536 * 1024 ** 2]] as const) {
       volumes.push(name);
       await run(["volume", "create", "--driver", "local", "--label", `bootstrap.isolation=${id}`, "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=${size},mode=1777,nosuid,nodev${name === data ? ",nr_inodes=65536" : ""}`, name]);
     }
@@ -161,7 +161,7 @@ export async function validateIsolatedNode(input: NodeValidationInput, options: 
       const name = `${id}-${mode}`;
       // npm's shebang and native dependency tools execute only from this writable dependency mount.
       await create(name, [...volume(data, "/input"), ...volume(source, "/repo"), ...volume(cache, "/pristine-cache"),
-        ...tmpfs("/npm-cache", 512 * 1024 ** 2), ...tmpfs("/repo/project/node_modules", 512 * 1024 ** 2, true), ...tmpfs("/repo/project/dist", 128 * 1024 ** 2)], mode);
+        ...tmpfs("/npm-cache", 1024 ** 3), ...tmpfs("/repo/project/node_modules", 512 * 1024 ** 2, true), ...tmpfs("/repo/project/dist", 128 * 1024 ** 2)], mode);
       const output = await run(["start", "--attach", name]);
       await stopped(name);
       await run(["rm", "--force", name]); containers.splice(containers.indexOf(name), 1);

@@ -68,6 +68,7 @@ export function freezeNodeValidation(input: NodeValidationInput): FrozenNodeInpu
   const get = (name: string) => files.find((file) => file.path === name);
   demand(get("scripts/ci/run-fast-checks.sh"), "The fixed validation entry point is missing.");
   if (parsed.hook !== "none") demand(get(parsed.hook)?.mode === "100755", "The declared pre-commit hook is not executable.");
+  demand(!get("npm-shrinkwrap.json"), "Root npm shrinkwrap is unsupported.");
   demand(get("package.json") && get("package-lock.json"), "Root npm manifests are required.");
   demand(get("package.json")!.bytes.length <= ISOLATION_LIMITS.manifestBytes && get("package-lock.json")!.bytes.length <= ISOLATION_LIMITS.lockBytes, "Npm metadata exceeds the profile parser bound.");
   const pkg = z.object({ workspaces: z.never().optional(), packageManager: z.string().regex(/^npm@/).optional() }).passthrough().parse(json(get("package.json")!.bytes));

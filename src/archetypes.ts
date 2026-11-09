@@ -1552,6 +1552,10 @@ function codeQlLanguages(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages.join(",");
 }
 
+function githubHostedRunner(manifest: BootstrapManifest): string {
+  return manifest.ci.githubHostedImage ?? "ubuntu-latest";
+}
+
 function codeQlMatrix(manifest: BootstrapManifest): string {
   return manifest.ci.codeqlLanguages
     .map((language) => {
@@ -1560,7 +1564,7 @@ function codeQlMatrix(manifest: BootstrapManifest): string {
       return [
         `- language: ${language}`,
         `  build-mode: ${autobuild ? "autobuild" : "none"}`,
-        `  runner: ${swift ? "macos-14" : "ubuntu-latest"}`
+        `  runner: ${swift ? "macos-14" : githubHostedRunner(manifest)}`
       ].join("\n");
     })
     .join("\n");
@@ -1583,7 +1587,7 @@ function publicSecurityWorkflow(manifest: BootstrapManifest): string {
     jobs:
       dependency-review:
         if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         permissions:
           contents: read
           pull-requests: read
@@ -1616,7 +1620,7 @@ ${indentBlock(codeQlMatrix(manifest), 12)}
 
 `}      sbom:
         if: github.event_name == 'push' || github.event_name == 'schedule'
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         permissions:
           contents: read
         steps:
@@ -1679,7 +1683,7 @@ function releaseCallerWorkflow(manifest: BootstrapManifest): string {
       release:
         uses: ${manifest.release.reusableWorkflowRepo}/.github/workflows/release.yml@${manifest.release.reusableWorkflowRef}
         with:
-          runs-on: '["ubuntu-latest"]'
+          runs-on: '["${githubHostedRunner(manifest)}"]'
           verify-script: scripts/ci/run-release-verification.sh
           version-script: scripts/ci/run-release-version.sh
           build-script: scripts/ci/run-release-build.sh
@@ -1845,6 +1849,17 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
 }
 
 function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
+  const preflightInput = manifest.release.postpublishRequiresPreflight
+    ? `\n${indentBlock(dedent`
+        preflight_run_id:
+          description: Exact approved release preflight run ID
+          required: true
+          type: string
+      `, 10)}`
+    : "";
+  const preflightArgument = manifest.release.postpublishRequiresPreflight
+    ? "\n          preflight_run_id: ${{ inputs.preflight_run_id }}"
+    : "";
   return dedent`
     name: Release Postpublish
 
@@ -1864,7 +1879,7 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
           release_issue:
             description: Release issue number
             required: false
-            type: string
+            type: string${preflightInput}
 
     jobs:
       postpublish:
@@ -1875,7 +1890,7 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
         with:
           tag: \${{ inputs.tag }}
           channel: \${{ inputs.channel }}
-          release_issue: \${{ inputs.release_issue }}
+          release_issue: \${{ inputs.release_issue }}${preflightArgument}
           postpublish_script: scripts/release/postpublish.sh
           artifact_dir: ${manifest.release.artifacts.directory}
           evidence_artifact_name: release-evidence
@@ -2219,6 +2234,7 @@ function releasePostpublishReusableWorkflow(): string {
           tag: { required: true, type: string }
           channel: { required: true, type: string }
           release_issue: { required: false, type: string, default: "" }
+          preflight_run_id: { required: false, type: string, default: "" }
           postpublish_script: { required: false, type: string, default: scripts/release/postpublish.sh }
           artifact_dir: { required: false, type: string, default: dist/release }
           evidence_artifact_name: { required: false, type: string, default: release-evidence }
@@ -2244,6 +2260,7 @@ function releasePostpublishReusableWorkflow(): string {
               TAG: \${{ inputs.tag }}
               CHANNEL: \${{ inputs.channel }}
               RELEASE_ISSUE: \${{ inputs.release_issue }}
+              PREFLIGHT_RUN_ID: \${{ inputs.preflight_run_id }}
               POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
               ARTIFACT_DIR: \${{ inputs.artifact_dir }}
             run: |
@@ -2539,7 +2556,7 @@ function releaseEvidenceSchemaDoc(): string {
 
 function prWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: PR Fast CI
@@ -2820,7 +2837,7 @@ ${indentBlock(setupSteps(manifest), 10)}
 }
 
 function issueHygieneWorkflow(manifest: BootstrapManifest): string {
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: Issue Hygiene Report
@@ -2869,7 +2886,7 @@ function issueHygieneScript(): string {
 
 function extendedWorkflow(manifest: BootstrapManifest): string {
   const paths = workflowPaths(manifest);
-  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"]));
+  const shellRunner = formatRunsOn(resolveRunsOn(manifest.ci.runnerPolicy, manifest.project.visibility, ["shell"], manifest.ci.githubHostedImage));
 
   return dedent`
     name: Extended Validation
@@ -3505,7 +3522,7 @@ function claudeWorkflow(manifest: BootstrapManifest): string {
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
           (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
           (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-        runs-on: ubuntu-latest
+        runs-on: ${githubHostedRunner(manifest)}
         timeout-minutes: 30
         steps:
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

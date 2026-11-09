@@ -470,6 +470,7 @@ const manifestSchema = z.object({
     .object({
       policy: z.enum(["standard", "standard-public", "experimental", "strict"]).optional(),
       runnerPolicy: z.enum(["hybrid-safe", "self-hosted-first", "github-hosted-first"]).optional(),
+      githubHostedImage: z.enum(["ubuntu-latest", "ubuntu-24.04"]).optional(),
       nodeVersion: z.string().optional(),
       pythonVersion: z.string().optional(),
       fastChecks: z.array(z.string()).optional(),
@@ -514,6 +515,7 @@ const manifestSchema = z.object({
       updateMinorTag: z.boolean().optional(),
       reusableWorkflowRepo: z.string().min(1).optional(),
       reusableWorkflowRef: z.string().min(1).optional(),
+      postpublishRequiresPreflight: z.boolean().optional(),
       changelog: releaseChangelogSchema.optional(),
       versions: z.array(releaseVersionSchema).optional(),
       artifacts: releaseArtifactSchema.optional(),
@@ -960,6 +962,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     ci: {
       ...(parsed.ci?.policy ? { policy: parsed.ci.policy } : {}),
       runnerPolicy: parsed.ci?.runnerPolicy ?? "hybrid-safe",
+      ...(parsed.ci?.githubHostedImage ? { githubHostedImage: parsed.ci.githubHostedImage } : {}),
       nodeVersion: parsed.ci?.nodeVersion ?? "20",
       pythonVersion: parsed.ci?.pythonVersion ?? "3.12",
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
@@ -1003,6 +1006,9 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       updateMinorTag: parsed.release?.updateMinorTag ?? true,
       reusableWorkflowRepo: parsed.release?.reusableWorkflowRepo ?? `${parsed.project.owner}/bootstrap`,
       reusableWorkflowRef: parsed.release?.reusableWorkflowRef ?? "refs/heads/main",
+      ...(parsed.release?.postpublishRequiresPreflight !== undefined
+        ? { postpublishRequiresPreflight: parsed.release.postpublishRequiresPreflight }
+        : {}),
       changelog: {
         enabled: parsed.release?.changelog?.enabled ?? true,
         mode: parsed.release?.changelog?.mode ?? "github-generated-notes",

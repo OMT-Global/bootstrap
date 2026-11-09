@@ -987,21 +987,29 @@ describe("strict optional release-publish provisioning", () => {
   });
 });
 
-function releaseHttpClient(environmentResponse: (read: number) => CommandResult) {
+function releaseHttpClient(
+  environmentResponse: (read: number) => CommandResult,
+  target = { owner: "acme", repo: "example", branch: "main", protectionUrl: classicProtection.url }
+) {
   const calls: ReleaseCall[] = [];
+  const repoEndpoint = `/repos/${target.owner}/${target.repo}`;
+  const branchEndpoint = `${repoEndpoint}/branches/${encodeURIComponent(target.branch)}`;
+  const releaseEndpoint = `${repoEndpoint}/environments/release-publish`;
   let reads = 0;
   const runner: CommandRunner = async (_command, args = [], options) => {
     if (args[0] !== "api") return { stdout: "", stderr: "", exitCode: 0 };
     const endpoint = args.find((arg) => arg.startsWith("/"))!;
     const method = args[args.indexOf("--method") + 1]!;
     calls.push({ method, endpoint, ...(options?.input ? { payload: JSON.parse(options.input) } : {}) });
-    if (endpoint === RELEASE_ENDPOINT && method === "GET") return environmentResponse(++reads);
+    if (endpoint === releaseEndpoint && method === "GET") return environmentResponse(++reads);
     let body: unknown = {};
-    if (endpoint === PUBLIC_REPO_ENDPOINT) body = { ...publicRepo(), private: true, visibility: "private" };
-    if (endpoint === "/users/acme") body = { login: "acme", type: "User" };
+    if (endpoint === repoEndpoint) body = { ...publicRepo(), private: true, visibility: "private" };
+    if (endpoint === `/users/${target.owner}`) body = { login: "acme", type: "User" };
     if (endpoint === "/users/alice") body = { id: 7, type: "User" };
-    if (endpoint === BRANCH_ENDPOINT && method === "GET") body = protectedBranch;
-    if (endpoint === `${BRANCH_ENDPOINT}/protection` && method === "GET") body = classicProtection;
+    if (endpoint === branchEndpoint && method === "GET") body = { name: target.branch, protected: true };
+    if (endpoint === `${branchEndpoint}/protection` && method === "GET") {
+      body = { ...classicProtection, url: target.protectionUrl };
+    }
     return { stdout: JSON.stringify(body), stderr: "", exitCode: 0 };
   };
   return { calls, client: new GitHubClient({ runner }) };
@@ -1010,6 +1018,49 @@ function releaseHttpClient(environmentResponse: (read: number) => CommandResult)
 function framedResponse(status: number, body: string, stderr = "", exitCode = status === 200 ? 0 : 1): CommandResult {
   return { stdout: `HTTP/2.0 ${status} ${status === 200 ? "OK" : "Not Found"}\nContent-Type: application/json\r\n\r\n${body}`, stderr, exitCode };
 }
+
+describe("canonical repository casing in release branch protection", () => {
+  const validTargets = [
+    { owner: "ACME", repo: "example", branch: "main", protectionUrl: classicProtection.url },
+    { owner: "acme", repo: "EXAMPLE", branch: "main", protectionUrl: classicProtection.url },
+    { owner: "ACME", repo: "EXAMPLE", branch: "main", protectionUrl: "https://api.github.com/repos/Acme/Example/branches/main/protection" },
+    { owner: "ACME", repo: "EXAMPLE", branch: "Release/Ready", protectionUrl: "https://github.example.com/api/v3/repos/Acme/Example/branches/Release/Ready/protection" },
+    { owner: "ACME", repo: "EXAMPLE", branch: "Release/Ready", protectionUrl: "https://github.example.com/api/v3/repos/Acme/Example/branches/Release%2FReady/protection" }
+  ];
+  for (const target of validTargets) {
+    it(`accepts canonical repository casing for ${target.owner}/${target.repo} at ${target.protectionUrl}`, async () => {
+      const manifest = releaseManifest();
+      manifest.project.owner = target.owner;
+      manifest.project.name = target.repo;
+      manifest.project.defaultBranch = target.branch;
+      manifest.environments["release-publish"]!.branches = [target.branch];
+      const { calls, client } = releaseHttpClient(() => framedResponse(200, JSON.stringify(releaseRemote())), target);
+      await expect(applyGitHub(manifest, client)).resolves.toContainEqual(
+        expect.objectContaining({ id: "environment-release-publish" })
+      );
+      expect(calls.filter((call) => call.method !== "GET" && call.endpoint.endsWith("/environments/release-publish"))).toEqual([]);
+    });
+  }
+
+  const invalidUrls = [
+    "https://api.github.com/repos/acme/example/branches/release/Ready/protection",
+    "https://api.github.com/repos/acme/example/branches/Release%2Fready/protection",
+    "https://api.github.com/repos/acme/other/branches/Release%2FReady/protection",
+    "https://api.github.com/repos/other/example/branches/Release%2FReady/protection",
+    "https://api.github.com/repos/acme/example/branches/Release%ZZReady/protection"
+  ];
+  for (const protectionUrl of invalidUrls) {
+    it(`rejects wrong or malformed branch protection targets: ${protectionUrl}`, async () => {
+      const target = { owner: "acme", repo: "example", branch: "Release/Ready", protectionUrl };
+      const manifest = releaseManifest();
+      manifest.project.defaultBranch = target.branch;
+      manifest.environments["release-publish"]!.branches = [target.branch];
+      const { calls, client } = releaseHttpClient(() => framedResponse(200, JSON.stringify(releaseRemote())), target);
+      await expect(applyGitHub(manifest, client)).rejects.toThrow("no verified classic protection");
+      expect(calls.filter((call) => call.method !== "GET" && call.endpoint.endsWith("/environments/release-publish"))).toEqual([]);
+    });
+  }
+});
 
 describe("release absence uses captured HTTP status in the actual client", () => {
   const missing = JSON.stringify({ message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" });

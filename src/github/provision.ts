@@ -514,9 +514,13 @@ async function verifyReleaseBranchProtection(
       throw new Error();
     }
     const protectionUrl = new URL(protection.url);
+    const protectionPath = /\/repos\/([^/]+)\/([^/]+)\/branches\/(.+)\/protection$/.exec(protectionUrl.pathname);
+    // GitHub canonicalizes repository casing; branch identity remains case-sensitive.
     if (
-      protectionUrl.protocol !== "https:" ||
-      !decodeURIComponent(protectionUrl.pathname).endsWith(`${decodeURIComponent(endpoint)}/protection`)
+      protectionUrl.protocol !== "https:" || !protectionPath ||
+      decodeURIComponent(protectionPath[1]!).toLowerCase() !== manifest.project.owner.toLowerCase() ||
+      decodeURIComponent(protectionPath[2]!).toLowerCase() !== manifest.project.name.toLowerCase() ||
+      decodeURIComponent(protectionPath[3]!) !== manifest.project.defaultBranch
     ) {
       throw new Error();
     }

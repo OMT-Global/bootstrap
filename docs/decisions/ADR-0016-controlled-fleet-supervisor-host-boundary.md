@@ -1,8 +1,11 @@
 # ADR-0016: Controlled fleet supervisor host boundary
 
-- Status: Accepted for the private helper prerequisite
+Status: Accepted
+
 - Date: 2026-11-08
 - Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62)
+
+Acceptance is limited to the private helper prerequisite.
 
 ## Context
 

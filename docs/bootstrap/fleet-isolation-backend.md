@@ -18,7 +18,11 @@ The code-owned limits are explicit:
 |---|---|
 | Source | 10,000 total file/directory entries, path depth 32, 512 MiB total |
 | Public Git bundle | 64 MiB |
-| Package / lock JSON | 1 MiB / 16 MiB |
+| Package / lock JSON | 1 MiB / 16 MiB; `package-lock.json` is the sole root lock, root `npm-shrinkwrap.json` is unsupported |
+| Candidate branch | 4,096 ASCII bytes |
+| Copied input storage | 1,536 MiB; 65,536 inodes |
+| Prepared source / Git storage | 2 GiB |
+| Pristine cache / each phase cache | 1 GiB each |
 | Dependency archives | 1,000 archives, 64 MiB each, 512 MiB total |
 | Execution | 15 minutes per phase, 60 minutes absolute per backend call; 2 CPUs, 4 GiB memory, 256 PIDs |
 | Phase temporary storage | 256 MiB; executable only in actual hook/check containers |
@@ -26,9 +30,15 @@ The code-owned limits are explicit:
 | Download | 30 seconds per archive |
 | Retained Docker output | 8 MiB across the run |
 
+The input volume retains the complete 512 MiB source, 512 MiB archive and 64 MiB bundle budgets together. Its generated manifest is finite: branch names have a 4,096-byte ASCII limit; other strings, paths and entry counts already have explicit limits. Even allowing six JSON bytes per input byte, 10,000 path descriptors plus the remaining fields fit below 256 MiB. At most 11,003 regular files add less than 44 MiB of 4 KiB page tails, including setup and manifest. Thus 1,536 MiB exceeds the full payload, generated data and page-rounding bound without reducing accepted source, path or archive budgets. The input-only inode limit covers at most 11,007 materialized objects including its root. Inode/dentry kernel memory and host/cgroup charging remain separate resources; this storage calculation does not prove a whole-run RAM bound. The actual kernel mount/options and complete pipeline remain part of required Linux acceptance.
+
+The 2 GiB source volume reserves space for the 512 MiB worktree and its separately written loose Git objects, the retained 64 MiB base pack, and tree/index/page/temporary bookkeeping. A conservative engineering envelope including 1.2 times payload plus per-entry object/tree reserve, worktree/object page tails, index/lock data, pack indexes and fixed temporary room is below 1.67 GiB under the documented entry/path bounds. This is sizing headroom, not a theorem for every Git representation, filesystem or whole-run memory use; process buffers and kernel accounting still face the unchanged 4 GiB worker limit.
+
+The pristine cache and each fresh phase cache have matching 1 GiB quotas. This leaves finite space beyond the 512 MiB compressed archive budget for content/index page tails, one archive's compressed restaging, temporary extraction, install metadata and logs. The seed content/index estimate alone is about 520 MiB under 4 KiB allocation; it is not the complete npm install footprint. `npm cache add` can extract a tarball to read its manifest, so compressed download bounds do not bound expansion. Large expansions, dependency graphs, logs, build output or aggregate memory pressure can still exhaust a quota and fail closed; no payload budget is reduced and no access widens. Root shrinkwrap is rejected before package-lock parsing so preparation and both installs use the validated root graph; an ordinary nested filename remains inert source data.
+
 The cache, input, source, temporary, dependency, and build filesystems also have fixed bounds in the profile. An unsupported write location or exhausted bound fails rather than widening access. A trusted inert `-storage` container continuously holds all three Docker local-driver tmpfs volumes from before data copy through completion. It uses the same non-root, network-disabled, read-only-root, capability-free controls as the worker containers. The supervisor verifies its live state before preparation, before each phase, and before returning evidence; death or deadline expiry blocks success. The host watchdog and keeper timer share the same absolute deadline from backend entry.
 
-Actual hook/check containers explicitly permit execution on `/repo/project/node_modules` for installed tools and on the existing 256 MiB `/tmp` for temporary native/script helpers created by normal repository tests. Preparation keeps its 256 MiB `/tmp` non-executable; the keeper keeps its 1 MiB `/tmp` non-executable. Installer, npm-cache, and build tmpfs mounts also remain explicitly `noexec`. All retain their existing size, ownership, `nosuid`, and `nodev` settings. This is a fixed internal profile choice; callers cannot choose executable mount paths. Prepared source/index remain read-only, and network, credentials, privileges, resources, and timeouts keep their existing boundary.
+Actual hook/check containers explicitly permit execution on `/repo/project/node_modules` for installed tools and on the existing 256 MiB `/tmp` for temporary native/script helpers created by normal repository tests. Preparation keeps its 256 MiB `/tmp` non-executable; the keeper keeps its 1 MiB `/tmp` non-executable. Installer, npm-cache, and build tmpfs mounts also remain explicitly `noexec`. All retain their listed sizes, ownership, `nosuid`, and `nodev` settings. This is a fixed internal profile choice; callers cannot choose executable mount paths. Prepared source/index remain read-only, and network, credentials, privileges, resources, and timeouts keep their existing boundary.
 
 Every created container explicitly uses `--log-driver none`; bounded attached output is the report path. This avoids an unbounded daemon log alongside the supervisor output budget. Cleanup removes workers first, the keeper last, then volumes.
 

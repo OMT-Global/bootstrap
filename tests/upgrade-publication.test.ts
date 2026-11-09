@@ -80,7 +80,7 @@ const contextCanary = "context-token-canary";
 const replyMarker = "synthetic-only";
 const requiredLinux = process.env.BOOTSTRAP_REQUIRE_HOST_BROKER_TESTS === "1";
 const overrides = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_PATH"];
-beforeEach(() => { for (const key of overrides) vi.stubEnv(key, ""); });
+beforeEach(() => { for (const key of overrides) vi.stubEnv(key, ""); vi.stubEnv("HOME", os.userInfo().homedir); });
 afterEach(async () => {
   vi.unstubAllEnvs(); faults.cleanupFailures = 0; faults.race = ""; faults.missingTools = false; faults.providerWritable = false;
   faults.actualToolMetadata = false; faults.actualLimits = false; faults.providerReads = 0;
@@ -266,8 +266,13 @@ describe("private create-only publication broker (synthetic provider only)", () 
     }
     expect(faults.helper).not.toContain("fixture-provider-canary"); expect(faults.helper).not.toMatch(/socket-canary|token-canary/);
   });
+  it("rejects a provider home inconsistent with the resolved account before reading files or running commands", async () => {
+    const data = await fixture(); vi.stubEnv("HOME", path.join(data.directory, "different-home"));
+    expect(await data.publish()).toMatchObject({ ok: false, phase: "provider", push: "not-attempted" });
+    expect(faults.providerReads).toBe(0); expect(faults.commands).toHaveLength(0);
+  });
   it("executes the fixed credential wrapper and rejects malformed or out-of-scope requests before any provider invocation", async () => {
-    const data = await fixture(); await data.publish(); const wrapper = path.join(data.directory, "captured-helper.cjs"); await writeFile(wrapper, faults.helper);
+    const data = await fixture(); expect(await data.publish()).toMatchObject({ ok: true }); const wrapper = path.join(data.directory, "captured-helper.cjs"); await writeFile(wrapper, faults.helper);
     const marker = path.join(data.directory, "provider-called"); const preload = path.join(data.directory, "provider-preload.cjs");
     await writeFile(preload, `require("node:child_process").spawnSync = (exe, args, options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return { status: 0, signal: null, stdout: Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=${replyMarker}\\n"), stderr: Buffer.alloc(0) }; };`);
     const request = "protocol=https\nhost=github.com\npath=example/public.git\n\n";

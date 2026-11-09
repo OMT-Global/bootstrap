@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -37,7 +37,7 @@ vi.mock("../src/upgrade-transport.js", async (importOriginal) => {
 });
 
 import { captureGeneratorSigning, freezeCommitPlan, signAndVerify } from "../src/upgrade-signing.js";
-import { neutralEnvironment } from "../src/upgrade-host.js";
+import { neutralEnvironment, readRegular } from "../src/upgrade-host.js";
 import { verifyGitSnapshot } from "../src/upgrade-git.js";
 import { publishCandidate } from "../src/upgrade-publication.js";
 
@@ -46,8 +46,25 @@ const blocked = "Governed upgrade host operation is unsupported.";
 function git(root: string, env: NodeJS.ProcessEnv, args: string[], input?: Uint8Array | string): Buffer {
   return execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false", ...args], { cwd: root, env, input, maxBuffer: 2 * 1024 ** 2 });
 }
-async function fixture(linked = false) {
-  const directory = await mkdtemp(path.join(await realpath(path.join(process.cwd(), "node_modules")), ".bootstrap-signing-test-")); roots.push(directory);
+async function fixtureDirectory(parents: readonly string[] = [path.join(process.cwd(), "node_modules"), os.tmpdir()]): Promise<string> {
+  for (const parent of parents) {
+    let directory: string | undefined; let probe: string;
+    try {
+      directory = await mkdtemp(path.join(await realpath(parent), ".bootstrap-signing-test-")); roots.push(directory);
+      probe = path.join(directory, "public-probe"); const bytes = Buffer.from("synthetic public probe\n");
+      await writeFile(probe, bytes, { flag: "wx", mode: 0o600 });
+      await readRegular(probe, bytes.length, true);
+    } catch {
+      if (directory) { await rm(directory, { recursive: true, force: true }); roots.splice(roots.indexOf(directory), 1); }
+      continue;
+    }
+    await rm(probe);
+    return directory;
+  }
+  throw new Error("Signing fixture requires a writable directory with trusted ancestry.");
+}
+async function fixture(linked = false, storageParents?: readonly string[]) {
+  const directory = await fixtureDirectory(storageParents);
   const home = path.join(directory, "home"); const canonical = path.join(directory, "generator"); const empty = path.join(directory, "empty");
   await Promise.all([home, canonical, empty].map((name) => mkdir(name))); scaffold.home = home;
   for (const name of Object.keys(process.env)) if (name.startsWith("GIT_") || name === "EMAIL" || name === "XDG_CONFIG_HOME") vi.stubEnv(name, undefined);
@@ -92,6 +109,27 @@ afterEach(async () => {
 });
 
 describe("trusted generator SSH capture and exact candidate verification", () => {
+  it("uses eligible private storage when checkout ancestry is shared-writable", async () => {
+    const control = await fixtureDirectory();
+    const checkout = path.join(control, "shared"); const modules = path.join(checkout, "node_modules"); const second = path.join(checkout, "second"); const privateStorage = path.join(control, "private");
+    await mkdir(modules, { recursive: true }); await mkdir(second); await mkdir(privateStorage, { mode: 0o700 }); await chmod(checkout, 0o777);
+    const marker = path.join(checkout, "public-probe"); await writeFile(marker, "synthetic public probe\n", { mode: 0o600 });
+    await expect(readRegular(marker, 64, true)).rejects.toThrow(blocked);
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(checkout);
+    try {
+      const data = await fixture(false, [modules, privateStorage]);
+      const captured = await captureGeneratorSigning(data.root, data.base);
+      expect(captured.identity).toEqual({ name: "Fixture Operator", email: "local@example.invalid" });
+      expect(data.directory.startsWith(privateStorage + path.sep)).toBe(true);
+      expect(await readdir(modules)).toEqual([]);
+      await expect(fixtureDirectory([modules, second])).rejects.toThrow("Signing fixture requires a writable directory with trusted ancestry.");
+      expect(await readdir(modules)).toEqual([]); expect(await readdir(second)).toEqual([]);
+    } finally {
+      cwd.mockRestore();
+      await rm(control, { recursive: true, force: true });
+      roots.splice(roots.indexOf(control), 1);
+    }
+  });
   it.each([false, true])("uses XDG/global/common-local precedence and safe raw source for linked=%s", async (linked) => {
     const data = await fixture(linked); const marker = path.join(data.directory, "canary"); data.config("core.fsmonitor", `sh -c 'touch ${marker}'`); data.config("filter.canary.clean", `sh -c 'touch ${marker}'`); data.config("filter.canary.smudge", `sh -c 'touch ${marker}'`);
     await mkdir(path.join(data.canonical, ".git/hooks")); await writeFile(path.join(data.canonical, ".git/hooks/pre-commit"), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });

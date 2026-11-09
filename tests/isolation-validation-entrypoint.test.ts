@@ -74,6 +74,7 @@ from pathlib import Path
 import sys
 import tarfile
 import tempfile
+import time
 
 source = Path.cwd() / 'scripts/ci/controlled-reviewer-probe.py'
 spec = importlib.util.spec_from_file_location('driver_under_test', source)
@@ -105,7 +106,9 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
         entries['codex-package.json'] = json.dumps({'layoutVersion': 1, 'version': '0.167.0',
             'target': 'x86_64-unknown-linux-musl', 'variant': 'codex', 'entrypoint': 'bin/codex'}).encode()
         entries['licenses/LICENSE.txt'] = content
-        probe.NATIVE = {name: hashlib.sha256(elf).hexdigest() for name in probe.NATIVE}
+        artifacts = probe.artifacts
+        artifacts.NATIVE = {name: hashlib.sha256(elf).hexdigest() for name in artifacts.NATIVE}
+        artifacts.DEADLINE = time.monotonic() + 10
         package = target / 'package.tar.gz'
         with tarfile.open(package, 'w:gz') as archive:
             directory = tarfile.TarInfo('licenses')
@@ -117,7 +120,7 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
                 archive.addfile(item, io.BytesIO(data))
         destination = target / 'expanded'
         destination.mkdir()
-        result = probe.extract(package, destination)
+        result = artifacts.extract(package, destination)
         print(json.dumps({'notices': result['packageNoticesPreserved'],
                           'directoryPreserved': (destination / 'licenses').is_dir(),
                           'allPackageFilesPreserved': all((destination / name).read_bytes() == data
@@ -187,5 +190,473 @@ describe("controlled reviewer driver regressions", () => {
     expect(result.rejected).toBe(true);
     expect(result.reason).toBe("output");
     expect(result.cleanupCalled).toBe(true);
+  });
+});
+
+const orchestrationHarness = String.raw`
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import signal
+import stat
+import sys
+import tempfile
+import time
+import types
+from unittest import mock
+
+spec = importlib.util.spec_from_file_location('runtime_orchestration', Path.cwd() / 'scripts/ci/controlled-reviewer-probe.py')
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+# Synthetic-only fixture data for the inherited-credential rejection check.
+ENV_CANARY = 'fabricated-env-key-must-not-forward'
+mode = sys.argv[1]
+if mode == 'cleanup-clock':
+    before_handler = signal.getsignal(signal.SIGALRM)
+    before_timer = signal.getitimer(signal.ITIMER_REAL)
+    probe.CLEANUP_DEADLINE, probe.DEADLINE = 17, 99
+    try:
+        with probe.cleanup_clock():
+            assert 59 < probe.CLEANUP_DEADLINE - time.monotonic() <= 60
+            assert probe.DEADLINE == 99
+            signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
+    except probe.Unsupported as error:
+        assert str(error) == 'cleanup'
+    else:
+        raise AssertionError('cleanup expiry did not interrupt work')
+    assert probe.CLEANUP_DEADLINE == 17 and probe.DEADLINE == 99
+    assert signal.getsignal(signal.SIGALRM) == before_handler
+    assert before_timer == (0.0, 0.0) and signal.getitimer(signal.ITIMER_REAL) == before_timer
+    print(json.dumps({'bounded': True, 'restored': True, 'reason': 'cleanup'}))
+    sys.exit(0)
+real_mkdtemp, real_rmtree = tempfile.mkdtemp, probe.shutil.rmtree
+real_write_bytes, real_read_bytes = Path.write_bytes, Path.read_bytes
+with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as outer:
+    outer = Path(outer)
+    probe.HERE = outer / 'scripts/ci'
+    probe.HERE.mkdir(parents=True)
+    for name in ('controlled-reviewer-probe.py', 'controlled-reviewer-fixture.py', 'controlled-reviewer-probe.Dockerfile'):
+        (probe.HERE / name).write_text('public synthetic test source')
+    state = {'roots': [], 'stageCalls': 0, 'buildCalls': 0, 'caseOrder': [], 'providerRequests': 0,
+             'mockMethods': {'GET': 0, 'POST': 0}, 'emittedWhileRootPresent': False,
+             'reportWrittenWhileRootPresent': False, 'provenancePreservedAtBuild': False,
+             'binaryEvidenceWrites': 0, 'binaryFlushes': 0, 'outputEvents': []}
+    initial_artifact_env = {'test-only-artifact-env': 'independent'}
+    probe.artifacts.ENV = initial_artifact_env
+    provenance = b'{\n  "publicSyntheticArtifactProvenance": true\n}\n'
+    verified = {name: ('verified synthetic ' + name).encode() for name in ('package', 'native', 'bwrap')}
+    stage_evidence = {'head': ('e' if mode == 'stage-head-mismatch' else 'a') * 40,
+                      'signatureVerified': True, 'stageSourceSha256': 'c' * 64,
+                      'package': {'packageNoticesPreserved': {'licenses/LICENSE.txt': 'd' * 64}},
+                      'bundles': {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+                                  for name, data in verified.items()}}
+    if mode == 'oversized-evidence':
+        stage_evidence['padding'] = '🧪' * 20000
+
+    def owned_mkdtemp(*args, **kwargs):
+        result = real_mkdtemp(*args, dir=outer, **kwargs)
+        state['roots'].append(Path(result))
+        return result
+
+    def stage(directory, absolute_deadline=None):
+        state['stageCalls'] += 1
+        assert directory.is_absolute() and directory.is_dir() and not directory.is_symlink()
+        assert directory.parent == state['roots'][0] and not list(directory.iterdir())
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700 and directory.stat().st_uid == os.getuid()
+        assert absolute_deadline == probe.DEADLINE and 899 < absolute_deadline - started <= 901
+        assert probe.artifacts.ENV is initial_artifact_env and probe.artifacts.ENV is not probe.ENV
+        assert probe.ENV['HOME'] == str(directory.parent) and probe.ENV['TMPDIR'] == str(directory.parent)
+        assert probe.ENV['DOCKER_CONFIG'] == str(directory.parent / 'docker-config')
+        assert not any(key in probe.ENV for key in ('OPENAI_API_KEY', 'CODEX_HOME', 'GITHUB_TOKEN'))
+        state['stageContract'] = True
+        state['deadline'] = absolute_deadline
+        if mode in ('stage-failure', 'stage-deadline'):
+            (directory / 'partial-public-download').write_bytes(b'public synthetic partial data')
+            raise probe.Unsupported('deadline' if mode == 'stage-deadline' else 'bundle/package/pinned-hash/mismatch')
+        context = directory / 'selected-context'
+        package = context / 'verified-codex-package'
+        package.mkdir(parents=True)
+        (context / 'public-provenance.json').write_bytes(provenance)
+        for name, data in verified.items():
+            (directory / (name + '.standard.json')).write_bytes(data)
+        state['context'] = context
+        return {'context': context, 'package': package, 'evidence': stage_evidence, 'verifiedBundleBytes': verified}
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('duplicate acquisition/preparation or unverified bundle read')
+
+    def read_bytes(path):
+        if path.name.endswith('.standard.json'):
+            forbidden()
+        return real_read_bytes(path)
+
+    def command(arguments, **kwargs):
+        if arguments[0] == '/usr/bin/git':
+            return b'a' * 40 + b'\n'
+        operation = arguments[3]
+        if operation == 'info':
+            return json.dumps({'OSType': 'linux', 'Architecture': 'x86_64', 'CgroupVersion': '2', 'SecurityOptions': []}).encode()
+        if operation == 'build':
+            state['buildCalls'] += 1
+            assert Path(arguments[-1]) == state['context']
+            assert arguments[4:7] == ['--network', 'none', '--pull=false']
+            state['provenancePreservedAtBuild'] = (state['context'] / 'public-provenance.json').read_bytes() == provenance
+            assert state['provenancePreservedAtBuild']
+            for name in verified:
+                (state['context'].parent / (name + '.standard.json')).write_bytes(b'later unverified synthetic bytes')
+        if operation == 'image' and arguments[4] == 'inspect':
+            return json.dumps([{'Id': 'sha256:' + 'b' * 64}]).encode()
+        if operation == 'image' and arguments[4] == 'rm' and mode == 'image-cleanup-failure':
+            raise probe.Unsupported('injected-image-cleanup-failure')
+        return b''
+
+    def case_run(case, *args):
+        state['caseOrder'].append(case)
+        result = {'case': case, 'ok': not (mode == 'native-unsupported' and case == 'sandbox'), 'providerRequests': 0}
+        if case == 'api':
+            result.update(providerRequests=2, mockMethods={'GET': 1, 'POST': 1})
+            state['providerRequests'] += 2
+            state['mockMethods'] = result['mockMethods']
+        return result
+
+    def rmtree(path, *args, **kwargs):
+        if mode == 'temp-cleanup-failure' and Path(path) in state['roots']:
+            raise OSError('injected temporary cleanup failure')
+        return real_rmtree(path, *args, **kwargs)
+
+    def write_bytes(path, *args, **kwargs):
+        if path.name == 'controlled-reviewer-evidence.json':
+            state['reportWrittenWhileRootPresent'] = any(root.exists() for root in state['roots'])
+            state['outputEvents'].append('report')
+        return real_write_bytes(path, *args, **kwargs)
+
+    class OutputBuffer(io.BytesIO):
+        def write(self, value):
+            if value.startswith(b'CONTROLLED_REVIEWER_EVIDENCE '):
+                state['emittedWhileRootPresent'] = any(root.exists() for root in state['roots'])
+                state['binaryEvidenceWrites'] += 1
+                state['outputEvents'].append('wire-write')
+            return super().write(value)
+        def flush(self):
+            state['binaryFlushes'] += 1
+            state['outputEvents'].append('wire-flush')
+            return super().flush()
+
+    raw_output = OutputBuffer()
+    output = io.TextIOWrapper(raw_output, encoding='utf-16' if mode == 'non-utf8-output' else 'utf-8', write_through=True)
+    if mode == 'non-utf8-output':
+        original_encode_evidence = probe.encode_evidence
+        def exact_wire_boundary(evidence):
+            evidence['wirePadding'] = ''
+            overhead = len(b'CONTROLLED_REVIEWER_EVIDENCE ') + len(json.dumps(evidence, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) + 1
+            available = 65536 - overhead
+            evidence['wirePadding'] = '🧪' * (available // 4) + 'x' * (available % 4)
+            return original_encode_evidence(evidence)
+        probe.encode_evidence = exact_wire_boundary
+    probe.self_test, probe.command, probe.case_run = lambda: None, command, case_run
+    started = time.monotonic()
+    with mock.patch.object(probe.tempfile, 'mkdtemp', side_effect=owned_mkdtemp), \
+            mock.patch.object(probe.shutil, 'rmtree', side_effect=rmtree), \
+            mock.patch.object(probe.sys, 'platform', 'linux'), \
+            mock.patch.object(probe.os, 'uname', return_value=types.SimpleNamespace(machine='x86_64')), \
+            mock.patch.dict(probe.os.environ, {'RELEASE_PROFILE': 'full', 'GITHUB_REPOSITORY': 'OMT-Global/bootstrap',
+                           'GITHUB_RUN_ID': '1' * 100000 if mode == 'oversized-run-id' else '123',
+                           'OPENAI_API_KEY': ENV_CANARY}, clear=True), \
+            mock.patch.object(probe.artifacts, 'stage', side_effect=stage), \
+            mock.patch.object(probe.artifacts, 'main', side_effect=forbidden), \
+            mock.patch.object(probe.artifacts, 'prepare_metadata', side_effect=forbidden), \
+            mock.patch.object(probe.artifacts, 'prepare_with_clock', side_effect=forbidden), \
+            mock.patch.object(probe.artifacts, 'normalize_bundle', side_effect=forbidden), \
+            mock.patch.object(probe.artifacts, 'download', side_effect=forbidden), \
+            mock.patch.object(probe.artifacts, 'extract', side_effect=forbidden), \
+            mock.patch.object(probe.artifacts, 'verify_signatures', side_effect=forbidden), \
+            mock.patch.object(Path, 'read_bytes', read_bytes), \
+            mock.patch.object(Path, 'write_bytes', write_bytes), contextlib.redirect_stdout(output):
+        status = probe.main()
+    wire = raw_output.getvalue()
+    lines = [line for line in wire.decode('utf-8', 'strict').splitlines() if line.startswith('CONTROLLED_REVIEWER_EVIDENCE ')]
+    assert len(lines) == 1
+    evidence = json.loads(lines[0].split(' ', 1)[1])
+    report_bytes = (outer / 'dist/release/controlled-reviewer-evidence.json').read_bytes()
+    assert report_bytes == lines[0].split(' ', 1)[1].encode('utf-8') + b'\n'
+    assert wire == b'CONTROLLED_REVIEWER_EVIDENCE ' + report_bytes
+    assert state['binaryEvidenceWrites'] == 1 and state['binaryFlushes'] >= 1
+    assert state['outputEvents'][:3] == ['report', 'wire-write', 'wire-flush']
+    assert len(lines[0].encode('utf-8')) + 1 <= 65536 and len(report_bytes) <= 65536
+    state['reportBytes'], state['wireBytes'] = len(report_bytes), len(wire)
+    state['literalMultibyteUtf8'] = '🧪'.encode('utf-8') in wire
+    state['utf8PrefixWithoutBom'] = wire.startswith(b'CONTROLLED_REVIEWER_EVIDENCE ')
+    report = json.loads(report_bytes)
+    assert report == evidence and probe.DEADLINE == state['deadline']
+    assert probe.artifacts.ENV is initial_artifact_env
+    if state['buildCalls'] and evidence.get('reason') != 'evidence-limit':
+        assert all(evidence[key] == value for key, value in stage_evidence.items())
+    state['allRootsRemoved'] = not any(root.exists() for root in state['roots'])
+    for root in state['roots']:
+        if root.exists():
+            real_rmtree(root)
+    state.pop('roots')
+    state.pop('context', None)
+    state.pop('deadline')
+    evidence_summary = {key: value for key, value in evidence.items() if key != 'wirePadding'}
+    print(json.dumps({'status': status, 'evidence': evidence_summary, **state}))
+`;
+
+interface OrchestrationResult {
+  status: number;
+  stageCalls: number;
+  stageContract: boolean;
+  buildCalls: number;
+  caseOrder: string[];
+  providerRequests: number;
+  mockMethods: { GET: number; POST: number };
+  allRootsRemoved: boolean;
+  emittedWhileRootPresent: boolean;
+  reportWrittenWhileRootPresent: boolean;
+  provenancePreservedAtBuild: boolean;
+  reportBytes: number;
+  wireBytes: number;
+  binaryEvidenceWrites: number;
+  binaryFlushes: number;
+  outputEvents: string[];
+  literalMultibyteUtf8: boolean;
+  utf8PrefixWithoutBom: boolean;
+  evidence: { ok: boolean; cleanup: boolean; reason?: string; signatureVerified?: boolean;
+    stageSourceSha256?: string; bundles?: Record<string, { bytes: number; sha256: string }>;
+    package?: { packageNoticesPreserved: Record<string, string> }; cases: { providerRequests: number }[] };
+}
+
+async function orchestrationCase(mode: string): Promise<OrchestrationResult> {
+  const result = await execute("python3", ["-B", "-I", "-S", "-c", orchestrationHarness, mode], {
+    cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+  });
+  return JSON.parse(result.stdout) as OrchestrationResult;
+}
+
+describe("controlled reviewer artifact orchestration", () => {
+  it("stages once in a fresh private child under the original deadline and retains the returned provenance", async () => {
+    const result = await orchestrationCase("success");
+    expect(result.stageCalls).toBe(1);
+    expect(result.stageContract).toBe(true);
+    expect(result.status).toBe(0);
+    expect(result.buildCalls).toBe(1);
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox", "status-api", "status-oauth",
+      "status-unknown", "status-auto", "status-keyring", "api", "persistence"]);
+    expect(result.provenancePreservedAtBuild).toBe(true);
+    expect(result.evidence).toMatchObject({ ok: true, cleanup: true, signatureVerified: true, stageSourceSha256: "c".repeat(64),
+      package: { packageNoticesPreserved: { "licenses/LICENSE.txt": "d".repeat(64) } } });
+    expect(Object.keys(result.evidence.bundles ?? {})).toEqual(["package", "native", "bwrap"]);
+    expect(result.mockMethods).toEqual({ GET: 1, POST: 1 });
+    expect(result.allRootsRemoved).toBe(true);
+    expect(result.emittedWhileRootPresent).toBe(false);
+    expect(result.reportWrittenWhileRootPresent).toBe(false);
+  });
+
+  it.each([
+    ["stage-failure", "bundle/package/pinned-hash/mismatch"], ["stage-deadline", "deadline"],
+    ["stage-head-mismatch", "ci-context"]
+  ])("cleans partial artifacts and stops before build or native execution for %s", async (mode, reason) => {
+    const result = await orchestrationCase(mode);
+    expect(result.status).toBe(1);
+    expect(result.stageCalls).toBe(1);
+    expect(result.stageContract).toBe(true);
+    expect(result.buildCalls).toBe(0);
+    expect(result.caseOrder).toEqual([]);
+    expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason });
+    expect(result.evidence.signatureVerified).toBeUndefined();
+    expect(result.allRootsRemoved).toBe(true);
+    expect(result.emittedWhileRootPresent).toBe(false);
+  });
+
+  it("stops at the first unsupported native sandbox before any auth or mock API case and still removes artifacts", async () => {
+    const result = await orchestrationCase("native-unsupported");
+    expect(result.status).toBe(1);
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+    expect(result.providerRequests).toBe(0);
+    expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+    expect(result.evidence.cases.every((entry) => entry.providerRequests === 0)).toBe(true);
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "native-sandbox", signatureVerified: true });
+    expect(result.allRootsRemoved).toBe(true);
+    expect(result.emittedWhileRootPresent).toBe(false);
+  });
+
+  it("reports cleanup failure instead of success when the temporary artifact and auth root cannot be deleted", async () => {
+    const result = await orchestrationCase("temp-cleanup-failure");
+    expect(result.status).toBe(1);
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: false, reason: "cleanup" });
+    expect(result.allRootsRemoved).toBe(false);
+  });
+
+  it("still deletes the private root when Docker image cleanup fails and reports the cleanup failure", async () => {
+    const result = await orchestrationCase("image-cleanup-failure");
+    expect(result.status).toBe(1);
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: false, reason: "cleanup" });
+    expect(result.allRootsRemoved).toBe(true);
+    expect(result.emittedWhileRootPresent).toBe(false);
+  });
+
+  it("bounds cleanup separately from runtime and restores the alarm and both clocks after interruption", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", orchestrationHarness, "cleanup-clock"], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    expect(JSON.parse(result.stdout)).toEqual({ bounded: true, restored: true, reason: "cleanup" });
+  });
+
+  it.each(["oversized-evidence", "oversized-run-id"])("writes the exact checked compact fallback to the report for %s", async (mode) => {
+    const result = await orchestrationCase(mode);
+    expect(result.status).toBe(1);
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "evidence-limit" });
+    expect(result.wireBytes).toBe(result.reportBytes + Buffer.byteLength("CONTROLLED_REVIEWER_EVIDENCE "));
+    expect(result.wireBytes).toBeLessThanOrEqual(65536);
+    expect(result.allRootsRemoved).toBe(true);
+    expect(result.emittedWhileRootPresent).toBe(false);
+    expect(result.reportWrittenWhileRootPresent).toBe(false);
+  });
+
+  it("writes the exact checked UTF-8 wire bytes under a UTF-16 stdout text wrapper without a BOM or transcoding", async () => {
+    const result = await orchestrationCase("non-utf8-output");
+    expect(result.status).toBe(0);
+    expect(result.wireBytes).toBe(65536);
+    expect(result.wireBytes).toBe(result.reportBytes + Buffer.byteLength("CONTROLLED_REVIEWER_EVIDENCE "));
+    expect(result.literalMultibyteUtf8).toBe(true);
+    expect(result.utf8PrefixWithoutBom).toBe(true);
+    expect(result.binaryEvidenceWrites).toBe(1);
+    expect(result.binaryFlushes).toBeGreaterThanOrEqual(1);
+    expect(result.outputEvents.slice(0, 3)).toEqual(["report", "wire-write", "wire-flush"]);
+    expect(result.emittedWhileRootPresent).toBe(false);
+    expect(result.reportWrittenWhileRootPresent).toBe(false);
+  });
+});
+
+const evidenceHarness = String.raw`
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+from pathlib import Path
+import sys
+from unittest import mock
+
+spec = importlib.util.spec_from_file_location('runtime_evidence', Path.cwd() / 'scripts/ci/controlled-reviewer-probe.py')
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+case = json.loads(sys.argv[1])
+prefix = b'CONTROLLED_REVIEWER_EVIDENCE '
+if case['mode'] == 'boundary':
+    evidence = {'schema': 1, 'ok': True, 'cleanup': True, 'payload': ''}
+    overhead = len(prefix) + len(json.dumps(evidence, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) + 1
+    available = 65536 - overhead
+    character = case['character']
+    width = len(character.encode('utf-8'))
+    evidence['payload'] = character * (available // width) + 'x' * (available % width + case['extra'])
+elif case['mode'] == 'fallback':
+    evidence = {'schema': 999, 'ok': True, 'cleanup': case['cleanup'], 'payload': '🧪' * 20000,
+                **case['context']}
+elif case['mode'] == 'unexpected-fallback-overflow':
+    output = io.StringIO()
+    with mock.patch.object(probe, 'EVIDENCE_PREFIX', 'X' * 65536), contextlib.redirect_stdout(output):
+        try:
+            probe.encode_evidence({'schema': 1, 'ok': True, 'cleanup': True})
+        except probe.Unsupported as error:
+            assert str(error) == 'evidence-limit'
+        else:
+            raise AssertionError('oversized fallback accepted')
+    assert output.getvalue() == ''
+    print(json.dumps({'rejected': True, 'reason': 'evidence-limit', 'emittedBytes': 0}))
+    sys.exit(0)
+else:
+    raise AssertionError('unsupported synthetic test mode')
+original = json.dumps(evidence, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+final, encoded = probe.encode_evidence(evidence)
+assert isinstance(encoded, bytes) and json.loads(encoded) == final
+assert encoded == json.dumps(final, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+wire = prefix + encoded + b'\n'
+assert len(wire) <= 65536
+fallback = final.get('reason') == 'evidence-limit'
+if fallback:
+    assert final['schema'] == 1 and final['ok'] is False and type(final['cleanup']) is bool
+    assert final['cleanup'] is (evidence.get('cleanup') is True)
+    assert final['omittedBytes'] == len(original)
+    assert final['omittedSha256'] == hashlib.sha256(original).hexdigest()
+    assert 'payload' not in final
+else:
+    assert final == evidence
+print(json.dumps({'fallback': fallback, 'wireBytes': len(wire), 'compactBytes': len(encoded),
+                  'originalBytes': len(original), 'context': {key: final[key] for key in ('repository', 'head', 'runId') if key in final},
+                  'cleanup': final['cleanup'], 'omittedBytes': final.get('omittedBytes'),
+                  'omittedSha256': final.get('omittedSha256'),
+                  'literalMultibyteUtf8': any(value >= 128 for value in encoded)}))
+`;
+
+interface EvidenceResult {
+  fallback: boolean;
+  wireBytes: number;
+  compactBytes: number;
+  originalBytes: number;
+  context: Record<string, string>;
+  cleanup: boolean;
+  omittedBytes?: number;
+  omittedSha256?: string;
+  literalMultibyteUtf8: boolean;
+}
+
+async function evidenceCase(input: Record<string, unknown>): Promise<EvidenceResult> {
+  const result = await execute("python3", ["-B", "-I", "-S", "-c", evidenceHarness, JSON.stringify(input)], {
+    cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+  });
+  return JSON.parse(result.stdout) as EvidenceResult;
+}
+
+describe("controlled reviewer evidence byte limit", () => {
+  it.each(["x", "é", "🧪"])("accepts exactly 65536 wire bytes and falls back one byte over for %s", async (character) => {
+    const boundary = await evidenceCase({ mode: "boundary", character, extra: 0 });
+    expect(boundary.fallback).toBe(false);
+    expect(boundary.wireBytes).toBe(65536);
+    expect(boundary.literalMultibyteUtf8).toBe(character !== "x");
+    const over = await evidenceCase({ mode: "boundary", character, extra: 1 });
+    expect(over.fallback).toBe(true);
+    expect(over.originalBytes).toBe(boundary.originalBytes + 1);
+    expect(over.omittedBytes).toBe(over.originalBytes);
+    expect(over.omittedSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(over.wireBytes).toBeLessThanOrEqual(65536);
+  });
+
+  it.each([true, false, 1, "true", null])("retains only a strict cleanup truth value in the bounded fallback for %j", async (cleanup) => {
+    const context = { repository: "OMT-Global/bootstrap", head: "a".repeat(40), runId: "1".repeat(32) };
+    const result = await evidenceCase({ mode: "fallback", cleanup, context });
+    expect(result.fallback).toBe(true);
+    expect(result.cleanup).toBe(cleanup === true);
+    expect(result.context).toEqual(context);
+    expect(result.omittedBytes).toBe(result.originalBytes);
+    expect(result.omittedSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.wireBytes).toBeLessThanOrEqual(65536);
+  });
+
+  it.each([
+    ["wrong repository, uppercase head, long run ID", { repository: "other/repository", head: "A".repeat(40), runId: "1".repeat(33) }],
+    ["oversized run ID", { repository: "OMT-Global/bootstrap-extra", head: "a".repeat(41), runId: "1".repeat(100000) }],
+    ["unsupported characters", { repository: false, head: "g".repeat(40), runId: "123x" }],
+    ["trailing newlines", { repository: "OMT-Global/bootstrap\n", head: "a".repeat(40) + "\n", runId: "123\n" }],
+    ["unsupported types", { repository: ["OMT-Global/bootstrap"], head: false, runId: 123 }]
+  ])("omits unsafe or unbounded context instead of copying it into fallback (%s)", async (_label, context) => {
+    const result = await evidenceCase({ mode: "fallback", cleanup: true, context });
+    expect(result.fallback).toBe(true);
+    expect(result.context).toEqual({});
+    expect(result.wireBytes).toBeLessThanOrEqual(65536);
+    expect(result.omittedBytes).toBe(result.originalBytes);
+  });
+
+  it("rejects an unexpectedly oversized fallback before producing any output", async () => {
+    const result = await evidenceCase({ mode: "unexpected-fallback-overflow" });
+    expect(result).toEqual({ rejected: true, reason: "evidence-limit", emittedBytes: 0 });
   });
 });

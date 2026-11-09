@@ -1,6 +1,8 @@
 # ADR-0022: Synthetic native reviewer platform probe
 
-Status: Accepted for the source/CI prototype only. Native Linux support remains unproven until the exact hosted run passes.
+Status: Accepted
+
+Scope: Source and CI prototype only. Native Linux support remains unproven until the exact hosted run passes.
 
 Date: 2026-11-08
 
@@ -18,6 +20,8 @@ Add a synthetic-only probe to the existing full-validation entrypoint, after nor
 
 Use the complete official Codex 0.167.0 Linux amd64 musl package from source commit `086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`, archive SHA-256 `3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e`. Exact size/hash limits apply to every download. Verify package, extracted CLI and bubblewrap signatures offline with fixed Cosign 3.1.4, exact workflow identity/issuer, transparency evidence and the SHA-bound root-signing snapshot at `c9bda74ad2221f938f7d2e0295ca3aad2da710a8`. Reject archive links/devices, unsafe paths, unsupported modes, duplicates, collisions or expansion beyond 2 GiB/4096 members/depth 32. Preserve the complete package, its notices and voice license inventory, plus pinned Codex, bubblewrap and ripgrep notices.
 
+Delegate acquisition, extraction and all three mandatory offline signature checks to the fixed sibling `reviewer-artifacts.py` module at the accepted ADR0023 boundary. Call its default `stage()` exactly once with a fresh private empty owned directory and the original absolute 15-minute host deadline; never call metadata preparation or a standalone acquisition CLI first. Preserve its returned verified context, complete package/notices, artifact evidence, retained bundle bytes and public provenance without rewriting them. Host and artifact environments and clocks remain separately cleared and bounded.
+
 Build only an ephemeral public-input image on the existing immutable MCR six-tool base. No registry image is published, package installer runs, workflow/pin changes, real authentication, helper source vendoring or new service is introduced.
 
 The host supervisor remains outside each owned PID/cgroup namespace. Each fixture uses readonly root, no network, all capabilities dropped, no-new-privileges, the ordinary numeric UID/GID, memory 2 GiB/swap zero, 128 PIDs, two CPUs, a 256 MiB/16384-inode noexec tmpfs, bounded hard resource limits and bounded output. The 15-minute prototype deadline has independent bounded cleanup. These timings do not alter production backend or broker limits.
@@ -28,7 +32,7 @@ Only after that gate, individually mount one newly generated fake auth inode rea
 
 The API fixture uses the actual native CLI against one test-owned loopback Responses mock in a network-none container. It clears inherited environment credentials, checks that the bearer came from the fake FILE, handles the native authenticated WebSocket 426-to-SSE fallback, counts all requests and requires schema-valid output. Persistence negatives verify readonly inode metadata/bytes and parent contents. No OpenAI service or real key is used.
 
-Emit a bounded public `CONTROLLED_REVIEWER_EVIDENCE` JSON record and save its ignored local report. Bind actual checkout head, repository/run, public assets/source hashes, image, completed cases and cleanup. The existing immutable callee's generic evidence artifact is unchanged; the custom record is visible in the bounded job log. Missing/failed mandatory cases cannot report success.
+Emit a public `CONTROLLED_REVIEWER_EVIDENCE` UTF-8 JSON wire line capped at 65536 bytes including its prefix and LF. Check the compact encoding and any bounded failure fallback before output; retain only bounded valid fallback context and the omitted compact-byte size/hash. Save the same checked compact JSON bytes plus LF in the ignored local report. Bind actual checkout head, repository/run, public assets/source hashes, image, completed cases and cleanup. The host owns container/image removal and the entire temporary root, including staged public artifacts and fabricated auth files. Its independent 60-second aggregate cleanup clock bounds removal; success is emitted only after removal and verified temporary-root absence. Cleanup failure takes precedence over runtime or artifact success. The existing immutable callee's generic evidence artifact is unchanged; the custom record is visible in the bounded job log. Missing/failed mandatory cases cannot report success.
 
 ## Validation and limits
 

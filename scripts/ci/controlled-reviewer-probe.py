@@ -244,7 +244,7 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None):
         public = {key: result[key] for key in ('case', 'ok', 'providerRequests')}
         if case == 'mechanical':
             public['addressSpace'] = events[0]['addressSpace']
-        if case == 'api':
+        if case == 'api' and (result['ok'] or 'mockMethods' in result):
             methods = result.get('mockMethods')
             require(isinstance(methods, dict) and set(methods) == {'GET', 'POST'}, 'output')
             require(all(type(value) is int and 0 <= value <= 8 for value in methods.values()), 'output')

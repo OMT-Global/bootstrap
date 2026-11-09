@@ -3,7 +3,45 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 const execute = promisify(execFile);
 
-const driverHarness = String.raw`
+const producerFailureHarness = String.raw`
+def producer_api_failure(requests):
+    import argparse
+    import ast
+    from pathlib import Path
+    import sys
+    from unittest import mock
+    source = Path.cwd() / 'scripts/ci/controlled-reviewer-fixture.py'
+    tree = ast.parse(source.read_text())
+    entry = next(node for node in tree.body if isinstance(node, ast.If) and
+                 ast.unparse(node.test) == "__name__ == '__main__'")
+    events, calls, forbidden_calls = [], [], []
+    def forbidden(*args, **kwargs):
+        forbidden_calls.append(True)
+        raise AssertionError('native or resource work is forbidden in producer failure control')
+    def gate():
+        calls.append('gate')
+    def run_case(case):
+        assert case == 'api'
+        calls.append(case)
+        raise RuntimeError('synthetic API failure')
+    namespace = {'__name__': '__main__', 'argparse': argparse, 'sys': sys, 'CASES': ('api',),
+                 'gate': gate, 'run_case': run_case, 'emit': lambda value: events.append(value.copy()),
+                 'MOCK_REQUESTS': requests, 'native': forbidden,
+                 'resource': type('ForbiddenResource', (), {'setrlimit': forbidden, 'getrlimit': forbidden})()}
+    with mock.patch.object(sys, 'argv', ['synthetic-fixture', '--case', 'api']):
+        try:
+            exec(compile(ast.Module(body=[entry], type_ignores=[]), str(source), 'exec'), namespace)
+        except SystemExit as error:
+            assert error.code == 1
+        else:
+            raise AssertionError('actual producer handler did not exit with failure')
+    assert calls == ['gate', 'api'] and not forbidden_calls
+    assert events == [{'event': 'result', 'case': 'api', 'ok': False, 'phase': 'api',
+                       'reason': 'unsupported', 'providerRequests': requests}]
+    return events[0]
+`;
+
+const driverHarness = producerFailureHarness + String.raw`
 READY_SECURITY = {'pid1': True, 'root_ro': True, 'mounts_safe': True, 'caps_zero': True, 'no_new_privs': True, 'seccomp': 2, 'apparmor': 'docker-default (enforce)', 'tmpfs': {'type': 0x01021994, 'bytes': 268435456, 'inodes': 16384, 'flags': 14}}
 import hashlib
 import importlib.util
@@ -75,9 +113,18 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
                 callback = kwargs['on_line']
                 callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **READY_SECURITY,
                     'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), io.BytesIO())
-                callback(json.dumps({'event': 'result', 'case': 'api', 'ok': mode != 'api-failure',
-                    'providerRequests': 0 if mode == 'api-failure' else 2, 'mockMethods': methods,
-                    **({'admissionFailure': {'raw': 'private-later-case-canary'}} if mode == 'api-extra-admission' else {})}).encode(), io.BytesIO())
+                if mode.startswith('api-producer-failure:') or mode == 'api-failure-present-methods':
+                    event = producer_api_failure(int(mode.partition(':')[2]) if ':' in mode else 0)
+                    if mode == 'api-failure-present-methods':
+                        event['mockMethods'] = methods
+                    callback(json.dumps(event).encode(), io.BytesIO())
+                elif mode == 'api-success-without-methods':
+                    callback(json.dumps({'event': 'result', 'case': 'api', 'ok': True,
+                                         'phase': 'api', 'providerRequests': 2}).encode(), io.BytesIO())
+                else:
+                    callback(json.dumps({'event': 'result', 'case': 'api', 'ok': mode != 'api-failure',
+                        'providerRequests': 0 if mode == 'api-failure' else 2, 'mockMethods': methods,
+                        **({'admissionFailure': {'raw': 'private-later-case-canary'}} if mode == 'api-extra-admission' else {})}).encode(), io.BytesIO())
                 state['running'] = False
             return b''
         probe.command = command
@@ -92,7 +139,7 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
         output['cleanupCalled'] = operations[-1] == 'rm' and not pending
         print(json.dumps(output))
 `;
-async function driverCase(mode: string, methods: Record<string, number | boolean | undefined> = {}) {
+async function driverCase(mode: string, methods: Record<string, number | boolean | undefined> | null = {}) {
   const result = await execute("python3", ["-B", "-I", "-S", "-c", driverHarness, mode, JSON.stringify(methods)], {
     cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
     env: { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1" }
@@ -124,6 +171,26 @@ describe("controlled reviewer driver regressions", () => {
     expect(result.cleanupCalled).toBe(true);
     expect(result.result).toMatchObject({ ok: false, providerRequests: 0, mockMethods: { GET: 0, POST: 0 } });
   });
+  it.each([0, 2, 8])("retains the producer API failure without method counts after %i requests", async (requests) => {
+    const result = await driverCase(`api-producer-failure:${requests}`);
+    expect(result.rejected).toBe(false);
+    expect(result.cleanupCalled).toBe(true);
+    expect(result.result).toEqual({ case: "api", ok: false, providerRequests: requests });
+    expect(result.result).not.toHaveProperty("mockMethods");
+  });
+  it("rejects successful API output without method counts and still cleans up", async () => {
+    const result = await driverCase("api-success-without-methods");
+    expect(result.rejected).toBe(true);
+    expect(result.reason).toBe("output");
+    expect(result.cleanupCalled).toBe(true);
+  });
+  it.each([null, {}, { GET: true, POST: 0 }, { GET: 0, POST: 1 }, { GET: 0, POST: 0, DELETE: 0 }])(
+    "rejects present malformed API failure method evidence %j and still cleans up", async (methods) => {
+      const result = await driverCase("api-failure-present-methods", methods);
+      expect(result.rejected).toBe(true);
+      expect(result.reason).toBe("output");
+      expect(result.cleanupCalled).toBe(true);
+    });
   it("does not publish an admission-shaped field from a later untraced API fixture", async () => {
     const result = await driverCase("api-extra-admission", { GET: 1, POST: 1 });
     expect(result.rejected).toBe(false);
@@ -144,7 +211,7 @@ describe("controlled reviewer driver regressions", () => {
 });
 
 
-const orchestrationHarness = String.raw`
+const orchestrationHarness = producerFailureHarness + String.raw`
 READY_SECURITY = {'pid1': True, 'root_ro': True, 'mounts_safe': True, 'caps_zero': True, 'no_new_privs': True, 'seccomp': 2, 'apparmor': 'docker-default (enforce)', 'tmpfs': {'type': 0x01021994, 'bytes': 268435456, 'inodes': 16384, 'flags': 14}}
 import contextlib
 import hashlib
@@ -343,6 +410,15 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             return json.dumps([{'Id': 'sha256:' + 'b' * 64}]).encode()
         if operation == 'image' and arguments[4] == 'rm' and mode == 'image-cleanup-failure':
             raise probe.Unsupported('injected-image-cleanup-failure')
+        if operation == 'start' and mode.startswith('producer-api-failure:'):
+            state['apiRunning'] = True
+            callback = kwargs['on_line']
+            callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **READY_SECURITY,
+                'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), io.BytesIO())
+            failure = producer_api_failure(int(mode.partition(':')[2]))
+            state['providerRequests'] = failure['providerRequests']
+            callback(json.dumps(failure).encode(), io.BytesIO())
+            state['apiRunning'] = False
         if operation == 'start' and mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure'):
             failure = {'stage': 'inherited-as', 'addressSpace': {'soft': -1, 'hard': -1}}
             if mode.startswith('process-mounts'):
@@ -359,6 +435,8 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             state['retainedAdded'] = True
         if mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure'):
             assert case == 'mechanical'
+            return actual_case_run(case, *args)
+        if case == 'api' and mode.startswith('producer-api-failure:'):
             return actual_case_run(case, *args)
         result = {'case': case, 'ok': not (mode == 'native-unsupported' and case == 'sandbox'), 'providerRequests': 0}
         if case == 'api':
@@ -416,6 +494,10 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             evidence['wirePadding'] = '🧪' * (available // 4) + 'x' * (available % 4)
             return original_encode_evidence(evidence)
         probe.encode_evidence = exact_wire_boundary
+    if mode.startswith('producer-api-failure:'):
+        probe.inspect = lambda name: {'State': {'Running': state.get('apiRunning', False), 'Pid': 123},
+            'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
+        probe.cgroup_for = lambda pid: outer / 'absent-api-cgroup'
     probe.self_test, probe.command, probe.case_run = lambda: None, command, case_run
     started = time.monotonic()
     with mock.patch.object(probe.tempfile, 'mkdtemp', side_effect=owned_mkdtemp), \
@@ -551,6 +633,18 @@ describe("controlled reviewer artifact orchestration", () => {
     expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
     expect(result.evidence.cases.every((entry) => entry.providerRequests === 0)).toBe(true);
     expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "native-sandbox", signatureVerified: true });
+    expect(result.allRootsRemoved).toBe(true);
+    expect(result.emittedWhileRootPresent).toBe(false);
+  });
+
+  it.each([0, 2, 8])("reports the producer API failure as api after %i requests and stops before persistence", async (requests) => {
+    const result = await orchestrationCase(`producer-api-failure:${requests}`);
+    expect(result.status).toBe(1);
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "api" });
+    expect(result.evidence.cases.at(-1)).toEqual({ case: "api", ok: false, providerRequests: requests });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox", "status-api", "status-oauth",
+      "status-unknown", "status-auto", "status-keyring", "api"]);
+    expect(result.providerRequests).toBe(requests);
     expect(result.allRootsRemoved).toBe(true);
     expect(result.emittedWhileRootPresent).toBe(false);
   });

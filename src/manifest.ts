@@ -421,6 +421,7 @@ const manifestSchema = z.object({
         .optional(),
       classMigration: z
         .object({
+          from: z.enum(["application", "tooling"]).optional(),
           target: z.enum(["cli", "library", "service", "infrastructure", "github-action", "specification", "documentation"])
         })
         .optional(),
@@ -470,6 +471,7 @@ const manifestSchema = z.object({
     .object({
       policy: z.enum(["standard", "standard-public", "experimental", "strict"]).optional(),
       runnerPolicy: z.enum(["hybrid-safe", "self-hosted-first", "github-hosted-first"]).optional(),
+      githubHostedImage: z.enum(["ubuntu-latest", "ubuntu-24.04"]).optional(),
       nodeVersion: z.string().optional(),
       pythonVersion: z.string().optional(),
       fastChecks: z.array(z.string()).optional(),
@@ -514,6 +516,7 @@ const manifestSchema = z.object({
       updateMinorTag: z.boolean().optional(),
       reusableWorkflowRepo: z.string().min(1).optional(),
       reusableWorkflowRef: z.string().min(1).optional(),
+      postpublishRequiresPreflight: z.boolean().optional(),
       changelog: releaseChangelogSchema.optional(),
       versions: z.array(releaseVersionSchema).optional(),
       artifacts: releaseArtifactSchema.optional(),
@@ -685,6 +688,16 @@ function mergeAdditionalWorkflows(
 function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapManifest["repo"] {
   const legacyClass = repo?.class === "application" || repo?.class === "tooling" ? repo.class : undefined;
   const canonicalClass = repo?.class && !legacyClass ? (repo.class as RepoClass) : undefined;
+  const migration = repo?.classMigration;
+  if (legacyClass && migration?.from && migration.from !== legacyClass) {
+    throw new Error("repo.classMigration.from must match the declared legacy repository class.");
+  }
+  if (canonicalClass && migration && (!migration.from || migration.target !== canonicalClass)) {
+    throw new Error("Canonical repo.classMigration requires its legacy from class and a target matching repo.class.");
+  }
+  if (migration && !legacyClass && !canonicalClass) {
+    throw new Error("repo.classMigration requires an explicit repository class.");
+  }
   if (legacyClass && !repo?.classMigration) {
     throw new Error(
       `Legacy repository class \"${legacyClass}\" requires repo.classMigration.target; choose its canonical Flow repository class explicitly.`
@@ -698,7 +711,10 @@ function normalizeRepo(repo: z.input<typeof manifestSchema>["repo"]): BootstrapM
           classMigration: { from: legacyClass, target: repo?.classMigration?.target as RepoClass }
         }
       : canonicalClass
-        ? { class: canonicalClass }
+        ? {
+            class: canonicalClass,
+            ...(migration?.from ? { classMigration: { from: migration.from, target: migration.target } } : {})
+          }
         : {}),
     managedPaths: repo?.managedPaths ?? [],
     ...(repo?.docs
@@ -960,6 +976,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     ci: {
       ...(parsed.ci?.policy ? { policy: parsed.ci.policy } : {}),
       runnerPolicy: parsed.ci?.runnerPolicy ?? "hybrid-safe",
+      ...(parsed.ci?.githubHostedImage ? { githubHostedImage: parsed.ci.githubHostedImage } : {}),
       nodeVersion: parsed.ci?.nodeVersion ?? "20",
       pythonVersion: parsed.ci?.pythonVersion ?? "3.12",
       fastChecks: parsed.ci?.fastChecks ?? ["lint", "typecheck", "unit", "build", "secrets"],
@@ -1003,6 +1020,9 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       updateMinorTag: parsed.release?.updateMinorTag ?? true,
       reusableWorkflowRepo: parsed.release?.reusableWorkflowRepo ?? `${parsed.project.owner}/bootstrap`,
       reusableWorkflowRef: parsed.release?.reusableWorkflowRef ?? "refs/heads/main",
+      ...(parsed.release?.postpublishRequiresPreflight !== undefined
+        ? { postpublishRequiresPreflight: parsed.release.postpublishRequiresPreflight }
+        : {}),
       changelog: {
         enabled: parsed.release?.changelog?.enabled ?? true,
         mode: parsed.release?.changelog?.mode ?? "github-generated-notes",
@@ -1153,9 +1173,15 @@ function serializableManifest(manifest: BootstrapManifest): BootstrapManifest | 
 }
 
 export function stringifyManifest(manifest: BootstrapManifest): string {
-  return YAML.stringify(serializableManifest(manifest), {
-    lineWidth: 100
+  const document = new YAML.Document(serializableManifest(manifest));
+  YAML.visit(document, {
+    Scalar(_key, scalar) {
+      if (typeof scalar.value === "string" && scalar.value.includes("\t")) {
+        scalar.type = YAML.Scalar.QUOTE_DOUBLE;
+      }
+    }
   });
+  return document.toString({ lineWidth: 100 });
 }
 
 export function resolveManifestPath(input?: string): string {

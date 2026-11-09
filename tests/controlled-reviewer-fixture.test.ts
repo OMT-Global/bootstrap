@@ -128,22 +128,31 @@ def mocked_gate(fault=None, process_probe=None, security=None, security_probe=No
                 counts['reads'].append('mountinfo')
                 if fault == 'mountinfo-read':
                     raise OSError(CANARY)
-                class MountText:
-                    def splitlines(self):
+                class MountText(str):
+                    def splitlines(self, *args, **kwargs):
                         if fault == 'mountinfo-parse':
                             raise MemoryError(CANARY)
-                        if fault == 'root-ro':
-                            return ['malformed-row']
-                        rows = ['1 0 0:0 / / ' + ('rw' if fault == 'root-false' else 'ro'),
-                                '2 1 0:1 / ' + temporary + ' rw']
-                        if fault in ('mounts-safe', 'mounts-false'):
-                            rows.append('3 1 0:2 / /' + CANARY + ' rw')
-                        return rows
-                return MountText()
+                        return super().splitlines(*args, **kwargs)
+                    def split(self, *args, **kwargs):
+                        if fault == 'mountinfo-parse':
+                            raise MemoryError(CANARY)
+                        return super().split(*args, **kwargs)
+                rows = ['malformed-row'] if fault == 'root-ro' else [
+                    '1 0 0:0 / / ' + ('rw' if fault == 'root-false' else 'ro'),
+                    '2 1 0:1 / ' + temporary + ' rw']
+                if fault in ('mounts-safe', 'mounts-false'):
+                    rows.append('3 1 0:2 / /' + CANARY + ' rw')
+                return MountText('\n'.join(rows))
             if fault == 'cgroup':
                 raise OSError(CANARY)
             return values[path.name]
         def read_bytes(path):
+            if str(path) == '/proc/self/mountinfo':
+                text = read_text(path)
+                class MountBytes(bytes):
+                    def decode(self, *args, **kwargs):
+                        return type(text)(super().decode(*args, **kwargs))
+                return MountBytes(text.encode('utf-8'))
             if str(path) == '/proc/self/attr/apparmor/current':
                 probe['apparmorPaths'].append(str(path))
                 if profile['apparmor'] is MISSING:
@@ -549,30 +558,80 @@ describe("controlled reviewer fixture producer", () => {
   });
 });
 
-const reviewerMountPolicyHarness = String.raw`import ast, json, stat, types
+const reviewerMountParserSetup = String.raw`import ast
+import hashlib
+import io
+import json
 from pathlib import Path, PurePosixPath
-source = ast.parse(Path('scripts/ci/controlled-reviewer-fixture.py').read_text())
-gate = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == 'gate')
-assignment = next(node for node in gate.body if isinstance(node, ast.Assign) and
-                  any(isinstance(target, ast.Name) and target.id == 'mounts_safe' for target in node.targets))
-policy = compile(ast.Expression(assignment.value), '<actual-mount-policy>', 'eval')
-base = ['1 0 0:1 / / ro - overlay overlay ro', '2 1 0:2 / /run/review rw - tmpfs tmpfs rw',
+import stat
+import sys
+import types
+import unittest
+
+SOURCE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('scripts/ci/controlled-reviewer-fixture.py')
+TEXT = SOURCE.read_text()
+TREE = ast.parse(TEXT)
+GATE = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == 'gate')
+def assignment(name):
+    return next(index for index, node in enumerate(GATE.body) if isinstance(node, ast.Assign) and
+                any(isinstance(target, ast.Name) and target.id == name for target in node.targets))
+start, end = assignment('mountinfo_text'), assignment('mounts_safe')
+assert isinstance(GATE.body[start - 1], ast.Assign)
+BLOCK = compile(ast.Module(body=GATE.body[start - 1:end + 1], type_ignores=[]), '<actual-mount-read-parse-policy>', 'exec')
+HELPERS = compile(ast.Module(body=[node for node in TREE.body if isinstance(node, ast.FunctionDef) and
+                                  node.name in ('require', 'mountpoint')], type_ignores=[]), '<actual-mount-helper>', 'exec')
+BASE = ['1 0 0:1 / / ro - overlay overlay ro', '2 1 0:2 / /run/review rw - tmpfs tmpfs rw',
         '3 1 0:3 / /proc rw - proc proc rw', '4 3 0:3 / /proc/sys ro - proc proc ro',
         '5 1 0:4 / /dev rw - tmpfs tmpfs rw', '6 5 0:5 / /dev/pts rw - devpts devpts rw',
         '7 1 0:6 / /sys ro - sysfs sysfs ro', '8 7 0:7 / /sys/fs/cgroup ro - cgroup2 cgroup ro',
         '9 1 0:8 / /etc/hosts ro - ext4 hosts ro', '10 5 0:9 / /dev/null rw - tmpfs null rw']
-def admitted(extra, writable):
-    calls = []
-    def access(path, mode):
-        calls.append(('access', path))
-        return path in writable
-    def metadata(path):
-        calls.append(('stat', path))
-        return types.SimpleNamespace(st_mode=(stat.S_IFCHR | 0o666) if path == '/dev/null' else (stat.S_IFDIR | 0o1777))
-    namespace = {'ROOT': PurePosixPath('/run/review'), 'mounts': [row.split() for row in base + extra], 'stat': stat,
+MINIMAL = BASE[:4]
+
+
+def row(point, options='rw'):
+    return '12 1 0:11 / ' + point + ' ' + options + ' - tmpfs tmpfs ' + options
+
+
+def observed(extra=(), writable=(), characters=('/dev/null',), base=BASE, raw=None):
+    data = ('\n'.join([*base, *extra]) + '\n').encode('utf-8') if raw is None else raw
+    calls, reads = [], []
+    class Reader(PurePosixPath):
+        def read_bytes(self):
+            assert str(self) == '/proc/self/mountinfo'
+            reads.append('bytes')
+            return data
+        def read_text(self):
+            assert str(self) == '/proc/self/mountinfo'
+            reads.append('text')
+            # Match UTF-8 text-mode universal-newline reading without real filesystem work.
+            return io.TextIOWrapper(io.BytesIO(data), encoding='utf-8', newline=None).read()
+    def access(point, mode):
+        calls.append(('access', point))
+        assert mode == 2
+        return point in writable
+    def metadata(point):
+        calls.append(('stat', point))
+        return types.SimpleNamespace(st_mode=(stat.S_IFCHR | 0o666) if point in characters else (stat.S_IFDIR | 0o1777))
+    context = {}
+    namespace = {'Path': Reader, 'ROOT': PurePosixPath('/run/review'), 'process_context': context, 'stat': stat,
                  'os': types.SimpleNamespace(W_OK=2, access=access, stat=metadata)}
-    return eval(policy, namespace), calls
-unmasked = ['11 5 0:10 / /dev/mqueue rw,nosuid,nodev,noexec - mqueue mqueue rw']
+    exec(HELPERS, namespace)
+    error = None
+    try:
+        exec(BLOCK, namespace)
+        result = namespace['mounts_safe']
+    except (RuntimeError, ValueError, IndexError, UnicodeDecodeError) as failure:
+        result, error = False, type(failure).__name__
+    return {'admitted': result, 'calls': calls, 'reads': reads, 'error': error,
+            'stage': context.get('substage'), 'rootRo': namespace.get('root_ro')}
+
+
+def admitted(extra, writable):
+    result = observed(extra, writable)
+    return result['admitted'], result['calls']
+`;
+
+const reviewerMountPolicyHarness = reviewerMountParserSetup + String.raw`unmasked = ['11 5 0:10 / /dev/mqueue rw,nosuid,nodev,noexec - mqueue mqueue rw']
 masked = ['11 5 0:10 / /dev/mqueue ro,nosuid,nodev,noexec - tmpfs tmpfs ro']
 result, calls = admitted(unmasked, {'/dev/null', '/dev/mqueue'})
 assert result is False and ('stat', '/dev/mqueue') in calls
@@ -582,7 +641,7 @@ assert admitted(masked + ['12 1 0:11 / /unexpected rw - tmpfs tmpfs rw'], {'/dev
 assert admitted(masked, {'/dev/null', '/dev'})[0] is False
 assert admitted(masked, {'/dev/null', '/dev/pts'})[0] is False
 assert admitted(masked + ['12 5 0:11 / /dev/shm rw - tmpfs shm rw'], {'/dev/null', '/dev/shm'})[0] is False
-print(json.dumps({'scenarios': 6, 'mountsOrNativeCalls': 0, 'predicateSourceIsUnchanged': True}))
+print(json.dumps({'scenarios': 6, 'mountsOrNativeCalls': 0, 'actualParserAndPredicate': True}))
 `;
 
 describe('controlled reviewer readonly mqueue mask', () => {
@@ -591,7 +650,115 @@ describe('controlled reviewer readonly mqueue mask', () => {
       cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
       env: { PATH: process.env.PATH ?? '/usr/bin:/bin', PYTHONDONTWRITEBYTECODE: '1' }
     });
-    expect(JSON.parse(result.stdout)).toEqual({ scenarios: 6, mountsOrNativeCalls: 0, predicateSourceIsUnchanged: true });
+    expect(JSON.parse(result.stdout)).toEqual({ scenarios: 6, mountsOrNativeCalls: 0, actualParserAndPredicate: true });
+  });
+});
+
+const reviewerMountEscapeHarness = reviewerMountParserSetup + String.raw`OBSERVATIONS = []
+
+
+class MountinfoParserTests(unittest.TestCase):
+    def record(self, name, **kwargs):
+        value = observed(**kwargs)
+        OBSERVATIONS.append({'case': name, **value})
+        return value
+
+    def test_all_four_kernel_escapes_use_the_actual_writable_path(self):
+        for encoded, decoded in [(r'/host\040data', '/host data'), (r'/host\011data', '/host\tdata'),
+                                 (r'/host\012data', '/host\ndata'), (r'/host\134data', '/host\\data')]:
+            with self.subTest(encoded=encoded):
+                value = self.record('escaped-writable-' + encoded, extra=[row(encoded)], writable={decoded}, base=MINIMAL)
+                self.assertFalse(value['admitted'])
+                self.assertIsNone(value['error'])
+                self.assertEqual(value['calls'], [('access', decoded), ('stat', decoded)])
+
+    def test_backslash_decode_is_once_only_and_not_a_space_alias(self):
+        encoded, literal, space = r'/host\134040data', r'/host\040data', '/host data'
+        for name, writable, admitted, calls in [
+                ('literal-backslash-writable', {literal}, False, [('access', literal), ('stat', literal)]),
+                ('space-alias-is-not-the-literal-path', {space}, True, [('access', literal)])]:
+            with self.subTest(name=name):
+                value = self.record(name, extra=[row(encoded)], writable=writable, base=MINIMAL)
+                self.assertEqual(value['admitted'], admitted)
+                self.assertEqual(value['calls'], calls)
+
+    def test_raw_unicode_whitespace_and_cr_are_not_field_or_line_separators(self):
+        for label, point in [('nbsp', '/host\u00a0data'), ('em-space', '/host\u2003data'),
+                             ('unicode-line-separator', '/host\u2028data'), ('raw-cr', '/host\rdata')]:
+            with self.subTest(label=label):
+                value = self.record('raw-writable-' + label, extra=[row(point)], writable={point}, base=MINIMAL)
+                self.assertFalse(value['admitted'])
+                self.assertIsNone(value['error'])
+                self.assertEqual(value['calls'], [('access', point), ('stat', point)])
+
+    def test_valid_utf8_readonly_and_nonwritable_rows_preserve_short_circuit(self):
+        for label, point, options in [('utf8', '/host/café-🧪', 'rw'),
+                                      ('unicode-line-separator', '/host\u2028data', 'ro'),
+                                      ('raw-cr', '/host\rdata', 'ro')]:
+            with self.subTest(label=label):
+                value = self.record('valid-' + label, extra=[row(point, options)], base=MINIMAL)
+                self.assertTrue(value['admitted'])
+                self.assertIsNone(value['error'])
+                self.assertEqual(value['calls'], [('access', point)] if options == 'rw' else [])
+                self.assertTrue(value['rootRo'])
+
+    def test_root_proc_and_decoded_character_device_keep_permission_call_order(self):
+        value = self.record('root-and-proc-exemptions', extra=[], writable={'/run/review', '/proc', '/proc/sys'}, base=MINIMAL)
+        self.assertTrue(value['admitted'])
+        self.assertEqual(value['calls'], [])
+        point = '/dev/test char'
+        value = self.record('escaped-character-device', extra=[row(r'/dev/test\040char')], writable={point}, characters={point}, base=MINIMAL)
+        self.assertTrue(value['admitted'])
+        self.assertEqual(value['calls'], [('access', point), ('stat', point)])
+
+    def test_invalid_or_truncated_canonical_escape_fails_before_access_or_stat(self):
+        for point in [r'/host\041data', '/host\\', r'/host\0', r'/host\04', r'/host\xyz', r'/good\040bad\999']:
+            with self.subTest(point=point):
+                value = self.record('invalid-escape-' + point, extra=[row(point)], base=MINIMAL)
+                self.assertFalse(value['admitted'])
+                self.assertIsNotNone(value['error'])
+                self.assertEqual(value['stage'], 'mountinfo-parse')
+                self.assertEqual(value['calls'], [])
+
+    def test_invalid_utf8_fails_at_the_read_boundary_without_permission_calls(self):
+        raw = ('\n'.join(MINIMAL) + '\n').encode() + b'12 1 0:11 / /bad\xff rw - tmpfs tmpfs rw\n'
+        value = self.record('invalid-utf8', raw=raw, base=MINIMAL)
+        self.assertFalse(value['admitted'])
+        self.assertEqual(value['error'], 'UnicodeDecodeError')
+        self.assertEqual(value['stage'], 'mountinfo-read')
+        self.assertEqual(value['calls'], [])
+
+    def test_internal_and_extra_trailing_blank_rows_are_not_silently_dropped(self):
+        for label, text in [('internal-blank', '\n'.join([MINIMAL[0], '', *MINIMAL[1:]]) + '\n'),
+                            ('extra-trailing-blank', '\n'.join(MINIMAL) + '\n\n')]:
+            with self.subTest(label=label):
+                value = self.record(label, raw=text.encode(), base=MINIMAL)
+                self.assertFalse(value['admitted'])
+                self.assertEqual(value['error'], 'IndexError')
+                self.assertEqual(value['stage'], 'mounts-safe')
+                self.assertEqual(value['calls'], [])
+
+
+log = io.StringIO()
+result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(MountinfoParserTests))
+print(json.dumps({'testCases': result.testsRun, 'ok': result.wasSuccessful(), 'failureCount': len(result.failures),
+                  'errorCount': len(result.errors), 'observations': OBSERVATIONS,
+                  'sourceSha256': hashlib.sha256(TEXT.encode()).hexdigest(), 'actualFilesystemResourceNativeCalls': 0}))
+if not result.wasSuccessful():
+    print(log.getvalue(), file=sys.stderr)
+    sys.exit(1)
+`;
+
+describe("controlled reviewer mountinfo byte parsing", () => {
+  it("uses actual read, parser, decoder and permission predicates on kernel escapes and raw UTF-8 paths", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", reviewerMountEscapeHarness], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 128 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({ testCases: 8, ok: true, failureCount: 0, errorCount: 0, actualFilesystemResourceNativeCalls: 0 });
+    expect(report.observations).toHaveLength(24);
+    expect(report.observations.every((value: { reads: string[] }) => value.reads.length === 1 && value.reads[0] === "bytes")).toBe(true);
   });
 });
 

@@ -101,6 +101,24 @@ def native(args, input_bytes=b'', cap=16384):
             value.clear()
 
 
+def mountpoint(value):
+    if '\\' not in value:
+        return value
+    escapes = {'040': ' ', '011': '\t', '012': '\n', '134': '\\'}
+    decoded = []
+    offset = 0
+    while offset < len(value):
+        if value[offset] == '\\':
+            code = value[offset + 1:offset + 4]
+            require(code in escapes)
+            decoded.append(escapes[code])
+            offset += 4
+        else:
+            decoded.append(value[offset])
+            offset += 1
+    return ''.join(decoded)
+
+
 def gate():
     ADMISSION.clear()
     ADMISSION['stage'] = 'platform'
@@ -137,9 +155,14 @@ def gate():
     caps_zero = all(int(status[name].strip(), 16) == 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
     process_context['capsZero'] = caps_zero
     process_context['substage'] = 'mountinfo-read'
-    mountinfo_text = Path('/proc/self/mountinfo').read_text()
+    mountinfo_text = Path('/proc/self/mountinfo').read_bytes().decode('utf-8')
     process_context['substage'] = 'mountinfo-parse'
-    mounts = [line.split() for line in mountinfo_text.splitlines()]
+    mounts = [line.split(' ') for line in mountinfo_text.split('\n')]
+    if mounts and mounts[-1] == ['']:
+        mounts.pop()
+    for row in mounts:
+        if len(row) > 4:
+            row[4] = mountpoint(row[4])
     process_context['substage'] = 'root-ro'
     root_ro = any(row[4] == '/' and 'ro' in row[5].split(',') for row in mounts)
     process_context['rootRo'] = root_ro

@@ -93,7 +93,7 @@ describe("Bootstrap MIT adoption and factual dependency notices", () => {
       const entry = manifest.license!.thirdPartyNotices.find((notice) => notice.name === `${name}@${version}`);
       expect(entry).toMatchObject({ kind: "dependency", license, source: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz` });
       const rawEntry = rawManifest.license.thirdPartyNotices.find((notice: { name: string }) => notice.name === `${name}@${version}`);
-      expect(rawEntry?.notice).toBe(`Source: ${legalPath}; SHA-256 ${digest}\n${text}`);
+      expect(rawEntry?.notice).toBe(`Source: ${legalPath}; SHA-256 ${digest}\n${text}`.trim());
       expect(entry?.notice).toBe(`Source: ${legalPath}; SHA-256 ${digest}\n${text}`.trim());
     }
     expect(manifest.license!.transition?.distributionHistory).toBe(

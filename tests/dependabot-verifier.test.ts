@@ -170,6 +170,7 @@ describe("Dependabot commit verification", () => {
   });
 
   it("checks later pages before granting the exemption", () => {
+    // This 100-commit Bash/jq fixture measured 12.8 seconds in the isolated 2-CPU profile.
     const firstPage = Array.from({ length: 100 }, () => dependabotCommit);
     const result = runVerifier([
       JSON.stringify(firstPage),
@@ -179,7 +180,7 @@ describe("Dependabot commit verification", () => {
     expect(result.botOnly).toBe(false);
     expect(result.requests).toHaveLength(2);
     expect(result.requests[1]).toContain("page=2");
-  });
+  }, 30_000);
 
   it("rejects a non-array API response", () => {
     expect(() => runVerifier([JSON.stringify({ message: "rate limited" })])).toThrow();

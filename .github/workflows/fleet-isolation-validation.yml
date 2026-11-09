@@ -1,0 +1,46 @@
+name: Fleet Isolation Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  isolated-node-validation:
+    name: Exercise isolated Node validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BOOTSTRAP_REQUIRE_ISOLATION_TESTS: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify hosted Docker and fetch the immutable profile image
+        run: |
+          set -euo pipefail
+          docker version
+          platform="$(docker info --format '{{.OSType}}/{{.Architecture}}')"
+          case "$platform" in
+            linux/amd64|linux/x86_64) ;;
+            *) echo "Unsupported Docker platform: $platform" >&2; exit 1 ;;
+          esac
+          image='mcr.microsoft.com/devcontainers/javascript-node@sha256:447fa75fbc7123952284b50229148e933ea756c40718601fa0ec46edd29fd0c6'
+          docker pull --platform linux/amd64 "$image"
+          test "$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+
+      - name: Install locked test tooling without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Compile the backend
+        run: npm run build
+
+      - name: Require actual Docker confinement tests
+        run: npm test -- tests/isolated-validation-docker.test.ts --maxWorkers=1 --minWorkers=1

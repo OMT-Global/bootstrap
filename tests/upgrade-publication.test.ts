@@ -282,7 +282,11 @@ describe("private create-only publication broker (synthetic provider only)", () 
 
 const requestFields = ["protocol=https", "host=github.com", "path=example/public.git"];
 const canonicalRequest = Buffer.from(requestFields.join("\n") + "\n");
-const credentialReply = (marker = replyMarker, username = "public-fixture") => Buffer.from(["protocol=https", "host=github.com", `username=${username}`, "password=" + marker, ""].join("\n"));
+const serializeCredentialFields = (fields: readonly (readonly [string, string])[]) =>
+  fields.map(([field, value]) => `${field}=${value}`).join("\n");
+const credentialReply = (marker = replyMarker, username = "public-fixture") => Buffer.from(serializeCredentialFields([
+  ["protocol", "https"], ["host", "github.com"], ["username", username], ["password", marker]
+]) + "\n");
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 interface WrapperConfiguration { gh: string; expected: string[]; env: Record<string, string>; cwd: string }
 interface ProviderScenario { stdout?: Buffer; stderr?: Buffer; status?: number; signal?: string; fragmented?: boolean; mode?: "sleep" | "descendant" | "orphan-pipe" | "stop-wrapper"; escapeDelay?: number; outerArgv?: string[]; prefixBeforeWait?: boolean }
@@ -404,7 +408,10 @@ function protocolVectors() {
   const invalidRequests = ["", "\n", requestFields.join("\n"), "\n" + canonicalRequest, canonicalRequest + "\n\n", canonicalRequest.toString().replaceAll("\n", "\r\n"), canonicalRequest + "state=fixture\n", `protocol=https\nprotocol=https\n${requestFields[2]}\n`, requestFields.slice(0, 2).join("\n") + "\n", canonicalRequest.toString().replace("https", "http"), canonicalRequest.toString().replace("github.com", "attacker.invalid"), canonicalRequest.toString().replace("public.git", "other.git"), " " + canonicalRequest, canonicalRequest + "\0\n", "capability[]=unknown\n" + canonicalRequest, "capability[]=state\ncapability[]=state\n" + canonicalRequest, canonicalRequest + "capability[]=state\n", requestFields[0] + "\ncapability[]=state\n" + requestFields.slice(1).join("\n") + "\n", "capability[]=\n" + canonicalRequest, "wwwauth[]=Basic\n" + canonicalRequest, "protocol=https\n\ufeffhost=github.com\npath=example/public.git\n"];
   invalidRequests.forEach((value, index) => input(`malformed request ${index}`, value));
   const invalidUtf8 = [[0xc0, 0xaf], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf0, 0x9f, 0x92], [0xf4, 0x90, 0x80, 0x80]];
-  invalidUtf8.forEach((value, index) => { input(`request strict UTF8 ${index}`, Buffer.concat([Buffer.from(value), canonicalRequest])); output(`response strict UTF8 ${index}`, Buffer.concat([Buffer.from("protocol=https\nhost=github.com\nusername=public-fixture\npassword="), Buffer.from(value), Buffer.from("\n")])); });
+  const malformedResponseFields = [
+    ["protocol", "https"], ["host", "github.com"], ["username", "public-fixture"], ["password", ""]
+  ] as const;
+  invalidUtf8.forEach((value, index) => { input(`request strict UTF8 ${index}`, Buffer.concat([Buffer.from(value), canonicalRequest])); output(`response strict UTF8 ${index}`, Buffer.concat([Buffer.from(serializeCredentialFields(malformedResponseFields)), Buffer.from(value), Buffer.from("\n")])); });
   input("8192 malformed bytes", Buffer.alloc(8192, 0x61)); input("8193 overflow bytes", Buffer.alloc(8193, 0x61));
   input("fragmented request", canonicalRequest, true, ["get"], [...canonicalRequest].map((byte) => Buffer.from([byte])));
   input("fragmented BOM", Buffer.concat([bom, canonicalRequest]), true, ["get"], [bom.subarray(0, 1), bom.subarray(1, 2), bom.subarray(2), canonicalRequest]);
@@ -467,7 +474,8 @@ describe("isolated Python credential wrapper (real subprocess; synthetic provide
     await expect(lstat(injection)).rejects.toMatchObject({ code: "ENOENT" });
     const helper = `!${shellQuote(data.python)} -I -S ${shellQuote(data.wrapper)}`;
     const result = execFileSync("/usr/bin/git", ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "-c", "credential.useHttpPath=true", "credential", "fill"], { cwd: data.directory, env: outerEnv, input: "capability[]=state\ncapability[]=authtype\n" + canonicalRequest + "\n", stdio: ["pipe", "pipe", "pipe"] });
-    expect(result.toString()).toContain("password=" + replyMarker); const called = JSON.parse(await readFile(data.called, "utf8"));
+    const expectedPasswordField = ["password", replyMarker] as const;
+    expect(result.toString()).toContain(serializeCredentialFields([expectedPasswordField])); const called = JSON.parse(await readFile(data.called, "utf8"));
     expect(called.input).toBe(canonicalRequest.toString()); expect(called.cwd).toBe(data.runtimeCwd);
     const observed = { ...called.env };
     // Darwin's developer-tool shim adds only these observed public keys when

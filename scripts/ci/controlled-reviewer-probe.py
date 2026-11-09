@@ -186,7 +186,7 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None, 
                 require(failure['stage'] in {'version-exit', 'sandbox-exit'} and
                         type(failure['exitCode']) is int and -255 <= failure['exitCode'] <= 255, 'output')
             require((failure['stage'] == 'gate' and not events) or
-                    (group is not None and len(events) == 1 and events[0].get('event') == 'ready'), 'output')
+                    (failure['stage'] != 'gate' and group is not None and len(events) == 1 and events[0].get('event') == 'ready'), 'output')
             sandbox_failure.update(failure)
         events.append(data)
         if data.get('event') == 'ready':

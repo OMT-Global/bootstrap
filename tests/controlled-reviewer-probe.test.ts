@@ -2154,7 +2154,7 @@ const rejectedSandboxFailures: unknown[] = [
     .map((stage) => ({ stage, exitCode: 0 }))
 ];
 describe("controlled reviewer sandbox failure consumer", () => {
-  it.each(sandboxFailureStages)("retains the actual producer handler's %s failure without changing the case row", async (stage) => {
+  it.each(sandboxFailureStages.filter((stage) => stage !== "gate"))("retains the actual producer handler's %s failure without changing the case row", async (stage) => {
     const result = await sandboxConsumerCase({ stage });
     expect(result.reason).toBeNull();
     expect(result.retained).toEqual({ stage });
@@ -2175,6 +2175,17 @@ describe("controlled reviewer sandbox failure consumer", () => {
     expect(result.retained).toEqual({ stage: "gate" }); expect(result.go).toBe("");
     expect(result.reason).toBe("cleanup"); expect(result.value).toBeNull();
     expect(result.operations).toEqual(["create", "start", "rm"]); expect(result.pending).toBe(0);
+  });
+  it.each([
+    { name: "after READY and GO", options: {}, go: "GO\n" },
+    { name: "after another event before READY", options: { beforeReady: true, prefixEvent: true }, go: "" }
+  ])("rejects a gate failure $name without retaining it", async ({ options, go }) => {
+    const result = await sandboxConsumerCase({ stage: "gate", ...options });
+    expect(result.reason).toBe("output"); expect(result.retained).toEqual({}); expect(result.value).toBeNull();
+    expect(result.go).toBe(go); expect(result.writes).toBe(go ? 1 : 0);
+    expect(result.operations).toEqual(["create", "start", "rm"]);
+    expect(result.pending).toBe(0); expect(result.authDirectories).toBe(0); expect(result.forbiddenCalls).toBe(0);
+    expect(result.wire).not.toContain("sandboxFailure");
   });
   it.each(sandboxFailureStages.filter((stage) => stage !== "gate"))("rejects %s without the validated READY sequence", async (stage) => {
     const result = await sandboxConsumerCase({ stage, beforeReady: true });
@@ -2255,7 +2266,7 @@ async function sandboxOrchestrationCase(options: Record<string, unknown>): Promi
   return await orchestrationCase("sandbox-discriminator:" + JSON.stringify(options)) as SandboxOrchestrationResult;
 }
 describe("controlled reviewer overall sandbox failure evidence", () => {
-  it.each(sandboxFailureStages)("retains actual producer %s only in failed overall evidence and stops before auth", async (stage) => {
+  it.each(sandboxFailureStages.filter((stage) => stage !== "gate"))("retains actual producer %s only in failed overall evidence and stops before auth", async (stage) => {
     const result = await sandboxOrchestrationCase({ stage });
     expect(result.status).toBe(1); expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "native-sandbox" });
     expect(result.evidence.sandboxFailure).toEqual({ stage });
@@ -2267,6 +2278,15 @@ describe("controlled reviewer overall sandbox failure evidence", () => {
     expect(result.allRootsRemoved).toBe(true);
     expect(JSON.stringify(result.evidence.cases)).not.toContain("sandboxFailure");
     expect(JSON.stringify(result)).not.toContain("private-sandbox-discriminator-canary");
+  });
+  it("rejects a gate failure after READY and GO from overall evidence before auth", async () => {
+    const result = await sandboxOrchestrationCase({ stage: "gate" });
+    expect(result.status).toBe(1); expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "output" });
+    expect(result.evidence).not.toHaveProperty("sandboxFailure");
+    expect(result.evidence.cases.map((item) => item.case)).toEqual(["mechanical", "bytes", "inodes", "detached"]);
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+    expect(result.providerRequests).toBe(0); expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+    expect(result.allRootsRemoved).toBe(true);
   });
   it.each(["postcheck", "remove", "aggregate"])("retains the fixture snapshot across %s without overriding host failure precedence", async (hostFailure) => {
     const result = await sandboxOrchestrationCase({ stage: "sandbox-exit", code: -1, hostFailure });

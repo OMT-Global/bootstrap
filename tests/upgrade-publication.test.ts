@@ -75,6 +75,9 @@ import { finishRecovery, publishCandidate } from "../src/upgrade-publication.js"
 import type { PublicRepository, TransportContext } from "../src/upgrade-transport.js";
 
 const directories: string[] = [];
+const providerCanary = "fixture-provider-canary";
+const contextCanary = "context-token-canary";
+const replyMarker = "synthetic-only";
 const requiredLinux = process.env.BOOTSTRAP_REQUIRE_HOST_BROKER_TESTS === "1";
 const overrides = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_PATH"];
 beforeEach(() => { for (const key of overrides) vi.stubEnv(key, ""); });
@@ -106,7 +109,7 @@ async function fixture() {
   faults.providerAncestors.length = 0;
   for (let parent = faults.provider; parent !== path.dirname(parent); parent = path.dirname(parent)) faults.providerAncestors.push(parent);
   await writeFile(path.join(providerFiles, "config.yml"), "git_protocol: https\nprompt: disabled\n", { mode: 0o600 });
-  await writeFile(path.join(providerFiles, "hosts.yml"), "github.com:\n  user: public-fixture\n  oauth_token: fixture-provider-canary\n  git_protocol: https\n", { mode: 0o600 });
+  await writeFile(path.join(providerFiles, "hosts.yml"), `github.com:\n  user: public-fixture\n  oauth_token: ${providerCanary}\n  git_protocol: https\n`, { mode: 0o600 });
   const pr = { number: 7, html_url: "https://github.com/example/public/pull/7", state: "open", draft: true,
     base: { ref: "trunk", sha: baseCommit, repo: { full_name: "example/public" } },
     head: { ref: faults.branch, sha: candidate, repo: { full_name: "example/public" } } };
@@ -235,8 +238,13 @@ describe("private create-only publication broker (synthetic provider only)", () 
     const data = await fixture(); await writeFile(path.join(data.providerFiles, "config.yml"), config);
     expect(await data.publish()).toMatchObject({ ok: false, phase: "provider", push: "not-attempted" }); expect(faults.commands).toHaveLength(0);
   });
-  it.each(["refresh_token: fixture-refresh", "oauth_token_expires_at: fixture-expiry", "api_host: attacker.invalid"])("blocks refresh or endpoint fields in provider credentials", async (field) => {
-    const data = await fixture(); await writeFile(path.join(data.providerFiles, "hosts.yml"), `github.com:\n  user: public-fixture\n  oauth_token: fixture-provider-canary\n  ${field}\n`);
+  const unsupportedProviderFields = [
+    ["refresh_token", "fixture-refresh"],
+    ["oauth_token_expires_at", "fixture-expiry"],
+    ["api_host", "attacker.invalid"]
+  ].map(([key, value]) => `${key}: ${value}`);
+  it.each(unsupportedProviderFields)("blocks refresh or endpoint fields in provider credentials", async (field) => {
+    const data = await fixture(); await writeFile(path.join(data.providerFiles, "hosts.yml"), `github.com:\n  user: public-fixture\n  oauth_token: ${providerCanary}\n  ${field}\n`);
     expect(await data.publish()).toMatchObject({ ok: false, phase: "provider", push: "not-attempted" }); expect(faults.commands).toHaveLength(0);
   });
   it("blocks keyring-only, writable, missing fixed tools and ambient credential overrides", async () => {
@@ -249,7 +257,8 @@ describe("private create-only publication broker (synthetic provider only)", () 
   });
   it("keeps provider credentials, sockets, target config and command canaries out of subprocess inheritance", async () => {
     const data = await fixture(); vi.stubEnv("SSH_AUTH_SOCK", "/ambient-socket-canary"); vi.stubEnv("GH_DEBUG", "api"); vi.stubEnv("HTTPS_PROXY", "proxy-canary");
-    Object.assign(data.context.env, { SSH_AUTH_SOCK: "/context-socket-canary", GH_TOKEN: "context-token-canary", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sshCommand", GIT_CONFIG_VALUE_0: "target-command-canary" });
+    const contextEnvironmentFixture = { SSH_AUTH_SOCK: "/context-socket-canary", GH_TOKEN: contextCanary, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sshCommand", GIT_CONFIG_VALUE_0: "target-command-canary" };
+    Object.assign(data.context.env, contextEnvironmentFixture);
     expect(await data.publish()).toMatchObject({ ok: true });
     for (const command of faults.commands) {
       expect(command.environment.GH_CONFIG_DIR).toBe(faults.provider);
@@ -260,7 +269,7 @@ describe("private create-only publication broker (synthetic provider only)", () 
   it("executes the fixed credential wrapper and rejects malformed or out-of-scope requests before any provider invocation", async () => {
     const data = await fixture(); await data.publish(); const wrapper = path.join(data.directory, "captured-helper.cjs"); await writeFile(wrapper, faults.helper);
     const marker = path.join(data.directory, "provider-called"); const preload = path.join(data.directory, "provider-preload.cjs");
-    await writeFile(preload, `require("node:child_process").spawnSync = (exe, args, options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return { status: 0, signal: null, stdout: Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=synthetic-only\\n"), stderr: Buffer.alloc(0) }; };`);
+    await writeFile(preload, `require("node:child_process").spawnSync = (exe, args, options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return { status: 0, signal: null, stdout: Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=${replyMarker}\\n"), stderr: Buffer.alloc(0) }; };`);
     const request = "protocol=https\nhost=github.com\npath=example/public.git\n\n";
     const capabilities = "capability[]=authtype\ncapability[]=state\n";
     const invalid = [request.replace("https", "http"), request.replace("github.com", "attacker.invalid"), request.replace("public.git", "other.git"), request.replace("path=example/public.git\n", ""), request.replace("\n\n", "\nhost=github.com\n\n"), request.replace("\n\n", "\nusername=unknown\n\n"), "x".repeat(8193),
@@ -283,10 +292,10 @@ describe("private create-only publication broker (synthetic provider only)", () 
     const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
     const plumbing = execFileSync("/usr/bin/git", ["-c", "credential.helper=", "-c", `credential.helper=!${shellQuote(process.execPath)} --require ${shellQuote(preload)} ${shellQuote(wrapper)}`,
       "-c", "credential.useHttpPath=true", "credential", "fill"], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input: capabilities + request });
-    expect(plumbing.toString()).toContain("password=synthetic-only");
+    expect(plumbing.toString()).toContain(`password=${replyMarker}`);
     expect(JSON.parse(await readFile(marker, "utf8")).input).toBe(request.slice(0, -1));
-    const plain = "protocol=https\nhost=github.com\nusername=public-fixture\npassword=synthetic-only\n";
-    for (const output of [plain.replace("github.com", "attacker.invalid"), plain.replace("synthetic-only", "bad token"), plain.replace("synthetic-only", "bad\u0001token"), plain + "state[]=unsupported\n", plain.replace("password=synthetic-only", "authtype=Basic")]) {
+    const plain = `protocol=https\nhost=github.com\nusername=public-fixture\npassword=${replyMarker}\n`;
+    for (const output of [plain.replace("github.com", "attacker.invalid"), plain.replace("synthetic-only", "bad token"), plain.replace("synthetic-only", "bad\u0001token"), plain + "state[]=unsupported\n", plain.replace(`password=${replyMarker}`, "authtype=Basic")]) {
       await writeFile(preload, `require("node:child_process").spawnSync = () => ({ status: 0, signal: null, stdout: Buffer.from(${JSON.stringify(output)}), stderr: Buffer.alloc(0) });`);
       try { execFileSync(process.execPath, ["--require", preload, wrapper, "get"], { input: request, stdio: ["pipe", "pipe", "pipe"] }); throw new Error("wrapper accepted unsafe output"); }
       catch (error) { expect((error as { status: number }).status).toBe(1); expect(String((error as { stdout: Buffer }).stdout)).toBe(""); }
@@ -304,11 +313,11 @@ it.skipIf(!requiredLinux || process.platform !== "linux")("runs the generated cr
   // This changes only the fixture's saved provider location. The production
   // wrapper code executes unchanged, and the provider process is never started.
   await writeFile(wrapper, faults.helper.replaceAll(JSON.stringify(faults.provider), JSON.stringify(data.providerFiles)));
-  await writeFile(preload, `require("node:child_process").spawnSync = (exe,args,options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return {status:0,signal:null,stdout:Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=synthetic-only\\n"),stderr:Buffer.alloc(0)}; };`);
+  await writeFile(preload, `require("node:child_process").spawnSync = (exe,args,options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return {status:0,signal:null,stdout:Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=${replyMarker}\\n"),stderr:Buffer.alloc(0)}; };`);
   faults.actualToolMetadata = true; const tools = await requireLinuxHost(); const node = await trustedExecutable("/usr/bin/node"); expect(node).toBe("/usr/bin/node"); faults.actualLimits = true;
   const input = Buffer.from("capability[]=authtype\ncapability[]=state\nprotocol=https\nhost=github.com\npath=example/public.git\n");
   const output = await boundedCommand(tools.prlimit, [...PRLIMIT_ARGS, node, "--require", preload, wrapper, "get"], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input });
-  expect(output.toString()).toBe("protocol=https\nhost=github.com\nusername=public-fixture\npassword=synthetic-only\n");
+  expect(output.toString()).toBe(`protocol=https\nhost=github.com\nusername=public-fixture\npassword=${replyMarker}\n`);
   const called = JSON.parse(await readFile(marker, "utf8")); expect(called).toMatchObject({ exe: "/usr/bin/gh", args: ["auth", "git-credential", "get"], env: { GH_CONFIG_DIR: data.providerFiles } });
   expect(JSON.stringify(called.env)).not.toMatch(/SSH_AUTH_SOCK|GH_TOKEN|GITHUB_TOKEN|DEBUG|PROXY/);
 }, 120_000);

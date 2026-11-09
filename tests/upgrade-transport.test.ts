@@ -151,7 +151,8 @@ describe("private public transport with real Git and simulated Linux launch", ()
     await fixture(); faults.depth = "2"; await expect(acquire()).rejects.toThrow(fixed); expect(faults.commands.some(({ args }) => args.includes("commit-tree"))).toBe(false);
   });
   it("does not inherit credentials, agent, tracing, proxy or injected Git environment", async () => {
-    await fixture(); const canaries = { SSH_AUTH_SOCK: "/private/test-agent-canary", GH_TOKEN: "inert-test-token-canary", GIT_TRACE: "/private/test-trace-canary", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "inert-test-helper", HTTPS_PROXY: "http://canary.invalid" };
+    await fixture(); const transportCanary = "inert-test-token-canary";
+    const canaries = { SSH_AUTH_SOCK: "/private/test-agent-canary", GH_TOKEN: transportCanary, GIT_TRACE: "/private/test-trace-canary", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "inert-test-helper", HTTPS_PROXY: "http://canary.invalid" };
     const old = Object.fromEntries(Object.keys(canaries).map((name) => [name, process.env[name]])); Object.assign(process.env, canaries);
     try { await acquire(); for (const { env } of faults.commands) for (const name of Object.keys(canaries)) expect(env).not.toHaveProperty(name); }
     finally { for (const [name, value] of Object.entries(old)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } }

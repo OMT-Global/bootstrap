@@ -173,9 +173,9 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
                         'providerRequests': 0 if mode == 'api-failure' else 2, 'mockMethods': methods,
                         **({'admissionFailure': {'raw': 'private-later-case-canary'}} if mode == 'api-extra-admission' else {})}).encode(), io.BytesIO())
                 state['running'] = False
-            return b''
+            return (1 if mode == 'api-failure' or mode.startswith('api-producer-failure:') or mode == 'api-failure-present-methods' else 0) if kwargs.get('on_line') is not None else b''
         probe.command = command
-        probe.inspect = lambda name: {'State': {'Running': state['running'], 'Pid': 123},
+        probe.inspect = lambda name: {'State': {'Running': state['running'], 'Pid': 123, 'ExitCode': (1 if mode == 'api-failure' or mode.startswith('api-producer-failure:') or mode == 'api-failure-present-methods' else 0)},
             'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
         probe.cgroup_for = lambda pid: target / 'absent-test-cgroup'
         try:
@@ -283,6 +283,7 @@ spec.loader.exec_module(probe)
 ENV_CANARY = 'fabricated-env-key-must-not-forward'
 mode = sys.argv[1]
 sandbox_scenario = json.loads(mode.partition(':')[2]) if mode.startswith('sandbox-discriminator:') else None
+exit_scenario = json.loads(mode.partition(':')[2]) if mode.startswith('observed-exit:') else None
 if mode == 'cleanup-clock':
     before_handler = signal.getsignal(signal.SIGALRM)
     before_timer = signal.getitimer(signal.ITIMER_REAL)
@@ -314,6 +315,10 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
              'reportWrittenWhileRootPresent': False, 'provenancePreservedAtBuild': False,
              'binaryEvidenceWrites': 0, 'binaryFlushes': 0, 'outputEvents': [],
              'deadline': None, 'stageContract': False, 'stageReturned': False, 'directCodeReads': []}
+    exit_group = outer / 'observed-exit-cgroup'
+    if exit_scenario is not None:
+        exit_group.mkdir()
+        (exit_group / 'cgroup.procs').write_text('101\n102\n' if exit_scenario.get('case') == 'detached' and exit_scenario.get('detachedEvent', True) else '')
     retained_cleanup = mode.startswith('retained-cleanup-')
     cleanup_clock_state = {'now': 1000.0, 'handler': object(), 'timer': (0.0, 0.0), 'timerCalls': []}
     if retained_cleanup:
@@ -481,6 +486,27 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
                         'phase': 'sandbox', 'providerRequests': 0}).encode(), io.BytesIO())
             finally:
                 state['sandboxRunning'] = False
+        if exit_scenario is not None and operation == 'image' and arguments[4] == 'rm' and exit_scenario.get('cleanupFailure'):
+            raise probe.Unsupported('cleanup')
+        if exit_scenario is not None and operation == 'kill':
+            (exit_group / 'cgroup.procs').write_text('')
+        if operation == 'start' and exit_scenario is not None:
+            state['exitRunning'] = True
+            callback = kwargs['on_line']
+            try:
+                callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **READY_SECURITY,
+                    'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), io.BytesIO())
+                if exit_scenario.get('case') == 'detached':
+                    if exit_scenario.get('detachedEvent', True):
+                        callback(json.dumps({'event': 'detached'}).encode(), io.BytesIO())
+                else:
+                    failure = producer_sandbox_result('version-stderr', success=not exit_scenario.get('failed', False))
+                    callback(json.dumps(failure).encode(), io.BytesIO())
+                if exit_scenario.get('cli', 0) not in (0, 1, 137):
+                    raise probe.Unsupported('process')
+            finally:
+                state['exitRunning'] = False
+            return exit_scenario.get('cli', 0)
         if operation == 'start' and mode.startswith('producer-api-failure:'):
             state['apiRunning'] = True
             callback = kwargs['on_line']
@@ -497,10 +523,12 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
                            'processMounts': {'substage': 'combined-predicate', 'capsZero': True, 'rootRo': True, 'mountsSafe': True, 'noNewPrivs': False}}
             kwargs['on_line'](json.dumps({'event': 'result', 'case': 'mechanical', 'ok': False, 'providerRequests': 0,
                 'admissionFailure': failure}).encode(), io.BytesIO())
-        return b''
+        return (1 if mode.startswith('producer-api-failure:') or (sandbox_scenario is not None and not sandbox_scenario.get('success')) or mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure') else 0) if kwargs.get('on_line') is not None else b''
 
     def case_run(case, *args):
         state['caseOrder'].append(case)
+        if exit_scenario is not None and case == exit_scenario.get('case', 'sandbox'):
+            return actual_case_run(case, *args)
         if sandbox_scenario is not None:
             state.setdefault('sandboxCollectors', []).append({'case': case, 'passed': len(args) > 5 and args[5] is not None})
             if case == 'sandbox':
@@ -570,11 +598,11 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
             return original_encode_evidence(evidence)
         probe.encode_evidence = exact_wire_boundary
     if mode.startswith('producer-api-failure:'):
-        probe.inspect = lambda name: {'State': {'Running': state.get('apiRunning', False), 'Pid': 123},
+        probe.inspect = lambda name: {'State': {'Running': state.get('apiRunning', False), 'Pid': 123, 'ExitCode': (1 if mode.startswith('producer-api-failure:') or (sandbox_scenario is not None and not sandbox_scenario.get('success')) or mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure') else 0)},
             'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
         probe.cgroup_for = lambda pid: outer / 'absent-api-cgroup'
     if sandbox_scenario is not None:
-        probe.inspect = lambda name: {'State': {'Running': state.get('sandboxRunning', False) or sandbox_scenario.get('hostFailure') == 'postcheck', 'Pid': 123},
+        probe.inspect = lambda name: {'State': {'Running': state.get('sandboxRunning', False) or sandbox_scenario.get('hostFailure') == 'postcheck', 'Pid': 123, 'ExitCode': (1 if mode.startswith('producer-api-failure:') or (sandbox_scenario is not None and not sandbox_scenario.get('success')) or mode in ('admission-failure', 'admission-cleanup-failure', 'process-mounts-failure', 'process-mounts-cleanup-failure') else 0)},
             'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
         probe.cgroup_for = lambda pid: outer / 'absent-sandbox-cgroup'
         if 'wireExtra' in sandbox_scenario:
@@ -586,6 +614,11 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-runtime-orchestration-') as o
                 evidence['wirePadding'] = 'x' * (65536 - overhead + sandbox_scenario['wireExtra'])
                 return original_encode_evidence(evidence)
             probe.encode_evidence = sandbox_wire_boundary
+    if exit_scenario is not None:
+        probe.inspect = lambda name: {'State': {'Running': state.get('exitRunning', False), 'Pid': 123,
+            'ExitCode': exit_scenario.get('container', 137 if exit_scenario.get('case') == 'detached' else 0)},
+            'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
+        probe.cgroup_for = lambda pid: exit_group
     probe.self_test, probe.command, probe.case_run = lambda: None, command, case_run
     started = time.monotonic()
     with mock.patch.object(probe.tempfile, 'mkdtemp', side_effect=owned_mkdtemp), \
@@ -1085,7 +1118,7 @@ def mechanical(mode, include_history=False, capture=None, failure_fields=None):
                          **(failure_fields or {})}).encode() + b'\n'
     running = json.dumps([{'State': {'Running': True, 'Pid': 123},
                            'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}]).encode()
-    stopped = json.dumps([{'State': {'Running': False}}]).encode()
+    stopped = json.dumps([{'State': {'Running': False, 'ExitCode': 1 if failed_result else 0}}]).encode()
     queue = [(b'public history', b'', 0)] if include_history else []
     queue += [(b'public container id', b'public synthetic create diagnostic', 17 if mode == 'create' else 0)]
     launcher_exit = {'launcher-missing': 127, 'launcher-nonexec': 126, 'launcher-limit-failure': 1}.get(mode)
@@ -1142,7 +1175,7 @@ class PublicDiagnosticTests(unittest.TestCase):
             with self.subTest(code=code), processes([(b'public-line\n', b'', code)]):
                 trace, lines = [], []
                 self.assertEqual(probe.command(['never-executed'], on_line=lambda line, stdin: lines.append(line),
-                    trace=trace, phase='mechanical-start'), b'')
+                    trace=trace, phase='mechanical-start'), code)
                 self.assertEqual(lines, [b'public-line'])
                 self.assertEqual(trace[0]['exitCode'], code)
                 self.assertTrue(trace[0]['exitObservedBeforeCleanup'] and trace[0]['streamsComplete'])
@@ -1376,11 +1409,11 @@ def host_case(fields):
             state['resultSent'] = True
             callback(json.dumps({'event': 'result', 'case': 'mechanical', 'ok': True, 'providerRequests': 0}).encode(), Input())
             state['running'] = False
-        return b''
+        return 0 if kwargs.get('on_line') is not None else b''
     with tempfile.TemporaryDirectory(prefix='bootstrap-as-ready-fixture-') as temporary, \
             mock.patch.object(host, 'command', side_effect=command), \
             mock.patch.object(host, 'inspect', side_effect=lambda name: {
-                'State': {'Running': state['running'], 'Pid': 123},
+                'State': {'Running': state['running'], 'Pid': 123, 'ExitCode': 0},
                 'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}), \
             mock.patch.object(host, 'cgroup_for', return_value=Path(temporary) / 'absent-cgroup'):
         pending = []
@@ -1682,7 +1715,7 @@ def run(values, exists=True, identity_error=None, clock_error=None, sleep_error=
         state['inspectCalls'] += 1
         if state['inspectCalls'] == 2 and post_inspect_error is not None:
             raise post_inspect_error
-        return {'State': {'Running': state['inspectCalls'] == 1, 'Pid': 123},
+        return {'State': {'Running': state['inspectCalls'] == 1, 'Pid': 123, 'ExitCode': 0},
                 'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}
 
     def cgroup_for(pid):
@@ -1703,7 +1736,7 @@ def run(values, exists=True, identity_error=None, clock_error=None, sleep_error=
                                          'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), Input())
             kwargs['on_line'](json.dumps({'event': 'result', 'case': 'mechanical', 'ok': True,
                                          'providerRequests': 0}).encode(), Input())
-        return b''
+        return 0 if kwargs.get('on_line') is not None else b''
 
     namespace = {'Unsupported': Unsupported, 'contextlib': contextlib, 'time': clock, 'json': json,
                  'os': types.SimpleNamespace(getuid=lambda: 1000, getgid=lambda: 1000),
@@ -1834,11 +1867,11 @@ def command(arguments, **kwargs):
         state['resultSent'] = True
         callback(json.dumps({'event': 'result', 'case': 'mechanical', 'ok': True, 'providerRequests': 0}).encode(), Input())
         state['running'] = False
-    return b''
+    return 0 if kwargs.get('on_line') is not None else b''
 with tempfile.TemporaryDirectory(prefix='bootstrap-effective-ready-') as temporary, \
         mock.patch.object(probe, 'command', side_effect=command), \
         mock.patch.object(probe, 'inspect', side_effect=lambda _: {
-            'State': {'Running': state['running'], 'Pid': 123},
+            'State': {'Running': state['running'], 'Pid': 123, 'ExitCode': 0},
             'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}), \
         mock.patch.object(probe, 'cgroup_for', return_value=Path(temporary) / 'absent-cgroup'):
     pending = []
@@ -2063,13 +2096,13 @@ def command(arguments, **kwargs):
             state['running'] = False
     if operation == 'rm' and options.get('removeFailure'):
         raise probe.Unsupported('cleanup')
-    return b''
+    return (1 if failure.get('ok') is False else 0) if kwargs.get('on_line') is not None else b''
 with tempfile.TemporaryDirectory(prefix='bootstrap-sandbox-consumer-') as temporary:
     pending = []
     probe.DOCKER = ['never-executed']
     with mock.patch.object(probe, 'command', side_effect=command), \
             mock.patch.object(probe, 'inspect', side_effect=lambda _: {
-                'State': {'Running': state['running'] or bool(options.get('postcheck') and not state['running']), 'Pid': 123},
+                'State': {'Running': state['running'] or bool(options.get('postcheck') and not state['running']), 'Pid': 123, 'ExitCode': (1 if failure.get('ok') is False else 0)},
                 'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}), \
             mock.patch.object(probe, 'cgroup_for', return_value=Path(temporary) / 'absent-cgroup'), \
             mock.patch.object(probe.subprocess, 'Popen', side_effect=forbidden), \
@@ -2284,5 +2317,171 @@ describe("controlled reviewer overall sandbox failure evidence", () => {
       stage === "version-exit" || stage === "sandbox-exit" ? [{ stage }, { stage, exitCode: -255 }] : [{ stage }]);
     expect(Math.max(...observations.map((sandboxFailure) =>
       Buffer.byteLength("," + JSON.stringify({ sandboxFailure }).slice(1, -1))))).toBe(58);
+  });
+});
+
+
+const observedExitHarness = publicDiagnosticHarness.split("\nclass PublicDiagnosticTests")[0] + String.raw`
+options = json.loads(sys.argv[1])
+probe.DEADLINE = probe.CLEANUP_DEADLINE = time.monotonic() + 10
+probe.ENV, probe.DOCKER = {}, ['never-executed']
+if options.get('commandOnly'):
+    lines, trace = [], []
+    with processes([(b'public-line\n', b'private-command-canary', options.get('cli', 0))]):
+        try:
+            value = probe.command(['never-executed'], on_line=(lambda line, stdin: lines.append(line)) if options.get('line', True) else None,
+                                  trace=trace, phase='mechanical-start')
+            reason = None
+        except probe.Unsupported as error:
+            value, reason = None, str(error)
+    print(json.dumps({'type': type(value).__name__, 'value': value.decode() if type(value) is bytes else value,
+                      'reason': reason, 'lines': [line.decode() for line in lines], 'trace': trace}))
+    sys.exit(0)
+case = options.get('case', 'bytes')
+with tempfile.TemporaryDirectory(prefix='bootstrap-observed-exit-') as temporary:
+    root = Path(temporary)
+    group = root / 'cgroup'
+    group.mkdir()
+    procs = group / 'cgroup.procs'
+    procs.write_text('101\n102\n' if case == 'detached' and options.get('detachedEvent', True) else '')
+    ready = json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **READY_SECURITY,
+                        'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode() + b'\n'
+    if case == 'detached':
+        tail = json.dumps({'event': 'detached'}).encode() + b'\n' if options.get('detachedEvent', True) else b''
+    else:
+        failure = {'event': 'result', 'case': case, 'ok': not options.get('failed'), 'providerRequests': 0}
+        if options.get('sandboxFailure'):
+            failure.update(phase='native-sandbox', sandboxFailure={'stage': 'version-stderr'})
+        tail = json.dumps(failure).encode() + b'\n'
+    running = json.dumps([{'State': {'Running': True, 'Pid': 123},
+                           'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}]).encode()
+    stopped_state = {'Running': False}
+    if not options.get('missingExit'):
+        stopped_state['ExitCode'] = options.get('container', 0)
+    stopped = json.dumps([{'State': stopped_state}]).encode()
+    queue = [(b'container-id', b'', 0), (ready + tail, b'', options.get('cli', 0)), (running, b'', 0)]
+    if case == 'detached' and options.get('detachedEvent', True):
+        queue.append((b'', b'', 1 if options.get('killFailure') else 0))
+    if not options.get('killFailure') and options.get('cli', 0) in (0, 1, 137):
+        queue.append((stopped, b'', 0))
+    queue.append((b'', b'', 0))
+    original_command = probe.command
+    operations = []
+    def command(arguments, **kwargs):
+        operation = arguments[len(probe.DOCKER)]
+        operations.append(operation)
+        value = original_command(arguments, **kwargs)
+        if operation == 'kill':
+            procs.write_text('')
+        return value
+    pending, retained = [], {}
+    with processes(queue) as children, mock.patch.object(probe, 'command', side_effect=command), \
+            mock.patch.object(probe, 'cgroup_for', return_value=group):
+        try:
+            value = probe.case_run(case, 'synthetic-image', root, pending, '', None,
+                                   retained if options.get('sandboxFailure') else None)
+            reason = None
+        except probe.Unsupported as error:
+            value, reason = None, str(error)
+    print(json.dumps({'value': value, 'reason': reason, 'retained': retained,
+                      'operations': operations, 'pending': len(pending), 'fakeProcesses': len(children),
+                      'go': bytes(children[1].stdin.written).decode()}))
+`;
+
+interface ObservedExitResult {
+  value: unknown; reason: string | null; retained?: Record<string, unknown>;
+  operations?: string[]; pending?: number; fakeProcesses?: number; go?: string;
+  type?: string; lines?: string[]; trace?: Array<{ exitCode: number }>;
+}
+async function observedExitCase(options: Record<string, unknown>): Promise<ObservedExitResult> {
+  const result = await execute("python3", ["-B", "-I", "-S", "-c", observedExitHarness, JSON.stringify(options)], {
+    cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+  });
+  return JSON.parse(result.stdout) as ObservedExitResult;
+}
+const rejectedOrdinaryExits: Array<[string, Record<string, unknown>]> = [
+  ["both-one", { cli: 1, container: 1 }], ["both-killed", { cli: 137, container: 137 }],
+  ["container-one", { cli: 0, container: 1 }], ["container-killed", { cli: 0, container: 137 }],
+  ["cli-one-container-zero", { cli: 1, container: 0 }], ["boolean-cli", { cli: false, container: 0 }],
+  ["boolean-container", { cli: 0, container: false }], ["string-container", { cli: 0, container: "0" }],
+  ["missing-container", { cli: 0, missingExit: true }]
+];
+describe("controlled reviewer observed completion", () => {
+  it.each([0, 1, 137])("returns actual integer status %i from the real line command without exposing private output", async (cli) => {
+    const result = await observedExitCase({ commandOnly: true, cli });
+    expect(result.reason).toBeNull(); expect(result.type).toBe("int"); expect(result.value).toBe(cli);
+    expect(result.lines).toEqual(["public-line"]); expect(result.trace?.[0]?.exitCode).toBe(cli);
+    expect(JSON.stringify(result)).not.toContain("private-command-canary");
+  });
+  it("keeps actual non-line command output byte-for-byte", async () => {
+    const result = await observedExitCase({ commandOnly: true, line: false });
+    expect(result.reason).toBeNull(); expect(result.type).toBe("bytes"); expect(result.value).toBe("public-line\n");
+    expect(result.lines).toEqual([]);
+  });
+  it.each(rejectedOrdinaryExits)("rejects an ordinary success row with incoherent observed completion: %s", async (_name, options) => {
+    const result = await observedExitCase(options);
+    expect(result.reason).toBe("process"); expect(result.value).toBeNull();
+    expect(result.pending).toBe(0); expect(result.operations?.at(-1)).toBe("rm"); expect(result.go).toBe("GO\n");
+  });
+  it("accepts ordinary success only when both observed statuses are zero", async () => {
+    const result = await observedExitCase({ cli: 0, container: 0 });
+    expect(result.reason).toBeNull(); expect(result.value).toEqual({ case: "bytes", ok: true, providerRequests: 0 });
+    expect(result.pending).toBe(0);
+  });
+  it.each([0, 1, 137])("keeps a valid failed row false for allowed CLI status %i", async (cli) => {
+    const result = await observedExitCase({ cli, container: cli, failed: true });
+    expect(result.reason).toBeNull(); expect(result.value).toEqual({ case: "bytes", ok: false, providerRequests: 0 });
+  });
+  it.each([0, 137])("accepts detached status %i only after validated descendants, successful kill and stopped137", async (cli) => {
+    const result = await observedExitCase({ case: "detached", cli, container: 137 });
+    expect(result.reason).toBeNull(); expect(result.value).toEqual({ case: "detached", ok: true, providerRequests: 0 });
+    expect(result.operations).toEqual(["create", "start", "inspect", "kill", "inspect", "rm"]);
+    expect(result.pending).toBe(0);
+  });
+  it.each([
+    { cli: 0, container: 0, detachedEvent: false }, { cli: 137, container: 137, detachedEvent: false },
+    { cli: 1, container: 137 }, { cli: 0, container: 0 }, { cli: 0, container: true },
+    { cli: 0, container: 137, killFailure: true }
+  ])("rejects incomplete or mismatched detached completion: %j", async (options) => {
+    const result = await observedExitCase({ case: "detached", ...options });
+    expect(result.reason).toBe("process"); expect(result.value).toBeNull(); expect(result.pending).toBe(0);
+  });
+  it("retains a validated sandbox failure when actual line-command process validation then fails", async () => {
+    const result = await observedExitCase({ case: "sandbox", cli: 2, container: 2, failed: true, sandboxFailure: true });
+    expect(result.reason).toBe("process"); expect(result.value).toBeNull();
+    expect(result.retained).toEqual({ stage: "version-stderr" }); expect(result.pending).toBe(0);
+  });
+});
+describe("controlled reviewer overall observed completion", () => {
+  it.each([
+    { cli: 1, container: 1 }, { cli: 137, container: 137 }, { cli: 0, container: 1 },
+    { cli: 0, container: 137 }, { cli: 1, container: 0 }
+  ])("rejects an ordinary false success before any later auth credit: %j", async (options) => {
+    const result = await orchestrationCase("observed-exit:" + JSON.stringify(options));
+    expect(result.status).toBe(1); expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "process" });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+    expect(result.providerRequests).toBe(0); expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+    expect(result.allRootsRemoved).toBe(true);
+  });
+  it("does not credit a detached container that never emitted its validated descendant event", async () => {
+    const result = await orchestrationCase("observed-exit:" + JSON.stringify({ case: "detached", detachedEvent: false }));
+    expect(result.status).toBe(1); expect(result.evidence).toMatchObject({ ok: false, cleanup: true, reason: "process" });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached"]);
+    expect(result.providerRequests).toBe(0); expect(result.mockMethods).toEqual({ GET: 0, POST: 0 });
+  });
+  it.each([{ cli: 0, container: 0 }, { case: "detached", cli: 0, container: 137 },
+    { case: "detached", cli: 137, container: 137 }])("preserves overall success for valid completion: %j", async (options) => {
+    const result = await orchestrationCase("observed-exit:" + JSON.stringify(options));
+    expect(result.status).toBe(0); expect(result.evidence).toMatchObject({ ok: true, cleanup: true });
+    expect(result.caseOrder.at(-1)).toBe("persistence"); expect(result.mockMethods).toEqual({ GET: 1, POST: 1 });
+  });
+  it.each([false, true])("retains diagnostic data through later process and cleanup failure: %s", async (cleanupFailure) => {
+    const result = await orchestrationCase("observed-exit:" + JSON.stringify({ failed: true, cli: 2, container: 2, cleanupFailure }));
+    expect(result.status).toBe(1);
+    expect(result.evidence).toMatchObject({ ok: false, cleanup: !cleanupFailure, reason: cleanupFailure ? "cleanup" : "process" });
+    expect(result.evidence).toHaveProperty("sandboxFailure", { stage: "version-stderr" });
+    expect(result.caseOrder).toEqual(["mechanical", "bytes", "inodes", "detached", "sandbox"]);
+    expect(result.providerRequests).toBe(0); expect(result.allRootsRemoved).toBe(true);
   });
 });

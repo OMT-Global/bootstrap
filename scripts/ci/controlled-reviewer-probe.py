@@ -95,7 +95,7 @@ def command(arguments, timeout=60, limit=1 << 20, on_line=None, cleanup=False, t
             require(not pending, 'output')
             code = process.wait(timeout=2)
             require(code == 0 or on_line and code in (1, 137), 'process')
-            return bytes(result)
+            return code if on_line else bytes(result)
     finally:
         if observation is not None:
             observation['exitCode'] = process.poll()
@@ -168,9 +168,10 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None, 
     containers.append(name)
     command([*arguments, image, '--case', case], trace=trace, phase='mechanical-create' if trace is not None else None)
     events, group = [], None
+    detached_completed = False
 
     def event(line, stdin):
-        nonlocal group
+        nonlocal group, detached_completed
         data = json.loads(line)
         require(isinstance(data, dict) and len(events) < 4, 'output')
         require(not (sandbox_failure and data.get('event') == 'result'), 'output')
@@ -238,10 +239,11 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None, 
         elif data.get('event') == 'detached':
             require(case == 'detached' and group and len((group / 'cgroup.procs').read_text().split()) >= 2)
             command([*DOCKER, 'kill', '--signal', 'KILL', name])
+            detached_completed = True
     try:
         if diagnostic is not None:
             diagnostic['stage'] = 'mechanical-start'
-        command([*DOCKER, 'start', '-a', '-i', name], on_line=event, timeout=70, trace=trace, phase='mechanical-start' if trace is not None else None)
+        code = command([*DOCKER, 'start', '-a', '-i', name], on_line=event, timeout=70, trace=trace, phase='mechanical-start' if trace is not None else None)
         if diagnostic is not None:
             diagnostic['stage'] = 'post-case-cgroup'
         require(group is not None, 'cleanup')
@@ -252,11 +254,16 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None, 
             require(not (group / 'cgroup.procs').read_text().strip(), 'cleanup')
         observed = inspect(name) if trace is None else inspect(name, trace, 'mechanical-inspect-stopped')
         require(not observed['State']['Running'], 'cleanup')
+        exit_code = observed['State'].get('ExitCode')
         if case != 'detached':
             result = events[-1]
             require(result.get('event') == 'result' and result.get('case') == case and type(result.get('ok')) is bool, 'native-sandbox' if case == 'sandbox' else case)
             require(result.get('providerRequests') == 0 if case != 'api' else (0 < result.get('providerRequests', 0) <= 8 if result['ok'] else 0 <= result.get('providerRequests', 0) <= 8), case)
+            require(not result['ok'] or (type(code) is int and code == 0 and
+                    type(exit_code) is int and exit_code == 0), 'process')
         else:
+            require(detached_completed and type(code) is int and code in (0, 137) and
+                    type(exit_code) is int and exit_code == 137, 'process')
             result = {'case': case, 'ok': True, 'providerRequests': 0}
         if before:
             require(auth_snapshot(auth) == before, 'auth-persistence')

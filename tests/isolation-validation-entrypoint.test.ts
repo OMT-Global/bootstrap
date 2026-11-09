@@ -29,6 +29,13 @@ async function fixture(profile: string, failure = "") {
   return { status, stdout, events: (await readFile(path.join(target, "events"), "utf8")).trim().split("\n") };
 }
 describe("registered full-validation isolation entry point", () => {
+  it("checks artifact parsers, extraction and bounds without downloads or native execution", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "tests/reviewer-artifacts.test.py"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+      timeout: 30_000, maxBuffer: 256 * 1024
+    });
+    expect(result.stderr).toContain("OK");
+  });
   it("matches the supported manifest projection exactly", async () => {
     const manifest = await loadManifest("project.bootstrap.yaml");
     const projection = renderManagedFiles(manifest, await loadResolvedFlowPolicy(manifest, process.cwd())).find((file) => file.path === "scripts/ci/run-extended-validation.sh");

@@ -133,7 +133,8 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-reviewer-driver-') as tempora
             if operation == 'start':
                 state['running'] = True
                 callback = kwargs['on_line']
-                callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid()}).encode(), io.BytesIO())
+                callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(),
+                    'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode(), io.BytesIO())
                 callback(json.dumps({'event': 'result', 'case': 'api', 'ok': mode != 'api-failure',
                     'providerRequests': 0 if mode == 'api-failure' else 2, 'mockMethods': methods}).encode(), io.BytesIO())
                 state['running'] = False
@@ -691,6 +692,13 @@ FIELDS = {'phase', 'exitCode', 'exitObservedBeforeCleanup', 'stdoutBytes', 'stde
 @contextlib.contextmanager
 def processes(specifications):
     remaining, registry, created = list(specifications), {}, []
+    class Input(io.BytesIO):
+        def __init__(self):
+            super().__init__()
+            self.written = bytearray()
+        def write(self, value):
+            self.written.extend(value)
+            return super().write(value)
     class Stream:
         def __init__(self, fd, content):
             self.fd, self.content, self.closed = fd, content, False
@@ -705,7 +713,7 @@ def processes(specifications):
                 raise AssertionError('unexpected fake command')
             stdout, stderr, self.desired_exit = remaining.pop(0)
             self.pid, self.returncode, self.killed = 5000 + len(created), None, False
-            self.stdin = io.BytesIO()
+            self.stdin = Input()
             self.stdout = Stream(self.pid * 2, stdout)
             self.stderr = Stream(self.pid * 2 + 1, stderr)
             created.append(self)
@@ -748,21 +756,26 @@ def processes(specifications):
     assert all(child.killed and child.stdin.closed and child.stdout.closed and child.stderr.closed for child in created)
 
 
-def mechanical(mode, include_history=False):
+def mechanical(mode, include_history=False, capture=None):
     diagnostic = {'stage': 'image-history', 'commands': [], 'readyEventSeen': False,
                   'resultEventSeen': False, 'resultOk': None}
-    ready = json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid()}).encode() + b'\n'
+    ready = json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(),
+                       'addressSpace': {'soft': 17179869184, 'hard': 17179869184}}).encode() + b'\n'
     result = json.dumps({'event': 'result', 'case': 'mechanical', 'ok': mode != 'pre-ready', 'providerRequests': 0}).encode() + b'\n'
     running = json.dumps([{'State': {'Running': True, 'Pid': 123},
                            'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}]).encode()
     stopped = json.dumps([{'State': {'Running': False}}]).encode()
     queue = [(b'public history', b'', 0)] if include_history else []
     queue += [(b'public container id', b'public synthetic create diagnostic', 17 if mode == 'create' else 0)]
+    launcher_exit = {'launcher-missing': 127, 'launcher-nonexec': 126, 'launcher-limit-failure': 1}.get(mode)
     if mode != 'create':
-        queue.append((result if mode == 'pre-ready' else ready + result, b'', 1 if mode == 'pre-ready' else 0))
-        if mode != 'pre-ready':
+        if launcher_exit is not None:
+            queue.append((b'', b'public synthetic launcher failure', launcher_exit))
+        else:
+            queue.append((result if mode == 'pre-ready' else ready + result, b'', 1 if mode == 'pre-ready' else 0))
+        if mode != 'pre-ready' and launcher_exit is None:
             queue.append((running, b'', 0))
-        if mode not in ('pre-ready', 'cgroup'):
+        if mode not in ('pre-ready', 'cgroup') and launcher_exit is None:
             queue.append((stopped, b'', 0))
         queue.append((b'', b'public remove diagnostic', 17 if mode == 'remove' else 0))
     with tempfile.TemporaryDirectory(prefix='bootstrap-public-diagnostic-fixture-') as temporary:
@@ -771,7 +784,7 @@ def mechanical(mode, include_history=False):
             if mode == 'cgroup':
                 raise probe.Unsupported('mechanical')
             return Path(temporary) / 'absent-synthetic-cgroup'
-        with processes(queue), mock.patch.object(probe, 'cgroup_for', side_effect=cgroup):
+        with processes(queue) as children, mock.patch.object(probe, 'cgroup_for', side_effect=cgroup):
             if include_history:
                 probe.command(['never-executed', 'history'], trace=diagnostic['commands'], phase='image-history')
             try:
@@ -779,6 +792,8 @@ def mechanical(mode, include_history=False):
                 reason = None
             except probe.Unsupported as error:
                 value, reason = None, str(error)
+            if capture is not None:
+                capture.update(commands=len(children), inputWrites=[bytes(child.stdin.written) for child in children])
         return diagnostic, value, reason, pending
 
 
@@ -860,7 +875,8 @@ class PublicDiagnosticTests(unittest.TestCase):
     def test_history_and_complete_mechanical_use_exactly_the_six_public_slots(self):
         diagnostic, value, reason, pending = mechanical('success', include_history=True)
         self.assertIsNone(reason)
-        self.assertEqual(value, {'case': 'mechanical', 'ok': True, 'providerRequests': 0})
+        self.assertEqual(value, {'case': 'mechanical', 'ok': True, 'providerRequests': 0,
+                                'addressSpace': {'soft': 17179869184, 'hard': 17179869184}})
         self.assertEqual(pending, [])
         self.assertEqual([entry['phase'] for entry in diagnostic['commands']], list(PHASES))
         self.assertTrue(diagnostic['readyEventSeen'] and diagnostic['resultEventSeen'] and diagnostic['resultOk'])
@@ -873,6 +889,22 @@ class PublicDiagnosticTests(unittest.TestCase):
                 with self.subTest(case=case), self.assertRaisesRegex(probe.Unsupported, '^diagnostic$'):
                     probe.case_run(case, 'synthetic-image', Path(temporary), [], '', {'commands': []})
             self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_missing_nonexecutable_or_failed_limit_launcher_never_advances_or_falls_back(self):
+        for mode, code in (('launcher-missing', 127), ('launcher-nonexec', 126), ('launcher-limit-failure', 1)):
+            with self.subTest(mode=mode):
+                capture = {}
+                diagnostic, value, reason, pending = mechanical(mode, capture=capture)
+                self.assertIsNone(value)
+                self.assertIsNotNone(reason)
+                self.assertEqual(pending, [])
+                self.assertFalse(diagnostic['readyEventSeen'] or diagnostic['resultEventSeen'])
+                self.assertIsNone(diagnostic['resultOk'])
+                self.assertEqual(diagnostic['stage'], 'container-removed')
+                self.assertEqual([entry['phase'] for entry in diagnostic['commands']],
+                                 ['mechanical-create', 'mechanical-start', 'mechanical-remove'])
+                self.assertEqual(diagnostic['commands'][1]['exitCode'], code)
+                self.assertEqual(capture, {'commands': 3, 'inputWrites': [b'', b'', b'']})
 
 
 log = io.StringIO()
@@ -890,9 +922,223 @@ describe("controlled reviewer public pre-auth diagnostic", () => {
       cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
     });
-    expect(JSON.parse(result.stdout)).toEqual({ testCases: 8,
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 9,
       publicPhases: ["image-history", "mechanical-create", "mechanical-start", "mechanical-inspect-running",
         "mechanical-inspect-stopped", "mechanical-remove"],
       nativeDockerAuthNetworkProcesses: 0, allProcessesWereFakePopen: true });
+  });
+});
+
+
+const addressSpaceHarness = String.raw`
+"""Inherited address-space fixtures; every resource setter and Linux observation is mocked."""
+import contextlib
+import ctypes
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+ROOT = Path.cwd()
+
+
+def load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'scripts/ci' / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+fixture = load('inherited_address_space_fixture', 'controlled-reviewer-fixture.py')
+host = load('inherited_address_space_host', 'controlled-reviewer-probe.py')
+LIMIT = 17179869184
+PAIR = {'soft': LIMIT, 'hard': LIMIT}
+
+
+@contextlib.contextmanager
+def admission(pair, setter):
+    order = []
+    def getter(resource):
+        order.append(('get', resource))
+        return pair
+    def set_limit(resource, values):
+        order.append(('set', resource, values))
+        return setter(resource, values)
+    with mock.patch.object(fixture.sys, 'platform', 'linux'), \
+            mock.patch.object(fixture.os, 'getpid', return_value=1), \
+            mock.patch.object(fixture.os, 'getuid', return_value=1000), \
+            mock.patch.object(fixture.os, 'getgid', return_value=1000), \
+            mock.patch.object(fixture.os, 'umask'), \
+            mock.patch.object(fixture.resource, 'getrlimit', side_effect=getter), \
+            mock.patch.object(fixture.resource, 'setrlimit', side_effect=set_limit), \
+            mock.patch.object(fixture, 'emit') as emit, \
+            mock.patch.object(fixture, 'native', side_effect=AssertionError('native forbidden')) as native:
+        yield order, emit, native
+
+
+class SetterReached(Exception):
+    pass
+
+
+def stop_at_setter(resource, values):
+    raise SetterReached('synthetic first-setter sentinel')
+
+
+def host_case(fields):
+    state = {'running': False, 'go': bytearray(), 'resultSent': False, 'operations': [], 'createArguments': []}
+    class Input(io.BytesIO):
+        def write(self, value):
+            state['go'].extend(value)
+            return super().write(value)
+    def command(arguments, **kwargs):
+        operation = arguments[len(host.DOCKER)]
+        state['operations'].append(operation)
+        if operation == 'create':
+            state['createArguments'] = arguments
+        if operation == 'start':
+            state['running'] = True
+            callback = kwargs['on_line']
+            callback(json.dumps({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), **fields}).encode(), Input())
+            state['resultSent'] = True
+            callback(json.dumps({'event': 'result', 'case': 'mechanical', 'ok': True, 'providerRequests': 0}).encode(), Input())
+            state['running'] = False
+        return b''
+    with tempfile.TemporaryDirectory(prefix='bootstrap-as-ready-fixture-') as temporary, \
+            mock.patch.object(host, 'command', side_effect=command), \
+            mock.patch.object(host, 'inspect', side_effect=lambda name: {
+                'State': {'Running': state['running'], 'Pid': 123},
+                'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True}}), \
+            mock.patch.object(host, 'cgroup_for', return_value=Path(temporary) / 'absent-cgroup'):
+        pending = []
+        host.DOCKER = ['never-executed']
+        try:
+            value = host.case_run('mechanical', 'public-fixture-image', Path(temporary), pending, '')
+            reason = None
+        except host.Unsupported as error:
+            value, reason = None, str(error)
+        assert not pending and state['operations'][-1] == 'rm'
+    return state, value, reason
+
+
+class InheritedAddressSpaceTests(unittest.TestCase):
+    def test_invalid_inherited_pairs_fail_before_any_setter_ready_or_native_call(self):
+        for pair in ((-1, -1), (LIMIT, -1), (-1, LIMIT), (LIMIT - 1, LIMIT - 1),
+                     (LIMIT + 1, LIMIT + 1), (0, 0), (LIMIT - 1, LIMIT), (LIMIT, LIMIT + 1)):
+            with self.subTest(pair=pair), admission(pair, stop_at_setter) as (order, emit, native):
+                with self.assertRaisesRegex(RuntimeError, '^fixture-check-failed$'):
+                    fixture.gate()
+                self.assertEqual(order, [('get', fixture.resource.RLIMIT_AS)])
+                emit.assert_not_called()
+                native.assert_not_called()
+
+    def test_exact_inherited_pair_reaches_the_original_first_setter_only_after_admission(self):
+        with admission((LIMIT, LIMIT), stop_at_setter) as (order, emit, native):
+            with self.assertRaises(SetterReached):
+                fixture.gate()
+            first_resource, first_value = next(iter(fixture.LIMITS.values()))
+            self.assertEqual(order, [('get', fixture.resource.RLIMIT_AS), ('set', first_resource, (first_value, first_value))])
+            emit.assert_not_called()
+            native.assert_not_called()
+
+    def test_setter_failure_after_valid_admission_has_no_ready_native_or_fallback(self):
+        def fail(resource, values):
+            raise OSError('synthetic limit setter failure')
+        with admission((LIMIT, LIMIT), fail) as (order, emit, native):
+            with self.assertRaisesRegex(OSError, '^synthetic limit setter failure$'):
+                fixture.gate()
+            self.assertEqual(len(order), 2)
+            self.assertEqual(order[0], ('get', fixture.resource.RLIMIT_AS))
+            emit.assert_not_called()
+            native.assert_not_called()
+
+    def test_ready_reports_the_measured_inherited_pair_after_the_unchanged_mocked_gate(self):
+        values = {'memory.max': '2147483648', 'memory.swap.max': '0', 'pids.max': '128', 'cpu.max': '200000 100000'}
+        status = '\n'.join(name + ': 0' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')) + '\nNoNewPrivs: 1\n'
+        elf = b'\x7fELF\x02\x01\x01' + bytes(11) + b'\x3e\x00'
+        with tempfile.TemporaryDirectory(prefix='bootstrap-as-full-gate-fixture-') as temporary:
+            def read_text(path, *args, **kwargs):
+                if str(path) == '/proc/self/status':
+                    return status
+                if str(path) == '/proc/self/mountinfo':
+                    return '1 0 0:0 / / ro - ext4 root ro\n2 1 0:1 / ' + temporary + ' rw - tmpfs tmpfs rw\n'
+                return values[path.name]
+            def statfs(path, raw):
+                ctypes.cast(raw, ctypes.POINTER(ctypes.c_long))[0] = 0x01021994
+                return 0
+            with admission((LIMIT, LIMIT), lambda resource, value: None) as (order, emit, native), \
+                    mock.patch.object(fixture, 'ROOT', Path(temporary)), \
+                    mock.patch.object(fixture.os, 'environ', {}), \
+                    mock.patch.object(Path, 'read_text', read_text), \
+                    mock.patch.object(Path, 'lstat', return_value=types.SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0, st_nlink=1)), \
+                    mock.patch.object(Path, 'open', side_effect=lambda *args, **kwargs: io.BytesIO(elf)), \
+                    mock.patch.object(fixture.os.path, 'exists', return_value=False), \
+                    mock.patch.object(fixture.os, 'access', return_value=False), \
+                    mock.patch.object(fixture.os, 'statvfs', return_value=types.SimpleNamespace(f_blocks=64, f_frsize=4096, f_files=16384)), \
+                    mock.patch.object(fixture.ctypes, 'CDLL', return_value=types.SimpleNamespace(statfs=statfs)), \
+                    mock.patch.object(fixture.os, 'uname', return_value=types.SimpleNamespace(machine='x86_64')), \
+                    mock.patch.object(fixture.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(b'GO\n'))):
+                fixture.gate()
+                expected = [('get', fixture.resource.RLIMIT_AS)] + [('set', resource, (value, value)) for resource, value in fixture.LIMITS.values()]
+                self.assertEqual(order, expected)
+                emit.assert_called_once()
+                self.assertEqual(emit.call_args.args[0]['addressSpace'], PAIR)
+                self.assertTrue(emit.call_args.args[0]['pid1'])
+                native.assert_not_called()
+
+    def test_host_rejects_malformed_pairs_before_go_and_retains_the_valid_mechanical_pair(self):
+        malformed = [{}, {'addressSpace': None}, {'addressSpace': []}, {'addressSpace': {}},
+                     {'addressSpace': {'soft': LIMIT}}, {'addressSpace': {**PAIR, 'extra': 0}},
+                     {'addressSpace': {'soft': True, 'hard': LIMIT}}, {'addressSpace': {'soft': str(LIMIT), 'hard': LIMIT}},
+                     {'addressSpace': {'soft': float(LIMIT), 'hard': LIMIT}}, {'addressSpace': {'soft': -1, 'hard': -1}},
+                     {'addressSpace': {'soft': LIMIT - 1, 'hard': LIMIT}}, {'addressSpace': {'soft': LIMIT, 'hard': LIMIT + 1}}]
+        for fields in malformed:
+            with self.subTest(fields=fields):
+                state, value, reason = host_case(fields)
+                self.assertIsNone(value)
+                self.assertEqual(reason, 'address-space')
+                self.assertFalse(state['go'] or state['resultSent'])
+                self.assertEqual(state['operations'], ['create', 'start', 'rm'])
+        state, value, reason = host_case({'addressSpace': PAIR})
+        self.assertIsNone(reason)
+        self.assertEqual(value, {'case': 'mechanical', 'ok': True, 'providerRequests': 0, 'addressSpace': PAIR})
+        self.assertEqual(state['go'], b'GO\n')
+        arguments = state['createArguments']
+        self.assertEqual([arguments[index + 1] for index, argument in enumerate(arguments) if argument == '--ulimit'],
+                         ['core=0:0', 'fsize=67108864:67108864', 'nofile=256:256', 'nproc=128:128', 'cpu=3600:3600'])
+        self.assertEqual(arguments[-3:], ['public-fixture-image', '--case', 'mechanical'])
+
+
+log = io.StringIO()
+result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(InheritedAddressSpaceTests))
+if not result.wasSuccessful():
+    print(log.getvalue(), file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({'testCases': result.testsRun, 'actualResourceSetters': 0, 'nativeOrLauncherProcesses': 0}))
+`;
+
+describe("controlled reviewer inherited address space", () => {
+  it("admits the inherited pair before setters and checks the measured ready pair before GO using pure fixtures", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", addressSpaceHarness], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 64 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    expect(JSON.parse(result.stdout)).toEqual({ testCases: 5, actualResourceSetters: 0, nativeOrLauncherProcesses: 0 });
+  });
+
+  it("uses the fixed prlimit exec form before Python with no shell, PID selector or fallback", async () => {
+    const dockerfile = await readFile("scripts/ci/controlled-reviewer-probe.Dockerfile", "utf8");
+    const lines = dockerfile.split("\n").filter((line) => line.startsWith("ENTRYPOINT "));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!.slice("ENTRYPOINT ".length))).toEqual([
+      "/usr/bin/prlimit", "--as=17179869184:17179869184", "--", "/usr/bin/python3", "-I", "-S", "-u",
+      "/opt/bootstrap-review/reviewer-gate.py"
+    ]);
   });
 });

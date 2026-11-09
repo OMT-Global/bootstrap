@@ -94,6 +94,8 @@ def native(args, input_bytes=b'', cap=16384):
 def gate():
     require(sys.platform == 'linux' and os.getpid() == 1 and os.getuid() != 0)
     os.umask(0o077)
+    address_space = resource.getrlimit(resource.RLIMIT_AS)
+    require(address_space == (16 << 30, 16 << 30))
     for limit, value in LIMITS.values():
         resource.setrlimit(limit, (value, value))
     os.environ.clear()
@@ -135,6 +137,7 @@ def gate():
     emit({'event': 'ready', 'uid': os.getuid(), 'gid': os.getgid(), 'pid1': True,
           'root_ro': root_ro, 'mounts_safe': mounts_safe, 'caps_zero': caps_zero, 'no_new_privs': True,
           'tmpfs': {'type': magic, 'bytes': fs.f_blocks * fs.f_frsize, 'inodes': fs.f_files},
+          'addressSpace': {'soft': address_space[0], 'hard': address_space[1]},
           'limits': {name: value for name, (_, value) in LIMITS.items()}, 'cgroup': values})
     require(sys.stdin.buffer.readline(4) == b'GO\n')
 

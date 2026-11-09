@@ -132,7 +132,7 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None):
                  '--security-opt', 'no-new-privileges', '--memory', '2147483648', '--memory-swap', '2147483648',
                  '--pids-limit', '128', '--cpus', '2', '--ipc', 'none', '--log-driver', 'none', '--restart', 'no',
                  '--user', f'{os.getuid()}:{os.getgid()}', '--tmpfs', f'/run/review:rw,nosuid,nodev,noexec,size=268435456,nr_inodes=16384,uid={os.getuid()},gid={os.getgid()},mode=0700']
-    for limit in ['core=0:0', 'fsize=67108864:67108864', 'nofile=256:256', 'nproc=128:128', 'as=17179869184:17179869184', 'cpu=3600:3600']:
+    for limit in ['core=0:0', 'fsize=67108864:67108864', 'nofile=256:256', 'nproc=128:128', 'cpu=3600:3600']:
         arguments += ['--ulimit', limit]
     before, auth = None, directory / ('auth-' + uuid.uuid4().hex)
     if case.startswith('status-') or case in ('api', 'persistence'):
@@ -165,6 +165,9 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None):
             if diagnostic is not None:
                 diagnostic.update(stage='ready-validation', readyEventSeen=True)
             require(len(events) == 1 and data.get('uid') == os.getuid() and data.get('gid') == os.getgid())
+            address_space = data.get('addressSpace')
+            require(isinstance(address_space, dict) and set(address_space) == {'soft', 'hard'} and
+                    all(type(value) is int and value == 17179869184 for value in address_space.values()), 'address-space')
             observed = inspect(name) if trace is None else inspect(name, trace, 'mechanical-inspect-running')
             require(observed['State']['Running'] and observed['HostConfig']['NetworkMode'] == 'none' and observed['HostConfig']['ReadonlyRootfs'])
             if diagnostic is not None:
@@ -206,6 +209,8 @@ def case_run(case, image, directory, containers, image_record, diagnostic=None):
             require(auth_snapshot(auth) == before, 'auth-persistence')
             require(all(value['OPENAI_API_KEY'] not in json.dumps(event) for event in events) if 'OPENAI_API_KEY' in value else True, 'privacy')
         public = {key: result[key] for key in ('case', 'ok', 'providerRequests')}
+        if case == 'mechanical':
+            public['addressSpace'] = events[0]['addressSpace']
         if case == 'api':
             methods = result.get('mockMethods')
             require(isinstance(methods, dict) and set(methods) == {'GET', 'POST'}, 'output')

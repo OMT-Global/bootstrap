@@ -40,7 +40,7 @@ export function freezeNodeValidation(input: NodeValidationInput): FrozenNodeInpu
     date: z.string().regex(/^(?:0|[1-9][0-9]{0,10}) [+-](?:0[0-9]|1[0-9]|2[0-3])[0-5][0-9]$/) }).strict();
   const common = z.object({ profile: z.literal(NODE_ISOLATION_PROFILE), files: z.array(z.object({ path: z.string(),
     mode: z.enum(["100644", "100755"]), bytes: z.instanceof(Uint8Array) }).strict()).min(1).max(ISOLATION_LIMITS.files),
-    baseBundle: z.instanceof(Uint8Array), baseCommit: z.string().regex(/^[a-f0-9]{40}$/), branch: z.string().regex(/^codex\/[A-Za-z0-9][A-Za-z0-9._/-]*$/),
+    baseBundle: z.instanceof(Uint8Array), baseCommit: z.string().regex(/^[a-f0-9]{40}$/), branch: z.string().max(4096).regex(/^codex\/[A-Za-z0-9][A-Za-z0-9._/-]*$/),
     commitMessage: z.string().min(1).refine((value) => Buffer.byteLength(value) <= 16_384 && Buffer.from(value).toString() === value && !value.includes("\0") && /^Signed-off-by: .+ <[^>]+>$/im.test(value)),
     author: identity, committer: identity, hook: z.enum(["none", ".githooks/pre-commit"]) }).strict();
   const parsed = z.discriminatedUnion("phase", [common.extend({ phase: z.literal("prepared-hook") }),
@@ -68,6 +68,7 @@ export function freezeNodeValidation(input: NodeValidationInput): FrozenNodeInpu
   const get = (name: string) => files.find((file) => file.path === name);
   demand(get("scripts/ci/run-fast-checks.sh"), "The fixed validation entry point is missing.");
   if (parsed.hook !== "none") demand(get(parsed.hook)?.mode === "100755", "The declared pre-commit hook is not executable.");
+  demand(!get("npm-shrinkwrap.json"), "Root npm shrinkwrap is unsupported.");
   demand(get("package.json") && get("package-lock.json"), "Root npm manifests are required.");
   demand(get("package.json")!.bytes.length <= ISOLATION_LIMITS.manifestBytes && get("package-lock.json")!.bytes.length <= ISOLATION_LIMITS.lockBytes, "Npm metadata exceeds the profile parser bound.");
   const pkg = z.object({ workspaces: z.never().optional(), packageManager: z.string().regex(/^npm@/).optional() }).passthrough().parse(json(get("package.json")!.bytes));

@@ -51,6 +51,72 @@ const required = process.env.BOOTSTRAP_REQUIRE_HOST_BROKER_TESTS === "1"; const 
 const roots: string[] = []; const agents: ChildProcess[] = []; const publications: PublicRepository[] = [];
 const file = (name: string, contents: string, executable = false): IsolatedSourceFile => ({ path: name, mode: executable ? "100755" : "100644", bytes: Buffer.from(contents) });
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+interface PublicToolMetadataFs {
+  realpath(file: string): Promise<string>;
+  lstat(file: string): Promise<{ uid: number; gid: number; mode: number; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }>;
+}
+const publicToolPaths = ["/usr/bin/ssh-agent", "/usr/bin/ssh-keygen", "/usr/bin/ssh-add", "/usr/bin/python3", "/usr/bin/node"] as const;
+const publicToolMetadataPrefix = "BROKER_PUBLIC_TOOL_METADATA ";
+function publicToolDiagnostic(io: PublicToolMetadataFs = { realpath, lstat }, write: (line: string) => void = (line) => console.log(line)): () => Promise<void> {
+  let emitted = false;
+  return async () => {
+    if (emitted) return;
+    emitted = true;
+    let expired = false; let timer: ReturnType<typeof setTimeout> | undefined;
+    const errorCode = (error: unknown) => {
+      const code = (error as { code?: unknown } | null)?.code;
+      return typeof code === "string" && ["ENOENT", "EACCES", "EPERM", "ENOTDIR", "ELOOP", "ENAMETOOLONG", "EIO"].includes(code) ? code : "OTHER";
+    };
+    const collect = async () => {
+      const tools: Array<Record<string, unknown>> = [];
+      for (const requested of publicToolPaths) {
+        if (expired) break;
+        const row: Record<string, unknown> = { path: requested }; tools.push(row);
+        let resolved: string;
+        try { resolved = await io.realpath(requested); }
+        catch (error) { row.error = errorCode(error); continue; }
+        if (expired) break;
+        const prefixes = ["/usr/bin", "/usr/lib", "/usr/libexec", "/usr/local/bin", "/usr/local/lib", "/bin", "/lib", "/lib64", "/opt/hostedtoolcache"];
+        if (typeof resolved !== "string" || Buffer.byteLength(resolved) > 512 || path.posix.normalize(resolved) !== resolved ||
+          !resolved.split("/").slice(1).every((part) => /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(part)) ||
+          !prefixes.some((prefix) => resolved === prefix || resolved.startsWith(prefix + "/"))) {
+          row.error = "NON_PUBLIC_RESOLUTION"; continue;
+        }
+        row.realpath = resolved;
+        const ancestors: Array<Record<string, unknown>> = []; row.ancestors = ancestors;
+        let current = resolved;
+        for (let depth = 0; depth < 16; depth++) {
+          if (expired) break;
+          try {
+            const stat = await io.lstat(current);
+            if (expired) break;
+            if (![stat.uid, stat.gid, stat.mode].every((value) => Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff)) {
+              ancestors.push({ path: current, error: "INVALID_METADATA" }); break;
+            }
+            ancestors.push({ path: current, uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o7777).toString(8).padStart(4, "0"),
+              type: stat.isFile() ? "file" : stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "symlink" : "other" });
+          } catch (error) { ancestors.push({ path: current, error: errorCode(error) }); break; }
+          if (current === "/") break;
+          current = path.posix.dirname(current);
+          if (depth === 15) row.error = "ANCESTOR_LIMIT";
+        }
+      }
+      return { schema: 1, tools };
+    };
+    let record: unknown;
+    try {
+      record = await Promise.race([collect(), new Promise((resolve) => {
+        timer = setTimeout(() => { expired = true; resolve({ schema: 1, error: "TIME_LIMIT" }); }, 2_000);
+      })]);
+    } catch { record = { schema: 1, error: "DIAGNOSTIC_ERROR" }; }
+    finally { expired = true; if (timer !== undefined) clearTimeout(timer); }
+    let line = publicToolMetadataPrefix + JSON.stringify(record);
+    if (Buffer.byteLength(line + "\n") > 16_384) line = publicToolMetadataPrefix + JSON.stringify({ schema: 1, error: "OUTPUT_LIMIT" });
+    try { write(line); } catch { /* Diagnostics never replace the original eligibility assertions. */ }
+  };
+}
+const reportPublicTools = publicToolDiagnostic();
+
 function git(root: string, env: NodeJS.ProcessEnv, args: string[], input?: string | Uint8Array): Buffer {
   return execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false", ...args], { cwd: root, env, ...(input !== undefined ? { input } : {}), maxBuffer: 4 * 1024 ** 2 });
 }
@@ -82,7 +148,32 @@ afterEach(async () => {
   fixtureState.launches = []; fixtureState.requests = []; fixtureState.fetches = 0; fixtureState.home = ""; fixtureState.remote = ""; if (cleanupError) throw cleanupError;
 });
 
+it("bounds public-tool diagnostics without changing eligibility failures", async () => {
+  const lines: string[] = []; const metadata = publicToolDiagnostic({
+    realpath: async (file) => {
+      if (file === "/usr/bin/node") throw { code: "ENOENT", message: "fabricated-private-detail" };
+      if (file === "/usr/bin/ssh-add") return "/home/fabricated/.config/private";
+      return file;
+    },
+    lstat: async (file) => {
+      expect(file.startsWith("/home/")).toBe(false);
+      const regular = publicToolPaths.includes(file as typeof publicToolPaths[number]);
+      return { uid: 0, gid: 0, mode: regular ? (file.endsWith("ssh-agent") ? 0o102755 : 0o100755) : 0o40755,
+        isFile: () => regular, isDirectory: () => !regular, isSymbolicLink: () => false };
+    }
+  }, (line) => lines.push(line));
+  await metadata(); await metadata();
+  expect(lines).toHaveLength(1); expect(lines[0]!.split("\n")).toHaveLength(1); expect(Buffer.byteLength(lines[0]! + "\n")).toBeLessThanOrEqual(16_384);
+  expect(lines[0]).not.toMatch(/fabricated-private-detail|\/home\/fabricated/);
+  const record = JSON.parse(lines[0]!.slice(publicToolMetadataPrefix.length));
+  expect(record.tools.find((tool: { path: string }) => tool.path.endsWith("/node")).error).toBe("ENOENT");
+  expect(record.tools.find((tool: { path: string }) => tool.path.endsWith("/ssh-add")).error).toBe("NON_PUBLIC_RESOLUTION");
+  expect(record.tools[0].ancestors[0]).toMatchObject({ uid: 0, gid: 0, mode: "2755", type: "file" });
+  await expect((async () => { await metadata(); throw new Error("original eligibility failure"); })()).rejects.toThrow("original eligibility failure");
+});
+
 it.skipIf(!required)("requires actual unprivileged Linux x64 host-broker enforcement when mandatory", async () => {
+  if (linux) await reportPublicTools();
   expect(process.platform, "The mandatory broker/backend proof cannot be satisfied by Darwin semantic tests.").toBe("linux");
   expect(process.arch).toBe("x64"); const tools = await requireLinuxHost(); expect(tools.prlimit).toBeTruthy(); await trustedExecutable("/usr/bin/ssh-keygen"); await trustedExecutable("/usr/bin/ssh-agent");
 });

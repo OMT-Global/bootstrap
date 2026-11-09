@@ -1,5 +1,5 @@
 import { execFileSync, type SpawnOptions } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +10,8 @@ const faults = vi.hoisted(() => ({
   directory: "", remote: "", scenario: "", api: "", branch: "codex/publication-fixture", base: "", candidate: "",
   commands: [] as Array<{ executable: string; args: string[]; environment: NodeJS.ProcessEnv }>,
   cleanupFailures: 0, race: "" as "" | "base" | "candidate", cancelAfterPush: undefined as AbortController | undefined,
-  helper: "", missingTools: false, providerWritable: false, actualToolMetadata: false, actualLimits: false
+  helper: "", missingTools: false, missingPython: false, pythonWritable: false, pythonCanonical: "/usr/bin/python3", toolPaths: [] as string[],
+  providerWritable: false, actualToolMetadata: false, actualPythonMetadata: false, actualLimits: false
 }));
 
 // Only fixture provider metadata, command transport and the private capability
@@ -19,14 +20,17 @@ vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual,
     realpath: (file: Parameters<typeof actual.realpath>[0]) => {
-      if (!faults.actualToolMetadata && ["/usr/bin/gh", "/usr/local/bin/gh", "/usr/bin/node"].includes(String(file))) {
-        return faults.missingTools ? Promise.reject(new Error("fixture missing fixed tool")) : Promise.resolve(String(file));
+      if (!faults.actualToolMetadata && ["/usr/bin/gh", "/usr/local/bin/gh", "/usr/bin/python3"].includes(String(file))) {
+        faults.toolPaths.push(String(file));
+        if (String(file) === "/usr/bin/python3" && faults.actualPythonMetadata) return actual.realpath(file);
+        if (faults.missingTools || String(file) === "/usr/bin/python3" && faults.missingPython) return Promise.reject(new Error("fixture missing fixed tool"));
+        return Promise.resolve(String(file) === "/usr/bin/python3" ? faults.pythonCanonical : String(file));
       }
       return actual.realpath(file);
     },
     lstat: async (file: Parameters<typeof actual.lstat>[0], options?: Parameters<typeof actual.lstat>[1]) => {
-      if (!faults.actualToolMetadata && ["/usr/bin/gh", "/usr/local/bin/gh", "/usr/bin/node"].includes(String(file))) {
-        return { uid: 0, mode: 0o100755, isFile: () => true, isDirectory: () => false };
+      if (!faults.actualToolMetadata && ["/usr/bin/gh", "/usr/local/bin/gh", ...(faults.actualPythonMetadata ? [] : ["/usr/bin/python3", faults.pythonCanonical])].includes(String(file))) {
+        return { uid: 0, mode: String(file) === faults.pythonCanonical && faults.pythonWritable ? 0o100777 : 0o100755, isFile: () => true, isDirectory: () => false };
       }
       if (!faults.actualToolMetadata && faults.providerAncestors.includes(String(file))) return { uid: 0, mode: faults.providerWritable ? 0o40777 : 0o40755, isDirectory: () => true };
       return actual.lstat(file, options);
@@ -52,7 +56,9 @@ vi.mock("node:child_process", async (original) => {
     faults.commands.push({ executable: command, args: [...fixed], environment });
     if (command === "/usr/bin/git") {
       const setting = fixed.find((arg) => arg.startsWith("credential.https://github.com/example/public.git.helper="))!;
-      const file = / '([^']+)'$/.exec(setting)![1]!; faults.helper = readFileSync(file, "utf8");
+      const quoted = setting.slice(setting.indexOf(" -I -S ") + " -I -S ".length);
+      const file = quoted.slice(1, -1).replaceAll("'\\''", "'"); faults.helper = readFileSync(file, "utf8");
+      expect(path.basename(file)).toMatch(/^(credential|captured-credential)\.py$/); expect(lstatSync(file).mode & 0o777).toBe(0o600);
       if (faults.race === "base") execFileSync("/usr/bin/git", ["--git-dir", faults.remote, "update-ref", `refs/heads/${faults.branch}`, faults.base], { env: { PATH: "/usr/bin:/bin" } });
       if (faults.race === "candidate") execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "push", "--quiet", faults.remote, `${faults.candidate}:refs/heads/${faults.branch}`], { env: environment });
       const mapped = fixed.map((arg) => arg === "https://github.com/example/public.git" ? faults.remote : arg);
@@ -83,12 +89,13 @@ const overrides = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_EN
 beforeEach(() => { for (const key of overrides) vi.stubEnv(key, ""); vi.stubEnv("HOME", os.userInfo().homedir); });
 afterEach(async () => {
   vi.unstubAllEnvs(); faults.cleanupFailures = 0; faults.race = ""; faults.missingTools = false; faults.providerWritable = false;
-  faults.actualToolMetadata = false; faults.actualLimits = false; faults.providerReads = 0;
+  faults.actualToolMetadata = false; faults.actualPythonMetadata = false; faults.actualLimits = false; faults.providerReads = 0;
+  faults.missingPython = false; faults.pythonWritable = false; faults.pythonCanonical = "/usr/bin/python3"; faults.toolPaths.length = 0;
   faults.cancelAfterPush = undefined; faults.contexts.clear(); faults.commands.length = 0; faults.helper = "";
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
-async function fixture() {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-publication-test-")); directories.push(directory); faults.directory = directory;
+async function fixture(prefix = "bootstrap-publication-test-") {
+  const directory = await mkdtemp(path.join(os.tmpdir(), prefix)); directories.push(directory); faults.directory = directory;
   const root = path.join(directory, "source"); const empty = path.join(directory, "empty"); const providerFiles = path.join(directory, "provider");
   await mkdir(root); await mkdir(empty); await mkdir(providerFiles); const remote = path.join(directory, "remote.git");
   const bareEnv = neutralEnvironment(empty, directory);
@@ -271,58 +278,281 @@ describe("private create-only publication broker (synthetic provider only)", () 
     expect(await data.publish()).toMatchObject({ ok: false, phase: "provider", push: "not-attempted" });
     expect(faults.providerReads).toBe(0); expect(faults.commands).toHaveLength(0);
   });
-  it("executes the fixed credential wrapper and rejects malformed or out-of-scope requests before any provider invocation", async () => {
-    const data = await fixture(); expect(await data.publish()).toMatchObject({ ok: true }); const wrapper = path.join(data.directory, "captured-helper.cjs"); await writeFile(wrapper, faults.helper);
-    const marker = path.join(data.directory, "provider-called"); const preload = path.join(data.directory, "provider-preload.cjs");
-    await writeFile(preload, `require("node:child_process").spawnSync = (exe, args, options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return { status: 0, signal: null, stdout: Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=${replyMarker}\\n"), stderr: Buffer.alloc(0) }; };`);
-    const request = "protocol=https\nhost=github.com\npath=example/public.git\n\n";
-    const capabilities = "capability[]=authtype\ncapability[]=state\n";
-    const invalid = [request.replace("https", "http"), request.replace("github.com", "attacker.invalid"), request.replace("public.git", "other.git"), request.replace("path=example/public.git\n", ""), request.replace("\n\n", "\nhost=github.com\n\n"), request.replace("\n\n", "\nusername=unknown\n\n"), "x".repeat(8193),
-      "capability[]=unknown\n" + request, "capability[]=state\n" + capabilities + request, request.replace("\n\n", "\ncapability[]=state\n\n"),
-      request + "trailing-data\n", request.replaceAll("\n", "\r\n"), Buffer.concat([Buffer.from(request), Buffer.from([0xff])]), "wwwauth[]=Basic\n" + request];
-    for (const input of invalid) {
-      try { execFileSync(process.execPath, ["--require", preload, wrapper, "get"], { input, stdio: ["pipe", "pipe", "pipe"] }); throw new Error("wrapper accepted bad request"); }
-      catch (error) { expect((error as { status: number }).status).toBe(1); expect(String((error as { stdout: Buffer }).stdout)).toBe(""); }
-      await expect(lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+const requestFields = ["protocol=https", "host=github.com", "path=example/public.git"];
+const canonicalRequest = Buffer.from(requestFields.join("\n") + "\n");
+const credentialReply = (marker = replyMarker, username = "public-fixture") => Buffer.from(["protocol=https", "host=github.com", `username=${username}`, "password=" + marker, ""].join("\n"));
+const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+interface WrapperConfiguration { gh: string; expected: string[]; env: Record<string, string>; cwd: string }
+interface ProviderScenario { stdout?: Buffer; stderr?: Buffer; status?: number; signal?: string; fragmented?: boolean; mode?: "sleep" | "descendant" | "orphan-pipe" | "stop-wrapper"; escapeDelay?: number; outerArgv?: string[]; prefixBeforeWait?: boolean }
+function readWrapperConfiguration(source: string) {
+  const line = source.split("\n").find((entry) => entry.startsWith("CONFIG = json.loads("));
+  expect(line).toBeDefined();
+  const encoded = line!.slice("CONFIG = json.loads(".length, -1);
+  return { line: line!, config: JSON.parse(JSON.parse(encoded)) as WrapperConfiguration };
+}
+async function syntheticWrapper(prefix = "bootstrap-publication-test-") {
+  const data = await fixture(prefix); expect(await data.publish()).toMatchObject({ ok: true });
+  const source = faults.helper; const { line, config } = readWrapperConfiguration(source);
+  expect(config).toMatchObject({ gh: "/usr/bin/gh", expected: requestFields, env: { GH_CONFIG_DIR: faults.provider } });
+  expect(path.dirname(config.cwd)).toBe(data.directory); expect(path.basename(config.cwd)).toMatch(/^publication-/);
+  // Publication cleaned its private directory. Recreate that exact owned cwd;
+  // its serialized location and every byte of runtime code stay unchanged.
+  await mkdir(config.cwd, { mode: 0o700 });
+  const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const python = await actualFs.realpath("/usr/bin/python3");
+  const provider = path.join(data.directory, "synthetic-provider.py"); const wrapper = path.join(data.directory, "captured-credential.py");
+  const scenarioFile = path.join(data.directory, "credential-scenario.json"); const called = path.join(data.directory, "provider-called.json");
+  const ready = path.join(data.directory, "descendant-ready.json"); const escaped = path.join(data.directory, "descendant-escaped");
+  await writeFile(provider, `#!${python} -I
+import json, os, signal, subprocess, sys, time
+with open(${JSON.stringify(scenarioFile)}, "r", encoding="utf-8") as stream:
+    scenario = json.load(stream)
+payload = sys.stdin.buffer.read(8193)
+record = {"args": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ), "input": payload.decode("utf-8"), "pid": os.getpid(), "ppid": os.getppid(), "pgid": os.getpgrp()}
+if sys.platform == "linux":
+    import resource
+    record["limits"] = {name: list(resource.getrlimit(getattr(resource, name))) for name in ("RLIMIT_FSIZE", "RLIMIT_CPU", "RLIMIT_AS", "RLIMIT_NOFILE", "RLIMIT_NPROC", "RLIMIT_CORE")}
+    with open("/proc/%d/limits" % os.getppid(), "r", encoding="ascii") as stream:
+        record["parentLimits"] = stream.read(16385)
+    def identity(pid):
+        with open("/proc/%d/stat" % pid, "r", encoding="ascii") as stream:
+            fields = stream.read(4096).split(") ", 1)[1].split()
+        with open("/proc/%d/cmdline" % pid, "rb") as stream:
+            argv = stream.read(16385).split(b"\\0")[:-1]
+        return {"pid": pid, "start": fields[19], "pgid": int(fields[2]), "uid": os.stat("/proc/%d" % pid).st_uid, "argv": [value.decode("utf-8") for value in argv]}
+    record["parent"] = identity(os.getppid())
+    record["self"] = identity(os.getpid())
+    record["leader"] = identity(os.getpgrp())
+    record["parentGroup"] = record["parent"]["pgid"]
+with open(${JSON.stringify(called)}, "w", encoding="utf-8") as stream:
+    json.dump(record, stream)
+mode = scenario.get("mode")
+if scenario.get("prefixBeforeWait"):
+    os.write(1, bytes.fromhex(scenario["stdout"]))
+if mode in ("descendant", "orphan-pipe", "stop-wrapper"):
+    child_code = "import json,os,sys,time;identity={'pid':os.getpid(),'pgid':os.getpgrp()};identity.update({'start':open('/proc/%d/stat'%os.getpid()).read(4096).split(') ',1)[1].split()[19]} if sys.platform=='linux' else {});open(sys.argv[1],'w').write(json.dumps(identity));time.sleep(float(sys.argv[3]));open(sys.argv[2],'w').write('synthetic-descendant-survived');time.sleep(120)"
+    subprocess.Popen([sys.executable, "-I", "-S", "-c", child_code, ${JSON.stringify(ready)}, ${JSON.stringify(escaped)}, str(scenario.get("escapeDelay", 35))], stdin=subprocess.DEVNULL)
+    if mode == "orphan-pipe":
+        sys.exit(0)
+    if mode == "stop-wrapper":
+        parent = os.getppid()
+        expected = [${JSON.stringify(python)}, "-I", "-S", ${JSON.stringify(wrapper)}, "get"]
+        own = record.get("parent", {})
+        leader = record.get("leader", {})
+        supervisor_group = os.getpgid(${process.pid})
+        if (parent <= 1 or parent == ${process.pid} or own.get("argv") != expected or
+                own.get("uid") != os.getuid() or own.get("pgid") != os.getpgrp() or
+                os.getpgrp() <= 1 or os.getpgrp() == supervisor_group or
+                leader.get("uid") != os.getuid() or leader.get("argv") != scenario.get("outerArgv") or
+                identity(parent) != own):
+            sys.exit(7)
+        record["stopIdentityVerified"] = True
+        with open(${JSON.stringify(called)}, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+        os.kill(parent, signal.SIGSTOP)
+if mode in ("sleep", "descendant", "stop-wrapper"):
+    time.sleep(120)
+if scenario.get("signal"):
+    os.kill(os.getpid(), getattr(signal, scenario["signal"]))
+for descriptor, name in ((1, "stdout"), (2, "stderr")):
+    body = bytes.fromhex(scenario.get(name, ""))
+    step = 7 if scenario.get("fragmented") else 4096
+    for offset in range(0, len(body), step):
+        os.write(descriptor, body[offset:offset + step])
+        if scenario.get("fragmented"):
+            time.sleep(0.001)
+sys.exit(scenario.get("status", 0))
+`, { mode: 0o700 });
+  const changed: WrapperConfiguration = { ...config, gh: provider, env: { ...config.env, GH_CONFIG_DIR: data.providerFiles } };
+  const changedLine = "CONFIG = json.loads(" + JSON.stringify(JSON.stringify(changed)) + ")";
+  const restored = { ...changed, gh: config.gh, env: { ...changed.env, GH_CONFIG_DIR: config.env.GH_CONFIG_DIR! } };
+  expect("CONFIG = json.loads(" + JSON.stringify(JSON.stringify(restored)) + ")").toBe(line);
+  const wrapperSource = source.replace(line, changedLine); expect(wrapperSource.replace(changedLine, line)).toBe(source);
+  expect(wrapperSource.split("\n").filter((entry, index) => entry !== source.split("\n")[index])).toEqual([changedLine]);
+  await writeFile(wrapper, wrapperSource, { mode: 0o600 }); const runtimeCwd = await actualFs.realpath(config.cwd);
+  const save = async ({ stdout = credentialReply(), stderr = Buffer.alloc(0), ...scenario }: ProviderScenario = {}) => {
+    await rm(called, { force: true }); await rm(ready, { force: true }); await rm(escaped, { force: true });
+    await writeFile(scenarioFile, JSON.stringify({ ...scenario, stdout: stdout.toString("hex"), stderr: stderr.toString("hex") }));
+  };
+  await save();
+  return { ...data, python, wrapper, source, wrapperSource, config: changed, runtimeCwd, called, ready, escaped, save };
+}
+async function executeWrapper(data: Awaited<ReturnType<typeof syntheticWrapper>>, input: Buffer = canonicalRequest, args = ["get"], fragments?: Buffer[], env?: NodeJS.ProcessEnv) {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return new Promise<{ status: number | null; signal: string | null; stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+    const child = actual.spawn(data.python, ["-I", "-S", data.wrapper, ...args], { cwd: data.directory, env: env ?? neutralEnvironment(data.directory, data.directory), detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const output: Buffer[] = []; const errors: Buffer[] = []; let closed = false;
+    const kill = () => { if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch { /* Owned group already gone. */ } };
+    const timer = setTimeout(() => { kill(); reject(new Error("synthetic wrapper exceeded its 12s test safety bound")); }, 12_000);
+    child.stdout.on("data", (part: Buffer) => output.push(part)); child.stderr.on("data", (part: Buffer) => errors.push(part)); child.stdin.on("error", () => {});
+    child.once("error", (error) => { clearTimeout(timer); kill(); reject(error); });
+    child.once("close", (status, signal) => { closed = true; clearTimeout(timer); kill(); resolve({ status, signal, stdout: Buffer.concat(output), stderr: Buffer.concat(errors) }); });
+    if (!fragments) child.stdin.end(input);
+    else void (async () => { for (const part of fragments) { if (closed) return; child.stdin.write(part); await new Promise((done) => setTimeout(done, 2)); } child.stdin.end(); })();
+  });
+}
+function protocolVectors() {
+  const vectors: Array<{ name: string; input: Buffer; args: string[]; output: Buffer; accepted: boolean; called: boolean; fragments?: Buffer[] }> = [];
+  const input = (name: string, value: string | Buffer, accepted = false, args = ["get"], fragments?: Buffer[]) => vectors.push({ name, input: Buffer.from(value), args, output: credentialReply(), accepted, called: accepted, ...(fragments ? { fragments } : {}) });
+  const output = (name: string, value: string | Buffer, accepted = false) => vectors.push({ name, input: canonicalRequest, args: ["get"], output: Buffer.from(value), accepted, called: true });
+  input("one LF", canonicalRequest, true); input("two LF", Buffer.concat([canonicalRequest, Buffer.from("\n")]), true);
+  for (const order of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]) input(`field order ${order}`, order.map((index) => requestFields[index]).join("\n") + "\n", true);
+  for (const capabilities of [["authtype"], ["state"], ["authtype", "state"], ["state", "authtype"]]) input(`capabilities ${capabilities}`, capabilities.map((name) => `capability[]=${name}\n`).join("") + canonicalRequest, true);
+  const bom = Buffer.from([0xef, 0xbb, 0xbf]); input("one BOM", Buffer.concat([bom, canonicalRequest]), true); input("two BOM", Buffer.concat([bom, bom, canonicalRequest]));
+  const invalidRequests = ["", "\n", requestFields.join("\n"), "\n" + canonicalRequest, canonicalRequest + "\n\n", canonicalRequest.toString().replaceAll("\n", "\r\n"), canonicalRequest + "state=fixture\n", `protocol=https\nprotocol=https\n${requestFields[2]}\n`, requestFields.slice(0, 2).join("\n") + "\n", canonicalRequest.toString().replace("https", "http"), canonicalRequest.toString().replace("github.com", "attacker.invalid"), canonicalRequest.toString().replace("public.git", "other.git"), " " + canonicalRequest, canonicalRequest + "\0\n", "capability[]=unknown\n" + canonicalRequest, "capability[]=state\ncapability[]=state\n" + canonicalRequest, canonicalRequest + "capability[]=state\n", requestFields[0] + "\ncapability[]=state\n" + requestFields.slice(1).join("\n") + "\n", "capability[]=\n" + canonicalRequest, "wwwauth[]=Basic\n" + canonicalRequest, "protocol=https\n\ufeffhost=github.com\npath=example/public.git\n"];
+  invalidRequests.forEach((value, index) => input(`malformed request ${index}`, value));
+  const invalidUtf8 = [[0xc0, 0xaf], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf0, 0x9f, 0x92], [0xf4, 0x90, 0x80, 0x80]];
+  invalidUtf8.forEach((value, index) => { input(`request strict UTF8 ${index}`, Buffer.concat([Buffer.from(value), canonicalRequest])); output(`response strict UTF8 ${index}`, Buffer.concat([Buffer.from("protocol=https\nhost=github.com\nusername=public-fixture\npassword="), Buffer.from(value), Buffer.from("\n")])); });
+  input("8192 malformed bytes", Buffer.alloc(8192, 0x61)); input("8193 overflow bytes", Buffer.alloc(8193, 0x61));
+  input("fragmented request", canonicalRequest, true, ["get"], [...canonicalRequest].map((byte) => Buffer.from([byte])));
+  input("fragmented BOM", Buffer.concat([bom, canonicalRequest]), true, ["get"], [bom.subarray(0, 1), bom.subarray(1, 2), bom.subarray(2), canonicalRequest]);
+  input("fragmented overflow", Buffer.alloc(8193, 0x61), false, ["get"], [Buffer.alloc(8192, 0x61), Buffer.from("a")]);
+  for (const args of [[], ["store"], ["erase"], ["GET"], ["unknown"], ["get", "extra"], ["get", ""], ["get", "get"]]) input(`operation ${JSON.stringify(args)}`, canonicalRequest, false, args);
+  const plain = credentialReply().toString(); output("response canonical", plain, true); output("response one BOM preserves bytes", Buffer.concat([bom, credentialReply()]), true); output("response two BOM", Buffer.concat([bom, bom, credentialReply()]));
+  ["", plain.slice(0, -1), plain + "\n", plain.replaceAll("\n", "\r\n"), plain.replace("https", "http"), plain.replace("github.com", "attacker.invalid"), `host=github.com\nprotocol=https\nusername=public-fixture\npassword=${replyMarker}\n`, plain + "state=fixture\n", plain + "authtype=Basic\n", plain.replace("username=public-fixture\n", ""), plain + "junk", credentialReply("a\nb"), credentialReply("a\rb")].forEach((value, index) => output(`malformed response ${index}`, value));
+  for (const [name, accepted] of [["a", true], ["1-user", true], ["a".repeat(39), true], ["a".repeat(40), false], ["-user", false], ["fixture_user", false], ["café", false], ["", false], ["fixture user", false], ["fixture\n", false], ["fixture\u2028", false], ["fixture\u2029", false]] as const) output(`username ${JSON.stringify(name)}`, credentialReply(replyMarker, name), accepted);
+  for (const code of [...Array.from({ length: 33 }, (_, index) => index), 0x7f, 0xa0, 0x1680, ...Array.from({ length: 11 }, (_, index) => 0x2000 + index), 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]) output(`excluded code point ${code}`, credentialReply("a" + String.fromCodePoint(code) + "b"));
+  for (const code of [0x80, 0x85, 0x9f, 0x180e, 0x200b, 0x2060, 0xfffd]) output(`accepted code point ${code}`, credentialReply("a" + String.fromCodePoint(code) + "b"), true);
+  for (const [name, value, accepted] of [["empty", "", false], ["ASCII4096", "x".repeat(4096), true], ["ASCII4097", "x".repeat(4097), false], ["astral4096", "😀".repeat(2048), true], ["astral4098", "😀".repeat(2049), false], ["mixed4096", "😀".repeat(2047) + "xy", true], ["mixed4097", "😀".repeat(2047) + "xyz", false], ["BMP4096", "一".repeat(4096), true]] as const) output(`UTF16 ${name}`, credentialReply(value), accepted);
+  output("16384 malformed output bytes", Buffer.alloc(16384, 0x61)); output("16385 output overflow", Buffer.alloc(16385, 0x61));
+  return vectors;
+}
+
+describe("isolated Python credential wrapper (real subprocess; synthetic provider only)", () => {
+  it("selects only fixed Python, accepts its trusted canonical result and emits quoted -I -S private helpers", async () => {
+    faults.pythonCanonical = "/usr/bin/python3.123"; const data = await fixture(); expect(await data.publish()).toMatchObject({ ok: true });
+    const push = faults.commands.find((command) => command.executable === "/usr/bin/git")!;
+    const setting = push.args.find((value) => value.startsWith("credential.https://github.com/example/public.git.helper="))!;
+    expect(setting).toMatch(/^credential\.https:\/\/github\.com\/example\/public\.git\.helper=!'\/usr\/bin\/python3\.123' -I -S '.*\/credential\.py'$/s);
+    expect(faults.toolPaths).toContain("/usr/bin/python3"); expect(faults.toolPaths).not.toContain("/usr/bin/node");
+    expect(faults.helper).not.toContain(providerCanary); expect(faults.helper).not.toContain(contextCanary);
+    faults.pythonCanonical = "/usr/bin/python3";
+  });
+  it.each(["absent", "untrusted"])("blocks %s selected Python before push without trying another interpreter", async (mode) => {
+    const data = await fixture(); faults.missingPython = mode === "absent"; faults.pythonWritable = mode === "untrusted";
+    expect(await data.publish()).toMatchObject({ ok: false, phase: "provider", push: "not-attempted" }); expect(faults.commands).toHaveLength(0);
+    expect(faults.toolPaths.filter((file) => file.includes("python") || file.includes("node"))).toEqual(["/usr/bin/python3"]);
+  });
+  it("preserves the complete byte, Unicode, capability, argv and UTF16 admission contract", async () => {
+    const data = await syntheticWrapper();
+    for (const vector of protocolVectors()) {
+      await data.save({ stdout: vector.output }); const result = await executeWrapper(data, vector.input, vector.args, vector.fragments);
+      expect(result.status, vector.name).toBe(vector.accepted ? 0 : 1); expect(result.signal, vector.name).toBeNull(); expect(result.stderr, vector.name).toEqual(Buffer.alloc(0));
+      expect(result.stdout, vector.name).toEqual(vector.accepted ? vector.output : Buffer.alloc(0));
+      if (!vector.called) await expect(lstat(data.called), vector.name).rejects.toMatchObject({ code: "ENOENT" });
+      else {
+        const called = JSON.parse(await readFile(data.called, "utf8"));
+        expect(called, vector.name).toMatchObject({ args: ["auth", "git-credential", "get"], cwd: data.runtimeCwd, env: data.config.env, input: canonicalRequest.toString() });
+      }
     }
-    for (const operation of ["store", "erase", "unknown"]) expect(() => execFileSync(process.execPath, ["--require", preload, wrapper, operation], { input: request, stdio: ["pipe", "pipe", "pipe"] })).toThrow();
-    await expect(lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(execFileSync(process.execPath, ["--require", preload, wrapper, "get"], { input: request }).toString()).toContain("synthetic-only");
-    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({ exe: "/usr/bin/gh", args: ["auth", "git-credential", "get"] });
-    expect(execFileSync(process.execPath, ["--require", preload, wrapper, "get"], { input: capabilities + request.slice(0, -1) }).toString()).toContain("synthetic-only");
-    expect(JSON.parse(await readFile(marker, "utf8")).input).toBe(request.slice(0, -1));
-    // Git sends EOF after one trailing LF to its helper, even though its own
-    // credential stdin accepts a blank-line terminator. Only synthetic bytes
-    // are returned by the preloaded provider; stdout is captured, never logged.
-    const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    const plumbing = execFileSync("/usr/bin/git", ["-c", "credential.helper=", "-c", `credential.helper=!${shellQuote(process.execPath)} --require ${shellQuote(preload)} ${shellQuote(wrapper)}`,
-      "-c", "credential.useHttpPath=true", "credential", "fill"], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input: capabilities + request });
-    expect(plumbing.toString()).toContain(`password=${replyMarker}`);
-    expect(JSON.parse(await readFile(marker, "utf8")).input).toBe(request.slice(0, -1));
-    const plain = `protocol=https\nhost=github.com\nusername=public-fixture\npassword=${replyMarker}\n`;
-    for (const output of [plain.replace("github.com", "attacker.invalid"), plain.replace("synthetic-only", "bad token"), plain.replace("synthetic-only", "bad\u0001token"), plain + "state[]=unsupported\n", plain.replace(`password=${replyMarker}`, "authtype=Basic")]) {
-      await writeFile(preload, `require("node:child_process").spawnSync = () => ({ status: 0, signal: null, stdout: Buffer.from(${JSON.stringify(output)}), stderr: Buffer.alloc(0) });`);
-      try { execFileSync(process.execPath, ["--require", preload, wrapper, "get"], { input: request, stdio: ["pipe", "pipe", "pipe"] }); throw new Error("wrapper accepted unsafe output"); }
-      catch (error) { expect((error as { status: number }).status).toBe(1); expect(String((error as { stdout: Buffer }).stdout)).toBe(""); }
+  }, 90_000);
+  it("bounds real provider streams and rejects errors without releasing any credential bytes", async () => {
+    const data = await syntheticWrapper();
+    for (const scenario of [{ status: 9 }, { signal: "SIGTERM" }, { stderr: Buffer.from("x") }, { stderr: Buffer.alloc(16384 - credentialReply().length, 0x61) }, { stdout: credentialReply(), stderr: Buffer.alloc(16385, 0x61) }, { stdout: Buffer.concat([credentialReply(), Buffer.alloc(16385, 0x61)]), fragmented: true }, { stdout: credentialReply("a\u2028b"), fragmented: true }]) {
+      await data.save(scenario); const result = await executeWrapper(data);
+      expect(result.status).toBe(1); expect(result.stdout).toEqual(Buffer.alloc(0)); expect(result.stderr).toEqual(Buffer.alloc(0));
     }
+    await data.save({ fragmented: true }); expect((await executeWrapper(data)).stdout).toEqual(credentialReply());
+    await rm(data.config.gh); const result = await executeWrapper(data); expect(result.status).toBe(1); expect(result.stdout.length + result.stderr.length).toBe(0);
+  }, 20_000);
+  it("keeps real Git credential-fill plumbing, exact public literals and Python isolation intact", async () => {
+    const data = await syntheticWrapper("bootstrap-pub-'quote\\slash\nUnicode-雪-");
+    const injection = path.join(data.directory, "python-injection-executed");
+    const canary = `open(${JSON.stringify(injection)}, "w").write("synthetic-import-canary")\nraise RuntimeError("synthetic import canary")\n`;
+    for (const directory of [data.directory, data.config.cwd]) for (const name of ["json.py", "subprocess.py", "sitecustomize.py", "usercustomize.py"]) await writeFile(path.join(directory, name), canary);
+    const outerEnv = { ...neutralEnvironment(data.directory, data.directory), PYTHONPATH: data.directory, PYTHONHOME: path.join(data.directory, "missing-python-home"), PYTHONSTARTUP: path.join(data.directory, "sitecustomize.py"), PYTHONINSPECT: "1", PYTHONUSERBASE: data.directory };
+    const direct = await executeWrapper(data, canonicalRequest, ["get"], undefined, outerEnv); expect(direct.status).toBe(0); expect(direct.stdout).toEqual(credentialReply());
+    await expect(lstat(injection)).rejects.toMatchObject({ code: "ENOENT" });
+    const helper = `!${shellQuote(data.python)} -I -S ${shellQuote(data.wrapper)}`;
+    const result = execFileSync("/usr/bin/git", ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "-c", "credential.useHttpPath=true", "credential", "fill"], { cwd: data.directory, env: outerEnv, input: "capability[]=state\ncapability[]=authtype\n" + canonicalRequest + "\n", stdio: ["pipe", "pipe", "pipe"] });
+    expect(result.toString()).toContain("password=" + replyMarker); const called = JSON.parse(await readFile(data.called, "utf8"));
+    expect(called.input).toBe(canonicalRequest.toString()); expect(called.cwd).toBe(data.runtimeCwd);
+    const observed = { ...called.env };
+    // Darwin's developer-tool shim adds only these observed public keys when
+    // Git invokes the synthetic provider's interpreter. Linux stays exact.
+    if (process.platform === "darwin") for (const name of ["CPATH", "LIBRARY_PATH", "MANPATH", "SDKROOT", "__CF_USER_TEXT_ENCODING"]) delete observed[name];
+    expect(observed).toEqual(data.config.env);
+    expect(Object.keys(called.env).some((name) => /PYTHON|TOKEN|PROXY|DEBUG|SSH_AUTH_SOCK/.test(name))).toBe(false);
+    await expect(lstat(injection)).rejects.toMatchObject({ code: "ENOENT" });
   }, 15_000);
 });
 
-it.skipIf(!requiredLinux)("requires actual Linux system Node credential-wrapper startup proof when host broker proof is mandatory", async () => {
-  expect(process.platform, "Mandatory wrapper startup proof requires Linux; synthetic Darwin tests cannot satisfy it.").toBe("linux");
-  faults.actualToolMetadata = true; await requireLinuxHost(); expect(await trustedExecutable("/usr/bin/node")).toBe("/usr/bin/node");
+function credentialGitArguments(data: Awaited<ReturnType<typeof syntheticWrapper>>) {
+  return ["-c", "credential.helper=", "-c", `credential.https://github.com/example/public.git.helper=!${shellQuote(data.python)} -I -S ${shellQuote(data.wrapper)}`,
+    "-c", "credential.https://github.com/example/public.git.useHttpPath=true", "credential", "fill"];
+}
+it("cancels the complete real Git/Python/Popen composition with fabricated descendants (ordinary host; simulated ceilings)", async () => {
+  const data = await syntheticWrapper(); await data.save({ mode: "descendant", escapeDelay: 0.8, prefixBeforeWait: true }); const cancellation = new AbortController();
+  const pending = boundedCommand("/publication-fixture/prlimit", [...PRLIMIT_ARGS, "/usr/bin/git", ...credentialGitArguments(data)], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input: canonicalRequest, signal: cancellation.signal });
+  const rejected = expect(pending).rejects.toThrow("unsupported");
+  try { await vi.waitFor(async () => expect(JSON.parse(await readFile(data.ready, "utf8")).pid).toBeGreaterThan(1), { timeout: 3000, interval: 10 }); }
+  finally { cancellation.abort(); await pending.catch(() => {}); }
+  await rejected; const called = JSON.parse(await readFile(data.called, "utf8")); const descendant = JSON.parse(await readFile(data.ready, "utf8"));
+  expect(descendant.pgid).toBe(called.pgid); expect(called.pgid).not.toBe(process.pid);
+  await new Promise((done) => setTimeout(done, 900)); await expect(lstat(data.escaped)).rejects.toMatchObject({ code: "ENOENT" });
+}, 10_000);
+async function linuxWrapper() {
+  expect(process.platform, "Mandatory Python proof requires genuine Linux; ordinary tests cannot satisfy it.").toBe("linux");
+  faults.actualPythonMetadata = true; const data = await syntheticWrapper(); faults.actualToolMetadata = true;
+  const tools = await requireLinuxHost(); const python = await trustedExecutable("/usr/bin/python3"); expect(python).toBe(data.python);
+  const push = faults.commands.find((command) => command.executable === "/usr/bin/git")!;
+  expect(push.args).toContain(`credential.https://github.com/example/public.git.helper=!${shellQuote(python)} -I -S ${shellQuote(data.config.cwd + "/credential.py")}`);
+  faults.actualLimits = true;
+  const run = (input = canonicalRequest, signal?: AbortSignal) => boundedCommand(tools.prlimit, [...PRLIMIT_ARGS, python, "-I", "-S", data.wrapper, "get"], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input, ...(signal ? { signal } : {}) });
+  const outerArgv = [tools.git, ...credentialGitArguments(data)];
+  const runGit = (signal?: AbortSignal) => boundedCommand(tools.prlimit, [...PRLIMIT_ARGS, ...outerArgv], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input: canonicalRequest, ...(signal ? { signal } : {}) });
+  return { ...data, run, runGit, outerArgv };
+}
+async function ownedProcessStopped(identity: { pid: number; start: string }) {
+  try { const stat = (await readFile(`/proc/${identity.pid}/stat`, "utf8")).split(") ")[1]!.split(" "); return stat[0] === "Z" || stat[19] !== identity.start; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+}
+async function assertOwnedGroupClean(data: Awaited<ReturnType<typeof linuxWrapper>>) {
+  const provider = JSON.parse(await readFile(data.called, "utf8")); const descendant = JSON.parse(await readFile(data.ready, "utf8"));
+  expect(descendant.pgid).toBe(provider.pgid); expect(provider.parentGroup).toBe(provider.pgid); expect(provider.pgid).not.toBe(process.pid);
+  await vi.waitFor(async () => { expect(await ownedProcessStopped(provider.self)).toBe(true); expect(await ownedProcessStopped(provider.parent)).toBe(true); expect(await ownedProcessStopped(provider.leader)).toBe(true); expect(await ownedProcessStopped(descendant)).toBe(true); }, { timeout: 3000, interval: 20 });
+  await expect(lstat(data.escaped)).rejects.toMatchObject({ code: "ENOENT" });
+}
+it.skipIf(!requiredLinux)("requires actual selected canonical Python startup when host broker proof is mandatory", async () => {
+  expect(process.platform, "Mandatory wrapper startup proof requires Linux.").toBe("linux"); faults.actualToolMetadata = true; await requireLinuxHost();
+  expect(path.isAbsolute(await trustedExecutable("/usr/bin/python3"))).toBe(true);
 });
-it.skipIf(!requiredLinux || process.platform !== "linux")("runs the generated credential wrapper with actual system Node under unchanged Linux prlimit ceilings", async () => {
-  const data = await fixture(); expect(await data.publish()).toMatchObject({ ok: true });
-  const wrapper = path.join(data.directory, "linux-wrapper.cjs"); const preload = path.join(data.directory, "linux-provider.cjs"); const marker = path.join(data.directory, "linux-provider-called.json");
-  // This changes only the fixture's saved provider location. The production
-  // wrapper code executes unchanged, and the provider process is never started.
-  await writeFile(wrapper, faults.helper.replaceAll(JSON.stringify(faults.provider), JSON.stringify(data.providerFiles)));
-  await writeFile(preload, `require("node:child_process").spawnSync = (exe,args,options) => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({exe,args,env:options.env,input:options.input.toString()})); return {status:0,signal:null,stdout:Buffer.from("protocol=https\\nhost=github.com\\nusername=public-fixture\\npassword=${replyMarker}\\n"),stderr:Buffer.alloc(0)}; };`);
-  faults.actualToolMetadata = true; const tools = await requireLinuxHost(); const node = await trustedExecutable("/usr/bin/node"); expect(node).toBe("/usr/bin/node"); faults.actualLimits = true;
-  const input = Buffer.from("capability[]=authtype\ncapability[]=state\nprotocol=https\nhost=github.com\npath=example/public.git\n");
-  const output = await boundedCommand(tools.prlimit, [...PRLIMIT_ARGS, node, "--require", preload, wrapper, "get"], { cwd: data.directory, env: neutralEnvironment(data.directory, data.directory), input });
-  expect(output.toString()).toBe(`protocol=https\nhost=github.com\nusername=public-fixture\npassword=${replyMarker}\n`);
-  const called = JSON.parse(await readFile(marker, "utf8")); expect(called).toMatchObject({ exe: "/usr/bin/gh", args: ["auth", "git-credential", "get"], env: { GH_CONFIG_DIR: data.providerFiles } });
-  expect(JSON.stringify(called.env)).not.toMatch(/SSH_AUTH_SOCK|GH_TOKEN|GITHUB_TOKEN|DEBUG|PROXY/);
-}, 120_000);
+it.skipIf(!requiredLinux || process.platform !== "linux")("runs actual isolated Python parser and Popen under all unchanged Linux ceilings", async () => {
+  const data = await linuxWrapper(); expect(await data.run(Buffer.from("capability[]=authtype\ncapability[]=state\n" + canonicalRequest))).toEqual(credentialReply());
+  const called = JSON.parse(await readFile(data.called, "utf8")); expect(called).toMatchObject({ args: ["auth", "git-credential", "get"], cwd: data.runtimeCwd, env: data.config.env, input: canonicalRequest.toString() });
+  const limits = { RLIMIT_FSIZE: 67108864, RLIMIT_CPU: 60, RLIMIT_AS: 1073741824, RLIMIT_NOFILE: 64, RLIMIT_NPROC: 128, RLIMIT_CORE: 0 };
+  for (const [name, value] of Object.entries(limits)) expect(called.limits[name], name).toEqual([value, value]);
+  for (const [name, value] of [["Max file size", 67108864], ["Max cpu time", 60], ["Max address space", 1073741824], ["Max open files", 64], ["Max processes", 128], ["Max core file size", 0]]) expect(called.parentLimits).toMatch(new RegExp(`^${name}\\s+${value}\\s+${value}(?:\\s|$)`, "m"));
+  expect(called.parentGroup).toBe(called.pgid);
+  await data.save(); await expect(data.run(Buffer.from(canonicalRequest.toString().replace("https", "http")))).rejects.toThrow("unsupported");
+  await expect(lstat(data.called)).rejects.toMatchObject({ code: "ENOENT" });
+}, 15_000);
+it.skipIf(!requiredLinux || process.platform !== "linux")("enforces the real 30s provider budget and cleans inherited descendant pipes", async () => {
+  const data = await linuxWrapper();
+  for (const mode of ["descendant", "orphan-pipe"] as const) {
+    await data.save({ mode, escapeDelay: 35, prefixBeforeWait: true }); const started = performance.now(); const safety = new AbortController();
+    const timer = setTimeout(() => safety.abort(), 41_000);
+    try { await expect(data.runGit(safety.signal)).rejects.toThrow("unsupported"); }
+    finally { clearTimeout(timer); safety.abort(); }
+    expect(performance.now() - started).toBeGreaterThanOrEqual(29_000); expect(performance.now() - started).toBeLessThan(40_000);
+    await assertOwnedGroupClean(data);
+  }
+}, 85_000);
+it.skipIf(!requiredLinux || process.platform !== "linux")("aborts the real wrapper/provider group and leaves no live fabricated descendants", async () => {
+  const data = await linuxWrapper(); await data.save({ mode: "descendant", escapeDelay: 0.8, prefixBeforeWait: true }); const cancellation = new AbortController(); const pending = data.runGit(cancellation.signal);
+  const rejected = expect(pending).rejects.toThrow("unsupported");
+  try { await vi.waitFor(async () => expect(JSON.parse(await readFile(data.ready, "utf8")).pid).toBeGreaterThan(1), { timeout: 3000, interval: 10 }); }
+  finally { cancellation.abort(); await pending.catch(() => {}); }
+  await rejected; await assertOwnedGroupClean(data); await new Promise((done) => setTimeout(done, 900)); await expect(lstat(data.escaped)).rejects.toMatchObject({ code: "ENOENT" });
+}, 10_000);
+it.skipIf(!requiredLinux || process.platform !== "linux")("enforces the real 90s outer deadline over Git/helper/Python/Popen when only the owned wrapper is stopped", async () => {
+  const data = await linuxWrapper(); await data.save({ mode: "stop-wrapper", escapeDelay: 95, outerArgv: data.outerArgv });
+  const started = performance.now(); const cancellation = new AbortController(); const pending = data.runGit(cancellation.signal); const rejected = expect(pending).rejects.toThrow("unsupported");
+  try {
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(data.called, "utf8")).stopIdentityVerified).toBe(true), { timeout: 3000, interval: 10 });
+    await rejected; expect(performance.now() - started).toBeGreaterThanOrEqual(89_000); expect(performance.now() - started).toBeLessThan(100_000);
+  } finally { cancellation.abort(); await pending.catch(() => {}); }
+  await assertOwnedGroupClean(data);
+}, 110_000);

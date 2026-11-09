@@ -201,7 +201,7 @@ def policy():
             '-c', 'features.shell_snapshot=false', '-c', 'skills.include_instructions=false',
             '-c', 'skills.config=[]', '-c', 'allow_login_shell=false',
             '-c', 'default_permissions="autoreview"',
-            '-c', 'permissions.autoreview.filesystem={":minimal"="read",":workspace_roots"="read"}',
+            '-c', 'permissions.autoreview.filesystem={":minimal"="read",":workspace_roots"="read","/opt/codex"="read"}',
             '-c', 'permissions.autoreview.network.enabled=false',
             '-c', 'sqlite_home="/run/review/state"', '-c', 'log_dir="/run/review/log"']
 

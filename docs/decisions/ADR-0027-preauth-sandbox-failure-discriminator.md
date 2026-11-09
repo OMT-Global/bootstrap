@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Scope: Source-only, failure-only diagnostic amendment. Native Linux support remains unproven. This does not authorize a hosted retry, profile change, publication or merge.
+Scope: Dormant source-only, failure-only diagnostic amendment. Native Linux support remains unproven. The host is not registered in CI; this does not authorize a hosted retry, profile change, publication or merge.
 
 Date: 2026-11-09
 
@@ -13,6 +13,8 @@ Governing issue: [#62](https://github.com/OMT-Global/bootstrap/issues/62).
 The exact-head full attempt at `4420ca12b422eee49f267e90b20f64a158506f46` passed ordinary checks, required Docker checks, three signature checks and the mechanical, byte, inode and detached cases. It returned a failed sandbox case and successful cleanup, with zero provider requests. The existing generic `native-sandbox` outcome does not distinguish GO consumption, version admission, local canary setup, native invocation or listener checks. No particular CLI or kernel cause is established, and discarded private output cannot be recovered.
 
 This is a later host-stage amendment to ADR-0022. ADR-0026, the published dormant producer prerequisite, remains unchanged as historical evidence. Root adopted this bounded contract after independent design review. Source/test validation cannot supply runtime support, human approval or publication authority.
+
+The later exact-head attempt at `a683d8e21da3a9a7bd29a51245ca79d3ce6e72b3` produced `sandboxFailure: {"stage":"sandbox-exit","exitCode":1}` with cleanup successful and no later auth/API/persistence execution. ADR-0022 now supersedes automatic host registration with a dormant source prerequisite. Its sole policy correction adds read access to the immutable public `/opt/codex` installation for both sandbox and API callers; all other native arguments, canary predicates and private-output handling stay intact. This explicitly supersedes the earlier policy-byte and registration preservation statements below. The discriminator contract itself is unchanged, and a valid failure record establishes no native support.
 
 ## Decision
 
@@ -53,6 +55,6 @@ The largest compact addition, including comma and member wrapper, is 58 bytes. T
 
 Pure regressions exercise actual sandbox and top-level handler code with fabricated native, filesystem and socket adapters; actual native/resource/socket/provider work is forbidden. Preserve all prior producer coverage and 149 host cases, except the explicitly amended sandbox branch of the old privacy expectation. Cover all stages, code bounds and clearing, predicate order, actual close-exception precedence, stale state, privacy, legacy absence, reserved-field rejection, first-snapshot retention across host failures, unchanged success/case schemas and UTF-8 cap/fallback behavior. Paired baseline/current controls must show the missing producer/host observation without relying on a new-keyword TypeError.
 
-Keep the immutable artifact inputs, Dockerfile, launch arguments, sandbox policy, resources, outputs, clocks and cleanup unchanged. Preserve the manifest, generated extended entrypoint and entrypoint acceptance test bytes from `4420ca12`. Measure the complete nine-path actual-base diff naturally; the allocated ceiling is 470 whole host lines plus at most 80 fixture changed lines and four unchanged projection changed lines, not an executed count or permission to compress code.
+Keep the immutable artifact inputs, Dockerfile, launch arguments, resources, outputs, clocks and cleanup unchanged. The dormant scope intentionally restores the manifest, generated extended entrypoint and entrypoint acceptance test to producer base `48a01693` and adds only the public installation read grant described above. Measure the complete six-path actual-base diff naturally; retain ceilings of 470 whole host lines plus at most 80 fixture changed lines, not an executed count or permission to compress code.
 
-New source requires ordinary validation, complete actual-base independent review, signed publication and exact-head preflight before root may authorize one new full hosted attempt. Never rerun unchanged `4420ca12`. A failed run with a valid discriminator is diagnostic evidence, not native support. All mandatory cases and cleanup must genuinely pass before runtime support or PR readiness is claimed. Further output classification or a launch-profile amendment requires its own evidence, scope decision and review.
+New source requires ordinary validation, complete actual-base independent review, signed publication and exact-head preflight before root may authorize one new full hosted attempt. Never rerun unchanged `4420ca12`. A failed run with a valid discriminator is diagnostic evidence, not native support. All mandatory native cases and cleanup must genuinely pass before runtime support or CI activation is claimed. The dormant source PR instead requires its complete pure/ordinary validation and independent review; those results supply no native runtime credit. Further output classification or a launch-profile amendment requires its own evidence, scope decision and review.

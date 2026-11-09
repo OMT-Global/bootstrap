@@ -626,7 +626,7 @@ EXPECTED_POLICY = ['--ask-for-approval', 'never', '-c', 'cli_auth_credentials_st
                    '-c', 'project_doc_max_bytes=0', '-c', 'features.hooks=false', '-c', 'features.plugins=false',
                    '-c', 'features.shell_snapshot=false', '-c', 'skills.include_instructions=false',
                    '-c', 'skills.config=[]', '-c', 'allow_login_shell=false', '-c', 'default_permissions="autoreview"',
-                   '-c', 'permissions.autoreview.filesystem={":minimal"="read",":workspace_roots"="read"}',
+                   '-c', 'permissions.autoreview.filesystem={":minimal"="read",":workspace_roots"="read","/opt/codex"="read"}',
                    '-c', 'permissions.autoreview.network.enabled=false', '-c', 'sqlite_home="/run/review/state"',
                    '-c', 'log_dir="/run/review/log"']
 EXPECTED_COMMAND = """from pathlib import Path
@@ -993,5 +993,141 @@ describe("controlled reviewer pre-auth sandbox failure discriminator", () => {
     expect(report.observations.every((value: { actualUnsafeCalls: number }) => value.actualUnsafeCalls === 0)).toBe(true);
     expect(JSON.stringify(report)).not.toContain("private-discriminator-canary");
     expect(JSON.stringify(report)).not.toContain("/synthetic");
+  });
+});
+
+const fixtureReadonlyCodexRootHarness = fixtureDiscriminatorHarness.split("\nsuite = unittest.defaultTestLoader.loadTestsFromTestCase(SandboxDiscriminatorTests)", 1)[0]! + String.raw`import tomllib
+
+CAPTURE = {}
+
+
+def capture_policy_and_native_argv():
+    policy_node = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == 'policy')
+    actual = {}
+    exec(compile(ast.Module(body=[policy_node], type_ignores=[]), str(SOURCE), 'exec'), actual)
+    policy = actual['policy']()
+    # Capture old and new actual argv before asserting the added root; the existing
+    # sandbox adapter still checks every other literal argument and predicate.
+    global EXPECTED_POLICY
+    expected = EXPECTED_POLICY
+    try:
+        EXPECTED_POLICY = policy
+        sandbox = exercise()
+    finally:
+        EXPECTED_POLICY = expected
+    assert sandbox['emitted'] == [{'event': 'result', 'case': 'sandbox', 'ok': True,
+                                  'phase': 'sandbox', 'providerRequests': 0}]
+    namespace = sandbox['namespace']
+    files, operations, api_argv = {}, [], []
+    fake_key = 'bootstrap-fixture-pure-read-root'
+
+    class APIPath(PurePosixPath):
+        def read_bytes(self):
+            assert str(self) == '/operator/.codex/auth.json'
+            return json.dumps({'OPENAI_API_KEY': fake_key}).encode()
+        def write_text(self, text):
+            files[str(self)] = text
+            return len(text)
+
+    server = None
+    class FakeServer:
+        def __init__(self, address, handler):
+            nonlocal server
+            assert address == ('127.0.0.1', 0)
+            self.handler, self.server_port = handler, 31337
+            server = self
+            operations.append('fake-server-created')
+        def serve_forever(self, **kwargs):
+            raise AssertionError('real or fake server loop must not run')
+        def shutdown(self):
+            operations.append('shutdown')
+        def server_close(self):
+            operations.append('server-close')
+
+    class FakeThread:
+        def __init__(self, target, kwargs, daemon):
+            assert target.__self__ is server and kwargs == {'poll_interval': 0.05} and daemon is True
+        def start(self):
+            operations.append('fake-thread-start')
+        def join(self, timeout):
+            assert timeout == 2
+            operations.append('fake-thread-join')
+
+    class CaptureComplete(Exception):
+        pass
+    captured = CaptureComplete('pure native-argument capture complete')
+    def api_native(argv, input_bytes=b'', cap=16384):
+        api_argv.append(list(argv))
+        assert input_bytes == b'Return the requested fixture JSON.\n' and cap == 65536
+        raise captured
+
+    namespace.update(ROOT=APIPath('/synthetic'), SOURCE=APIPath('/operator/.codex/auth.json'), json=json,
+                     file_auth=lambda: True, native=api_native, MOCK_REQUESTS=0,
+                     http=types.SimpleNamespace(server=types.SimpleNamespace(BaseHTTPRequestHandler=object,
+                                                                           HTTPServer=FakeServer)),
+                     threading=types.SimpleNamespace(Thread=FakeThread))
+    api_node = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == 'api')
+    exec(compile(ast.Module(body=[api_node], type_ignores=[]), str(SOURCE), 'exec'), namespace)
+    try:
+        namespace['api']()
+    except CaptureComplete as error:
+        assert error is captured
+    else:
+        raise AssertionError('API did not reach the intentional argument-capture sentinel')
+    assert operations[-3:] == ['shutdown', 'server-close', 'fake-thread-join']
+    assert not sandbox['forbiddenCalls'] and len(api_argv) == 1
+    return {'policy': policy, 'sandboxArgv': sandbox['nativeCalls'][1], 'apiArgv': api_argv[0],
+            'apiNativeCaptureReached': True, 'apiFakeCleanup': operations[-3:], 'actualUnsafeCalls': 0,
+            'claim': 'Declared roots and captured argv only; no API success or kernel accessibility proof'}
+
+
+class ReadonlyCodexRootTests(unittest.TestCase):
+    def test_shared_actual_policy_delivers_only_the_fixed_readonly_codex_root(self):
+        global CAPTURE
+        CAPTURE = capture_policy_and_native_argv()
+        expected = {':minimal': 'read', ':workspace_roots': 'read', '/opt/codex': 'read'}
+        for label, argv in (('policy', CAPTURE['policy']), ('sandbox', CAPTURE['sandboxArgv']), ('api', CAPTURE['apiArgv'])):
+            configurations = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == '-c']
+            filesystem = [value for value in configurations if value.startswith('permissions.autoreview.filesystem=')]
+            self.assertEqual(len(filesystem), 1)
+            declared = tomllib.loads(filesystem[0])['permissions']['autoreview']['filesystem']
+            CAPTURE[label + 'DeclaredRoots'] = declared
+            self.assertEqual(declared, expected)
+            self.assertTrue(all(mode == 'read' for mode in declared.values()))
+            self.assertNotIn('/', declared)
+            self.assertNotIn('/opt', declared)
+        self.assertTrue(PurePosixPath('/opt/codex/bin/codex').is_relative_to('/opt/codex'))
+        self.assertEqual(CAPTURE['sandboxArgv'][CAPTURE['sandboxArgv'].index('--cd') + 1], '/synthetic/workspace')
+        self.assertEqual(CAPTURE['apiArgv'][CAPTURE['apiArgv'].index('-C') + 1], '/synthetic/workspace')
+        roots = (PurePosixPath('/opt/codex'), PurePosixPath('/synthetic/workspace'))
+        self.assertFalse(roots[1].is_relative_to(roots[0]))
+        for excluded in ('/opt/other/tool', '/operator/.codex/auth.json', '/synthetic/private',
+                         '/synthetic/codex-home', '/run/review/state', '/run/review/log'):
+            self.assertFalse(any(PurePosixPath(excluded).is_relative_to(root) for root in roots))
+        # These are declarations, not a reimplementation of the permissions engine.
+        self.assertEqual(CAPTURE['actualUnsafeCalls'], 0)
+
+
+log = io.StringIO()
+result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(ReadonlyCodexRootTests))
+print(json.dumps({'testCases': result.testsRun, 'ok': result.wasSuccessful(), 'failureCount': len(result.failures),
+                  'errorCount': len(result.errors), 'capture': CAPTURE,
+                  'sourceSha256': hashlib.sha256(TEXT.encode()).hexdigest(), 'actualNativeResourceSocketProviderThreadServerCalls': 0}))
+if not result.wasSuccessful():
+    print(log.getvalue(), file=sys.stderr)
+    sys.exit(1)
+`;
+
+describe("controlled reviewer immutable Codex read-root declaration", () => {
+  it("captures the actual shared policy in sandbox and API argv without launching native or provider work", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", fixtureReadonlyCodexRootHarness], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 128 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({ testCases: 1, ok: true, failureCount: 0, errorCount: 0,
+      actualNativeResourceSocketProviderThreadServerCalls: 0,
+      capture: { apiNativeCaptureReached: true, apiFakeCleanup: ["shutdown", "server-close", "fake-thread-join"], actualUnsafeCalls: 0 } });
+    expect(JSON.stringify(report)).not.toContain("bootstrap-fixture-pure-read-root");
   });
 });

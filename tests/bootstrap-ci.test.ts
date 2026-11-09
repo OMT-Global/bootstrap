@@ -15,7 +15,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const scriptPath = path.join(repoRoot, "scripts/ci/run-fast-checks.sh");
 const tempDirs: string[] = [];
-const commands = ["ci --ignore-scripts", "run typecheck", "test -- --maxWorkers=2 --minWorkers=1", "run build"];
+const commands = ["ci --ignore-scripts", "run typecheck", "test -- --maxWorkers=2", "run build"];
 
 async function runChecks(failingCommand?: string): Promise<{ calls: string[]; code: number }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "bootstrap-ci-"));

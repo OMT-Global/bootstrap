@@ -43,7 +43,7 @@ describe("registered full-validation isolation entry point", () => {
     const result = await fixture("full");
     expect(result.status).toBe(0);
     expect(result.events).toEqual(["fast:unset", `docker:pull --platform linux/amd64 ${NODE_ISOLATION_IMAGE}:unset`,
-      "npm:test -- tests/isolated-validation-docker.test.ts --maxWorkers=1 --minWorkers=1:1"]);
+      "npm:test -- tests/isolated-validation-docker.test.ts --maxWorkers=1:1"]);
   });
   it.each(["fast", "docker", "npm"])("fails instead of passing a full run when %s fails", async (failure) => {
     const result = await fixture("full", failure);

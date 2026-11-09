@@ -620,5 +620,81 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(payload['base64']), candidates[name])
             self.assertEqual(payload['sha256'], artifacts.sha(candidates[name]))
             self.assertEqual(payload['bytes'], len(candidates[name]))
+    def test_default_stage_forwards_exact_public_pins_to_mandatory_finish_without_preparation(self):
+        pins = {
+            'package': (10474, '2b02dffae24ea92c8dda61a466d2e182958272cd60272d4d5d4105ca6a5038f0'),
+            'native': (10494, '1c92b7154e5bbd76ec2b6b5fd4e7aeb5dedfdc862b619df22649a1443d37d67b'),
+            'bwrap': (10494, 'fbd20983759d802697db32d9c8fc2eb5f31edc3afad89ddbb95296b023f9f315')}
+        self.assertEqual(artifacts.BUNDLE_PINS, pins)
+        payloads = {name: (artifacts.BUNDLE_DIRECTORY / (name + '.json')).read_bytes() for name in pins}
+        self.assertEqual({name: (len(data), artifacts.sha(data)) for name, data in payloads.items()}, pins)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            package, evidence = directory / 'context/verified-codex-package', {'schema': 1}
+            expected_result = {'fixture': 'mandatory finish result'}
+            def mandatory_finish(staged_directory, staged_package, staged_evidence, expected_candidates):
+                self.assertEqual(staged_directory, directory)
+                self.assertEqual(staged_package, package)
+                self.assertIs(staged_evidence, evidence)
+                self.assertEqual(expected_candidates, payloads)
+                self.assertEqual({name: (directory / (name + '.standard.json')).read_bytes() for name in pins}, payloads)
+                return expected_result
+            with mock.patch.object(artifacts, 'acquire', return_value=(package, evidence)), \
+                    mock.patch.object(artifacts, 'finish', side_effect=mandatory_finish) as finish, \
+                    mock.patch.object(artifacts, 'prepare_metadata') as prepare, \
+                    mock.patch.object(artifacts, 'prepare_with_clock') as prepare_with_clock, \
+                    mock.patch.object(artifacts, 'normalize_bundle') as normalize, \
+                    mock.patch.object(artifacts, 'command') as command, \
+                    mock.patch.object(artifacts, 'download') as download, \
+                    mock.patch.object(artifacts, 'verify_signatures') as verify:
+                self.assertIs(artifacts.stage(directory), expected_result)
+                finish.assert_called_once()
+                for forbidden in (prepare, prepare_with_clock, normalize, command, download, verify):
+                    forbidden.assert_not_called()
+
+    def test_default_stage_rejects_missing_modified_and_truncated_pins_without_fallback(self):
+        payloads = {name: (artifacts.BUNDLE_DIRECTORY / (name + '.json')).read_bytes()
+                    for name in ('package', 'native', 'bwrap')}
+        pins = {name: (len(data), artifacts.sha(data)) for name, data in payloads.items()}
+        for artifact in pins:
+            for failure in ('missing', 'same-size-modified', 'truncated'):
+                with self.subTest(artifact=artifact, failure=failure), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    pinned_directory, directory = root / 'pins', root / 'stage'
+                    pinned_directory.mkdir()
+                    directory.mkdir()
+                    for name, data in payloads.items():
+                        (pinned_directory / (name + '.json')).write_bytes(data)
+                    target = pinned_directory / (artifact + '.json')
+                    if failure == 'missing':
+                        target.unlink()
+                    elif failure == 'same-size-modified':
+                        original = payloads[artifact]
+                        target.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                        self.assertEqual(target.stat().st_size, len(original))
+                    else:
+                        target.write_bytes(payloads[artifact][:-1])
+                    package, evidence = directory / 'context/verified-codex-package', {'schema': 1}
+                    output, errors = io.StringIO(), io.StringIO()
+                    with mock.patch.object(artifacts, 'BUNDLE_DIRECTORY', pinned_directory), \
+                            mock.patch.object(artifacts, 'BUNDLE_PINS', pins), \
+                            mock.patch.object(artifacts, 'acquire', return_value=(package, evidence)), \
+                            mock.patch.object(artifacts, 'finish') as finish, \
+                            mock.patch.object(artifacts, 'verify_signatures') as verify, \
+                            mock.patch.object(artifacts, 'prepare_metadata') as prepare, \
+                            mock.patch.object(artifacts, 'prepare_with_clock') as prepare_with_clock, \
+                            mock.patch.object(artifacts, 'normalize_bundle') as normalize, \
+                            mock.patch.object(artifacts, 'command') as command, \
+                            mock.patch.object(artifacts, 'download') as download, \
+                            contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                        with self.assertRaises(artifacts.Unsupported) as rejected:
+                            artifacts.stage(directory)
+                        suffix = 'pinned-file/shape' if failure == 'missing' else 'pinned-hash/mismatch'
+                        self.assertEqual(str(rejected.exception), 'bundle/' + artifact + '/' + suffix)
+                        for forbidden in (finish, verify, prepare, prepare_with_clock, normalize, command, download):
+                            forbidden.assert_not_called()
+                    self.assertEqual(output.getvalue() + errors.getvalue(), '')
+                    self.assertNotIn('signatureVerified', evidence)
+                    self.assertNotIn('publicBundles', evidence)
 if __name__ == '__main__':
     unittest.main()

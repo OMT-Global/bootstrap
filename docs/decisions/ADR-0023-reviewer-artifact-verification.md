@@ -1,6 +1,8 @@
 # ADR-0023: Pinned public reviewer artifact verification
 
-Status: Accepted for source and CI preparation only. Derived bundles and hosted verification remain pending.
+Status: Accepted
+
+Scope: Source and CI preparation only; no native reviewer, runtime, deployment or fleet publication approval. Hosted preparation passed; the default pinned path remains unproven until separately run.
 
 Date: 2026-11-08
 
@@ -26,15 +28,27 @@ Retain the exact RAW official converter bytes independently. Only after every im
 
 `finish` snapshots the audited candidate bytes and requires equality to the original SHA-checked pinned bytes or preparation-created normalized bytes before verification. After all three unchanged verifier calls succeed, require exact reread equality for every candidate before setting signature success or metadata. Derive hashes, sizes and emitted base64 from the retained verified bytes, with no unchecked later reread. These checks bind the selected bytes and observed verification interval; they do not claim universal immunity to concurrent filesystem changes.
 
-Only after all three exact normalized candidates verify and cleanup succeeds, emit three bounded `REVIEWER_ARTIFACT_RAW` records and the existing `REVIEWER_ARTIFACT_EVIDENCE` summary with candidate `publicBundles`. RAW and candidate bytes/hashes are separately identified; failed or unverified candidates are never emitted. Root captures and reviews actual data before adding immutable candidate files and pins. Missing pins fail closed before acquisition; default `stage()` performs no normalization, automatic preparation, live trust fallback, configurable endpoint or native execution.
+Only after all three exact normalized candidates verify and cleanup succeeds, emit three bounded `REVIEWER_ARTIFACT_RAW` records and the existing `REVIEWER_ARTIFACT_EVIDENCE` summary with candidate `publicBundles`. RAW and candidate bytes/hashes are separately identified; failed or unverified candidates are never emitted. The reviewed candidate bytes are pinned in `scripts/ci/reviewer-artifact-bundles/{package,native,bwrap}.json`. Exact RAW acquisition evidence is retained separately in the `raw/` subdirectory and is never selected as a runtime candidate. An incomplete pin catalog fails before acquisition; missing, modified or truncated candidate files fail before verification. Default `stage()` performs no normalization, automatic preparation, live trust fallback, configurable endpoint or native execution.
 
 The genuine preparation-only WIP at `1e05a1eb0431a06a28b0f23d7f90ccfaffc2848f` passed 807 ordinary and 16 real Docker tests in [run 42540530709](https://github.com/OMT-Global/bootstrap/actions/runs/42540530709), then returned `bundle` with cleanup true and no verified/raw/candidate payload. Static diagnostics now identify only fixed artifact/field and shape/mismatch tags, never values, JSON keys, paths, exception text or observed lengths. Deadline and cleanup errors retain precedence.
 
-The initial preparation-only WIP deliberately uses `--prepare-metadata` in the full profile of the existing registered validation entrypoint. After actual derived inputs are captured and pinned, the final manifest and generated entrypoint must use default verification. The existing immutable reusable caller `913b298fab0fb008796011d940ee7362a347659d` and all runner/workflow settings remain unchanged. Fast, smoke and standard profiles perform no new artifact downloads.
+The manifest and scoped generated full-profile entrypoint now use default `python3 scripts/ci/reviewer-artifacts.py`, reading only the three pinned candidate files. Explicit `--prepare-metadata` remains available solely as the separate manual CI preparation operation; default execution never invokes it. The existing immutable reusable caller `913b298fab0fb008796011d940ee7362a347659d` and all runner/workflow settings remain unchanged. Fast, smoke and standard profiles perform no new artifact downloads.
 
 The reusable `stage(directory, absolute_deadline=None)` accepts only a fresh, private, empty owned directory. It returns paths and metadata for verified public artifacts, never a native-support, model-review or fleet receipt. It has a hard 15-minute acquisition budget capped by an earlier caller deadline. Its CLI owns a separate 60-second cleanup budget. Subprocess combined output, process groups, downloads, extraction members, paths, types, modes and expanded bytes remain bounded. Only the three fixed public Cosign verification calls emit JSON-escaped stderr and exit status; no runtime or authentication output is involved.
 
 Preserve the complete official package layout and all package notices, including voice resources, plus the pinned Codex, bubblewrap and ripgrep notices. The download SHA check precedes archive parsing. Extraction rejects links/devices, traversal, unsafe modes, duplicate names and file-parent collisions within the existing 2-GiB, 4096-member, depth-32 envelope. The official pinned archive has already been observed to contain 52 members and 540530246 expanded bytes; this source change does not claim a new extraction or verification run.
+
+## Captured public inputs
+
+The exact source head `3654fc2d8015a285d30fc53b31375b6aea07f2ea` passed [hosted preparation run 42543713399](https://github.com/OMT-Global/bootstrap/actions/runs/42543713399), job `128924083659`, through immutable callee `913b298fab0fb008796011d940ee7362a347659d`. All three unchanged strict offline Cosign calls returned `Verified OK`; cleanup succeeded. The watcher and root independently checked decoded sizes/hashes, the original SET, sole changed leaf and full-tree/proof retention. This establishes preparation cryptography for those captured bytes, not execution of the newly pinned default route or native Codex/runtime support.
+
+| Artifact | Candidate bytes / SHA-256 | RAW bytes / SHA-256 |
+| --- | --- | --- |
+| package | 10474 / `2b02dffae24ea92c8dda61a466d2e182958272cd60272d4d5d4105ca6a5038f0` | 9770 / `b58fbbc748b7c2473903a4cf895339bc0a4a47a4596d22378c9f82d680887af8` |
+| native | 10494 / `1c92b7154e5bbd76ec2b6b5fd4e7aeb5dedfdc862b619df22649a1443d37d67b` | 9790 / `2b12002aeb9f3ca20b6c52836da6c2e75db8041e9a5f955da8b77ebf51dd9dab` |
+| bwrap | 10494 / `fbd20983759d802697db32d9c8fc2eb5f31edc3afad89ddbb95296b023f9f315` | 9790 / `8356e501c58b80758db8f226ebb5c2801b03666c85bc72d27a35bcdca1ec6da8` |
+
+Candidates are copied byte-for-byte as the reviewed 73-line indented JSON outputs. RAW files preserve the official one-line protobuf JSON bytes; Bootstrap does not minify them. All six files are counted as source/configuration data and included in complete semantic review. They have different identities and roles: only candidate pins are loaded by default.
 
 ## Public output contract
 
@@ -54,4 +68,4 @@ The watcher must require the exact reviewed head/run/callee and successful final
 
 Static synthetic regressions exercise representation mismatches, proof retention, missing pins, archive safety, URL restrictions, combined output, process errors and interruption by the absolute acquisition clock. The renewed-SET before control exercises the actual old `prepare_with_clock`/`main` path with stubbed converter/verifier: it rejects with zero verification calls and cleanup true. The amended path reaches the same three offline verification argument lists. Full-tree one-leaf retention, immutable tampering, duplicate/missing/empty SETs, each verifier failure, cleanup failure, raw exact-byte retention, diagnostics privacy and aggregate output bounds are covered without real cryptography. The existing entrypoint tests retain ordering and cheap-profile checks and add the exact preparation command and its failure propagation. The manifest and generated script are backed up and the scoped projection is compared byte-for-byte; all 13 existing plan drift classifications are preserved.
 
-Mac validation does not download or execute the Linux package or Cosign, start Docker, inspect operator authentication, contact a provider or create a model review. Actual public conversion and trusted-root signature verification require the separately reviewed, exact hosted run. Native support, complete autoreview receipts and fleet publication remain unproven. The baseline doctor reports local GitHub authentication as a warning; no authentication change is part of this prerequisite.
+Mac validation does not download or execute the Linux package or Cosign, start Docker, inspect operator authentication, contact a provider or create a model review. The actual preparation conversion and trusted-root signature checks passed in run 42543713399 as recorded above. The default pinned route still requires its own exact-head hosted run. Native support, complete autoreview receipts and fleet publication remain unproven. The baseline doctor reports local GitHub authentication as a warning; no authentication change is part of this prerequisite.

@@ -45,7 +45,11 @@ HERE = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 DEADLINE = 0.0
 ENV = {}
-BUNDLE_PINS = {}  # Populated only from reviewed, successful preparation evidence.
+BUNDLE_PINS = {
+    'package': (10474, '2b02dffae24ea92c8dda61a466d2e182958272cd60272d4d5d4105ca6a5038f0'),
+    'native': (10494, '1c92b7154e5bbd76ec2b6b5fd4e7aeb5dedfdc862b619df22649a1443d37d67b'),
+    'bwrap': (10494, 'fbd20983759d802697db32d9c8fc2eb5f31edc3afad89ddbb95296b023f9f315'),
+}
 BUNDLE_DIRECTORY = HERE / 'reviewer-artifact-bundles'
 IDENTITY = 'https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.167.0'
 

@@ -4,7 +4,6 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import { z } from "zod";
 import { isAlias, isMap, isScalar, isSeq, parseDocument, type Document, type Node } from "yaml";
 
-import { renderManagedFiles } from "./archetypes.js";
 import { validatePolicyExceptions } from "./exceptions.js";
 import { readTextIfExists } from "./lib/fs.js";
 import { sha256 } from "./lib/hash.js";
@@ -15,9 +14,12 @@ import {
   projectLicensePolicy,
   readManagedLegalOutputTextIfExists
 } from "./licensing.js";
-import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, selectManagedFiles } from "./render.js";
+import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, resolveRepositoryProjection } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
+import type { ResolvedPolicyContract } from "./policy.js";
+import { flowResponseCommitments, POLICY_SOURCE_FAILURE } from "./security-response-policy.js";
+import { extractPolicyStatements, readPolicyMarkdown, type PolicyMarkdownInput } from "./security-response-markdown.js";
 import type { BootstrapManifest, PolicyException } from "./types.js";
 
 export const CONFORMANCE_SCHEMA_VERSION = 2;
@@ -597,7 +599,11 @@ function yamlReferencesSecretContext(
   return false;
 }
 
-async function publicSecurityResults(manifest: BootstrapManifest, targetDir: string): Promise<ConformanceResult[]> {
+function hasProductSecurityPolicy(manifest: BootstrapManifest): boolean {
+  return manifest.project.visibility === "public" && manifest.repo.docs?.security === false && manifest.policy?.flow !== undefined;
+}
+
+async function publicSecurityResults(manifest: BootstrapManifest, targetDir: string, policyInput?: PolicyMarkdownInput, resolvedPolicy?: ResolvedPolicyContract): Promise<ConformanceResult[]> {
   if (manifest.project.visibility !== "public") {
     return [
       result("PRS-SECURITY-BASELINE-001", "pass", ["public security projection not required for non-public repository"], "Retain explicit security controls appropriate to the repository visibility."),
@@ -607,7 +613,16 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
 
   const baselineFailures: { evidence: string; remediation: string }[] = [];
   const forkFailures: { evidence: string; remediation: string }[] = [];
-  const securityDoc = await readTextIfExists(path.join(targetDir, "SECURITY.md"));
+  const flowPolicy = manifest.policy?.flow !== undefined;
+  const securityDoc = flowPolicy
+    ? (policyInput?.kind === "supported" ? policyInput.text : undefined)
+    : await readTextIfExists(path.join(targetDir, "SECURITY.md"));
+  if (policyInput && policyInput.kind !== "supported") {
+    baselineFailures.push({
+      evidence: `SECURITY.md response policy input is ${policyInput.kind === "missing" ? "missing" : `unsupported: ${policyInput.reason}`}.`,
+      remediation: "Provide a regular, singly linked UTF-8 SECURITY.md within the documented response-policy input limits."
+    });
+  }
   const expectedAdvisoryUrl = `https://github.com/${manifest.project.owner}/${manifest.project.name}/security/advisories/new`;
   if (!securityDoc?.includes(expectedAdvisoryUrl)) {
     baselineFailures.push({
@@ -621,17 +636,48 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       remediation: "Restore the managed fallback that requests a confidential channel without publishing vulnerability details."
     });
   }
-  if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define acknowledgement and status-update targets",
-      remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
-    });
-  }
-  if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
-    baselineFailures.push({
-      evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
-      remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
-    });
+  if (flowPolicy) {
+    let commitments: string[] | undefined;
+    try {
+      commitments = flowResponseCommitments(manifest, resolvedPolicy);
+    } catch {
+      baselineFailures.push({
+        evidence: "The declared Flow security response policy is invalid.",
+        remediation: "Restore an immutable, digest-verified compatible Flow bundle with four positive safe-integer response targets."
+      });
+    }
+    if (commitments && policyInput?.kind === "supported") {
+      const extracted = extractPolicyStatements(policyInput.text);
+      if (extracted.kind === "unsupported") {
+        baselineFailures.push({
+          evidence: `SECURITY.md response policy Markdown is unsupported: ${extracted.reason}.`,
+          remediation: "Use the documented HTML-free CommonMark statement grammar within its input and tree limits."
+        });
+      } else {
+        const statements = new Set(extracted.statements.map((statement) => statement.text));
+        for (const commitment of commitments) {
+          if (!statements.has(commitment.toLowerCase())) {
+            baselineFailures.push({
+              evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
+              remediation: "Restore the complete response commitment in an eligible plain paragraph or list paragraph."
+            });
+          }
+        }
+      }
+    }
+  } else {
+    if (!securityDoc?.includes("3 business days") || !securityDoc.includes("10 business days")) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define acknowledgement and status-update targets",
+        remediation: "Project the managed 3-business-day acknowledgement and 10-business-day update targets."
+      });
+    }
+    if (!securityDoc?.includes("7 days for critical") || !securityDoc.includes("30 days for high") || !securityDoc.includes("90 days for moderate") || !/coordinate(?:d)? disclosure/i.test(securityDoc)) {
+      baselineFailures.push({
+        evidence: "SECURITY.md does not define all severity remediation and coordinated-disclosure targets",
+        remediation: "Restore the managed 7/30/90-day remediation targets and coordinated-disclosure commitment."
+      });
+    }
   }
 
   const dependabot = await readTextIfExists(path.join(targetDir, ".github/dependabot.yml"));
@@ -1046,12 +1092,44 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
       entry.scope === "repo.class" &&
       validExceptionIds.has(entry.id)
   );
-  const selectedManagedFiles = selectManagedFiles(manifest, renderManagedFiles(manifest));
+  const flowSecurityPolicy = manifest.project.visibility === "public" && manifest.policy?.flow !== undefined;
+  // Read the protected leaf before any generic presence/hash/planner read.
+  const policyInput = flowSecurityPolicy ? await readPolicyMarkdown(targetDir) : undefined;
+  let projection: Awaited<ReturnType<typeof resolveRepositoryProjection>> | undefined;
+  try {
+    projection = await resolveRepositoryProjection(manifest, targetDir);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== POLICY_SOURCE_FAILURE) throw error;
+    results.push(result("PRS-POLICY-SOURCE-001", "blocking", [POLICY_SOURCE_FAILURE],
+      "Restore the repository-local immutable, digest-verified compatible Flow response policy before projecting dependent artifacts."));
+  }
+  const selectedManagedFiles = projection?.files ?? [];
+  const productSecurityPolicy = hasProductSecurityPolicy(manifest);
+  let productSecurityOwnershipBlocked = false;
+  if (productSecurityPolicy) {
+    try {
+      const { state, ownership } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
+      productSecurityOwnershipBlocked = Object.hasOwn(state?.managedFiles ?? {}, "SECURITY.md") || Object.hasOwn(ownership.hashes, "SECURITY.md");
+      if (productSecurityOwnershipBlocked) {
+        results.push(result("PRS-OWNERSHIP-001", "blocking", ["Product-owned SECURITY.md requires a manual ownership migration before generic planning."],
+          "Review and back up the ownership migration, preserving the product policy bytes; do not delete claims or transfer ownership implicitly."));
+      }
+    } catch {
+      productSecurityOwnershipBlocked = true;
+      results.push(result("PRS-OWNERSHIP-001", "blocking", ["Product-owned SECURITY.md ownership metadata could not be verified."],
+        "Resolve ownership metadata through a reviewed, backed-up migration before generic planning."));
+    }
+  }
   const missingRequiredFiles: string[] = [];
   for (const file of selectedManagedFiles) {
-    if (await readTextIfExists(path.join(targetDir, file.path)) === undefined) missingRequiredFiles.push(file.path);
+    const existing = flowSecurityPolicy && file.path === "SECURITY.md"
+      ? (policyInput?.kind === "supported" ? policyInput.text : undefined)
+      : await readTextIfExists(path.join(targetDir, file.path));
+    if (existing === undefined) missingRequiredFiles.push(file.path);
   }
-  const requiredFileResults = missingRequiredFiles.length === 0
+  const requiredFileResults = !projection
+    ? [result("PRS-REQUIRED-FILE-001", "blocking", ["Managed artifact projection is unavailable because the declared Flow policy could not be resolved."], "Restore the pinned local policy before evaluating dependent required artifacts.")]
+    : missingRequiredFiles.length === 0
     ? [result("PRS-REQUIRED-FILE-001", "pass", [`${selectedManagedFiles.length} required managed artifact(s) present`], "Keep required managed artifacts present and under Bootstrap ownership.")]
     : [result("PRS-REQUIRED-FILE-001", "blocking", missingRequiredFiles, "Run bootstrap apply repo to restore the required managed artifacts.")];
   const requiredFilesWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.requiredFiles);
@@ -1059,7 +1137,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
   const actionPinsWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.actionPins);
   results.push(...(await actionPinResults(manifest, targetDir)).map((entry) => applyWaiver(entry, actionPinsWaiver)));
   const securityBaselineWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.securityBaseline);
-  results.push(...(await publicSecurityResults(manifest, targetDir)).map((entry) => applyWaiver(entry, securityBaselineWaiver)));
+  results.push(...(await publicSecurityResults(manifest, targetDir, policyInput, projection?.policy)).map((entry) => applyWaiver(entry, securityBaselineWaiver)));
 
   const githubCapabilities = githubCapabilitySnapshotSchema.parse(options.githubCapabilities ?? { schemaVersion: 1, observations: [] });
   if (manifest.project.visibility === "public") {
@@ -1187,12 +1265,38 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
       results.push(result(ruleId, "blocking", [detail], "Restore the legal output as a regular repository file before conforming."));
     }
   } else {
+    // Recognition describes the declared mode and remains evaluable without a projection.
+    results.push(
+      manifest.license.mode === "proprietary"
+        ? result(
+            "PRS-LICENSE-RECOGNITION-001",
+            "pass",
+            ["proprietary notice; SPDX and OSI recognition not claimed"],
+            "Do not present the proprietary notice as an open-source license."
+          )
+        : result(
+            "PRS-LICENSE-RECOGNITION-001",
+            "warning",
+            [`declared SPDX identifier ${manifest.license.identifier}; GitHub recognition not verified locally`],
+            "Verify GitHub's detected license/community profile after publication.",
+            "unverified"
+          )
+    );
+    if (!projection) {
+      for (const [ruleId, surface] of [["PRS-LICENSE-001", "License"], ["PRS-LICENSE-NOTICES-001", "Third-party notices"]] as const) {
+        results.push(result(ruleId, "blocking", [`${surface} projection is unavailable because the declared Flow policy could not be resolved.`],
+          "Restore the pinned local policy before evaluating dependent legal output; existing legal evidence and ownership claims remain required."));
+      }
+    }
     try {
       const { state: effectiveState, ownership: ownershipHashes } = await loadEffectiveRepoState(targetDir, selectedManagedFiles);
       for (const [managedPath, managedHash] of Object.entries(effectiveState?.managedFiles ?? {})) {
-        const existing = managedPath === LICENSE_PATH || managedPath === THIRD_PARTY_NOTICES_PATH
-          ? await readManagedLegalOutputTextIfExists(targetDir, managedPath)
-          : await readTextIfExists(path.join(targetDir, managedPath));
+        if (productSecurityPolicy && managedPath === "SECURITY.md") continue;
+        const existing = flowSecurityPolicy && managedPath === "SECURITY.md"
+          ? (policyInput?.kind === "supported" ? policyInput.text : undefined)
+          : managedPath === LICENSE_PATH || managedPath === THIRD_PARTY_NOTICES_PATH
+            ? await readManagedLegalOutputTextIfExists(targetDir, managedPath)
+            : await readTextIfExists(path.join(targetDir, managedPath));
         const detail = existing === undefined
           ? `Managed file ${managedPath} was deleted.`
           : sha256(existing) !== managedHash
@@ -1205,49 +1309,35 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
           );
         }
       }
-      const projection = await projectLicensePolicy(
-        manifest,
-        targetDir,
-        effectiveState,
-        [
-          ...selectedManagedFiles.map((file) => file.path),
-          ...Object.keys(effectiveState?.managedFiles ?? {}),
-          ...BOOTSTRAP_STATE_OUTPUT_PATHS
-        ],
-        ownershipHashes.license
-      );
-      const expectedLicense = projection?.files.find((file) => file.path === LICENSE_PATH)?.contents;
-      const expectedNotices = projection?.files.find((file) => file.path === THIRD_PARTY_NOTICES_PATH)?.contents;
-      const [existingLicense, existingNotices] = await Promise.all([
-        readManagedLegalOutputTextIfExists(targetDir, LICENSE_PATH),
-        readManagedLegalOutputTextIfExists(targetDir, THIRD_PARTY_NOTICES_PATH)
-      ]);
-      results.push(
-        existingLicense === expectedLicense
-          ? result("PRS-LICENSE-001", "pass", [`mode=${projection?.summary.afterMode}`], "Keep the approved license template and declared mode current.")
-          : result("PRS-LICENSE-001", "blocking", [LICENSE_PATH], "Run bootstrap apply repo after satisfying any legal transition hard stop.")
-      );
-      results.push(
-        existingNotices === expectedNotices
-          ? result("PRS-LICENSE-NOTICES-001", "pass", [THIRD_PARTY_NOTICES_PATH], "Keep dependency, asset, font, media, and incorporated-source obligations current.")
-          : result("PRS-LICENSE-NOTICES-001", "blocking", [THIRD_PARTY_NOTICES_PATH], "Generate or reconcile the separate third-party notice inventory.")
-      );
-      results.push(
-        manifest.license.mode === "proprietary"
-          ? result(
-              "PRS-LICENSE-RECOGNITION-001",
-              "pass",
-              ["proprietary notice; SPDX and OSI recognition not claimed"],
-              "Do not present the proprietary notice as an open-source license."
-            )
-          : result(
-              "PRS-LICENSE-RECOGNITION-001",
-              "warning",
-              [`declared SPDX identifier ${manifest.license.identifier}; GitHub recognition not verified locally`],
-              "Verify GitHub's detected license/community profile after publication.",
-              "unverified"
-            )
-      );
+      if (projection) {
+        const licenseProjection = await projectLicensePolicy(
+          manifest,
+          targetDir,
+          effectiveState,
+          [
+            ...selectedManagedFiles.map((file) => file.path),
+            ...Object.keys(effectiveState?.managedFiles ?? {}),
+            ...BOOTSTRAP_STATE_OUTPUT_PATHS
+          ],
+          ownershipHashes.license
+        );
+        const expectedLicense = licenseProjection?.files.find((file) => file.path === LICENSE_PATH)?.contents;
+        const expectedNotices = licenseProjection?.files.find((file) => file.path === THIRD_PARTY_NOTICES_PATH)?.contents;
+        const [existingLicense, existingNotices] = await Promise.all([
+          readManagedLegalOutputTextIfExists(targetDir, LICENSE_PATH),
+          readManagedLegalOutputTextIfExists(targetDir, THIRD_PARTY_NOTICES_PATH)
+        ]);
+        results.push(
+          existingLicense === expectedLicense
+            ? result("PRS-LICENSE-001", "pass", [`mode=${licenseProjection?.summary.afterMode}`], "Keep the approved license template and declared mode current.")
+            : result("PRS-LICENSE-001", "blocking", [LICENSE_PATH], "Run bootstrap apply repo after satisfying any legal transition hard stop.")
+        );
+        results.push(
+          existingNotices === expectedNotices
+            ? result("PRS-LICENSE-NOTICES-001", "pass", [THIRD_PARTY_NOTICES_PATH], "Keep dependency, asset, font, media, and incorporated-source obligations current.")
+            : result("PRS-LICENSE-NOTICES-001", "blocking", [THIRD_PARTY_NOTICES_PATH], "Generate or reconcile the separate third-party notice inventory.")
+        );
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-LICENSE-001";
@@ -1305,15 +1395,17 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     }
   }
 
-  try {
-    await planRepo(manifest, targetDir);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
-    pushUnique(
-      results,
-      result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
-    );
+  if (projection && !productSecurityOwnershipBlocked && (!flowSecurityPolicy || policyInput?.kind === "supported")) {
+    try {
+      await planRepo(manifest, targetDir, projection.policy);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const ruleId = detail.match(/^(PRS-[A-Z][A-Z-]*-\d{3}):/)?.[1] ?? "PRS-OWNERSHIP-001";
+      pushUnique(
+        results,
+        result(ruleId, "blocking", [detail], "Restore the managed file or use an explicit migration before applying Bootstrap changes.")
+      );
+    }
   }
 
   const sorted = results.sort((left, right) => compareCodePoints(left.ruleId, right.ruleId) || compareCodePoints(left.evidence.join("\n"), right.evidence.join("\n")));

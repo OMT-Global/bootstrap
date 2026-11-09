@@ -32,5 +32,12 @@
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
+  },
+  "overrides": {
+    "vite": "7.3.7",
+    "esbuild": "0.28.1",
+    "postcss": "8.5.23",
+    "nanoid": "3.3.18",
+    "source-map-js": "1.2.2"
   }
 }

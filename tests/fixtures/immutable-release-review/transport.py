@@ -16,10 +16,33 @@ stage_name = {"hash-parent": "stage#label", "star-parent": "stage*", "question-p
 stage = root / stage_name
 stage.mkdir()
 names = {"distinct-hash-label": ["x", "x#label"], "star-name": ["x", "x*"], "question-name": ["xA", "x?"], "class-name": ["x0", "x[0]"], "space-name": ["with space"], "unicode-name": ["café"], "right-bracket-name": ["right]name"], "dash-name": ["-dash"], "normal-name": ["x"], "checksum-only": [], "checksum-flat-collision": ["nested/SHA256SUMS"]}.get(scenario, ["x"])
+literal_checksum_names = {"leading-space-bare": " file", "leading-tab-bare": "\tfile", "leading-space-alias-bare": " file", "leading-tab-alias-bare": "\tfile", "leading-space-binary-bare": " file", "leading-tab-binary-bare": "\tfile", "trailing-space-bare": "file ", "trailing-tab-bare": "file\t", "leading-space-prefixed": " file"}
+if scenario in literal_checksum_names:
+    names = [literal_checksum_names[scenario]]
+malformed_checksum = scenario in ("checksum-bad-separator", "checksum-bad-mode", "checksum-bad-digest", "checksum-missing-filename", "checksum-escaped-record")
+valid_checksum = scenario in literal_checksum_names or scenario in ("binary-marker", "checksum-blank-lines", "checksum-no-final-newline")
 payloads = {name: ("owned-" + str(index)).encode() for index, name in enumerate(names)}
 payloads["RELEASE_NOTES.md"] = b"notes"
 prefix = str(root / "configured-output")
-checksum = "".join(hashlib.sha256(value).hexdigest() + "  " + prefix + "/" + name + "\n" for name, value in payloads.items())
+marker = "*" if "binary" in scenario else " "
+reference_prefix = "" if scenario.endswith("-bare") else prefix + "/"
+checksum = "".join(hashlib.sha256(value).hexdigest() + " " + marker + reference_prefix + name + "\n" for name, value in payloads.items())
+if "alias-bare" in scenario:
+    payloads[names[0].lstrip(" \t")] = payloads[names[0]]
+if scenario == "checksum-bad-separator":
+    checksum = checksum[:64] + "\t" + checksum[65:]
+elif scenario == "checksum-bad-mode":
+    checksum = checksum[:65] + "?" + checksum[66:]
+elif scenario == "checksum-bad-digest":
+    checksum = "g" + checksum[1:]
+elif scenario == "checksum-missing-filename":
+    checksum = checksum[:64] + "  \n"
+elif scenario == "checksum-escaped-record":
+    checksum = "\\" + checksum
+elif scenario == "checksum-blank-lines":
+    checksum = "\n \t \n" + checksum + "\n"
+elif scenario == "checksum-no-final-newline":
+    checksum = checksum.removesuffix("\n")
 if scenario == "checksum-only":
     checksum = ""
 payloads["SHA256SUMS"] = checksum.encode()
@@ -31,7 +54,7 @@ inventory.write_text(json.dumps({name: hashlib.sha256(value).hexdigest() for nam
 plan = root / "publish-plan.json"
 hook = root / "custom-hook-ran"
 mutation = root / "release-mutation-ran"
-expected = scenario in ("space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage")
+expected = scenario in ("space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage") or valid_checksum
 parser_demo = None
 uploaded_names = []
 checksum_bytes_match = False
@@ -128,6 +151,8 @@ report = {"scenario": scenario, "expectedSuccess": expected, "success": success,
 if post_hook_failure:
     detail = {"checksum-mutated-after-hook": "Consumed bytes differ from approved ZIP member.", "checksum-slot-replaced-after-hook": "Reserved staging slot changed."}.get(scenario, "")
     report["passed"] = not success and hook.exists() and not mutation.exists() and copy_output_empty and bool(stderr) and detail in stderr
+elif malformed_checksum:
+    report["passed"] = not success and not hook.exists() and not mutation.exists() and bool(stderr)
 elif not expected:
     detail = {"checksum-only": "No approved release assets were selected.", "checksum-flat-collision": "Duplicate flat release asset name."}.get(scenario, "unsupported CLI label/glob syntax")
     report["passed"] = not success and not hook.exists() and not mutation.exists() and detail in stderr

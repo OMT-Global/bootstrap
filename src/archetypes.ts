@@ -2268,12 +2268,13 @@ try:
         assets = []
         flat_names = {"SHA256SUMS"}
         with member(checksum["key"]) as checksum_file:
-            for line in io.TextIOWrapper(checksum_file, encoding="utf-8"):
-                fields = line.rstrip("\n").split(maxsplit=1)
-                if not fields:
+            for line in io.TextIOWrapper(checksum_file, encoding="utf-8", newline="\n"):
+                line = line.removesuffix("\n")
+                if not line.strip():
                     continue
-                require(len(fields) == 2, "Malformed SHA256SUMS reference.")
-                record = resolve(fields[1], fields[0])
+                # Untagged SHA256 uses 64 hex chars, a space, a mode, then the literal filename.
+                require(len(line) > 66 and re.fullmatch(r"[0-9a-f]{64}", line[:64]) and line[64:66] in ("  ", " *"), "Malformed SHA256SUMS reference.")
+                record = resolve(line[66:], line[:64])
                 name = record["key"].rsplit("/", 1)[-1]
                 if name in ("release-evidence.json", "validation-evidence.json"):
                     continue

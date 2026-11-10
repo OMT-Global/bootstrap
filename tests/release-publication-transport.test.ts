@@ -10,7 +10,7 @@ import { immutablePreflightPublisherScript } from "../src/archetypes.js";
 
 const python = process.env.BOOTSTRAP_RELEASE_TEST_PYTHON || "python3";
 const fixture = fileURLToPath(new URL("./fixtures/immutable-release-review/transport.py", import.meta.url));
-const scenarios = ["distinct-hash-label", "hash-parent", "star-name", "question-name", "class-name", "star-parent", "question-parent", "class-parent", "backslash-parent", "space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage", "checksum-mutated-after-hook", "checksum-slot-replaced-after-hook", "checksum-symlink-after-hook", "checksum-flat-collision", "checksum-only"];
+const scenarios = ["distinct-hash-label", "hash-parent", "star-name", "question-name", "class-name", "star-parent", "question-parent", "class-parent", "backslash-parent", "space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage", "checksum-mutated-after-hook", "checksum-slot-replaced-after-hook", "checksum-symlink-after-hook", "checksum-flat-collision", "checksum-only", "leading-space-bare", "leading-tab-bare", "leading-space-alias-bare", "leading-tab-alias-bare", "leading-space-binary-bare", "leading-tab-binary-bare", "trailing-space-bare", "trailing-tab-bare", "leading-space-prefixed", "binary-marker", "checksum-blank-lines", "checksum-no-final-newline", "checksum-bad-separator", "checksum-bad-mode", "checksum-bad-digest", "checksum-missing-filename", "checksum-escaped-record"];
 
 describe("strong publication CLI transport", () => {
   it.each(scenarios)("preserves byte selection for %s", async (scenario) => {
@@ -31,6 +31,11 @@ describe("strong publication CLI transport", () => {
       } else {
         expect(report.uploadedNames).toContain("SHA256SUMS");
         expect(report.checksumBytesMatch).toBe(true);
+        const literalName = scenario === "leading-space-alias-bare" ? " file" : scenario === "leading-tab-alias-bare" ? "\tfile" : undefined;
+        if (literalName) {
+          expect(report.uploadedNames).toContain(literalName);
+          expect(report.uploadedNames).not.toContain("file");
+        }
       }
       if (scenario === "distinct-hash-label") {
         expect(report.parserDemo).toEqual({ literalBytes: "distinct", firstHashBytes: "base", label: "label" });

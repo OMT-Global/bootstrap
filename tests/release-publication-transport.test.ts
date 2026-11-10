@@ -10,7 +10,7 @@ import { immutablePreflightPublisherScript } from "../src/archetypes.js";
 
 const python = process.env.BOOTSTRAP_RELEASE_TEST_PYTHON || "python3";
 const fixture = fileURLToPath(new URL("./fixtures/immutable-release-review/transport.py", import.meta.url));
-const scenarios = ["distinct-hash-label", "hash-parent", "star-name", "question-name", "class-name", "star-parent", "question-parent", "class-parent", "backslash-parent", "space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage", "checksum-mutated-after-hook", "checksum-slot-replaced-after-hook", "checksum-symlink-after-hook", "checksum-flat-collision", "checksum-only", "leading-space-bare", "leading-tab-bare", "leading-space-alias-bare", "leading-tab-alias-bare", "leading-space-binary-bare", "leading-tab-binary-bare", "trailing-space-bare", "trailing-tab-bare", "leading-space-prefixed", "binary-marker", "checksum-blank-lines", "checksum-no-final-newline", "checksum-bad-separator", "checksum-bad-mode", "checksum-bad-digest", "checksum-missing-filename", "checksum-escaped-record"];
+const scenarios = ["distinct-hash-label", "hash-parent", "star-name", "question-name", "class-name", "star-parent", "question-parent", "class-parent", "backslash-parent", "space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage", "checksum-mutated-after-hook", "asset-slot-replaced-after-hook", "checksum-symlink-after-hook", "selected-flat-collision", "nested-checksum-asset", "source-release-four-assets", "checksum-only", "leading-space-bare", "leading-tab-bare", "leading-space-alias-bare", "leading-tab-alias-bare", "leading-space-binary-bare", "leading-tab-binary-bare", "trailing-space-bare", "trailing-tab-bare", "leading-space-prefixed", "binary-marker", "checksum-blank-lines", "checksum-no-final-newline", "checksum-bad-separator", "checksum-bad-mode", "checksum-bad-digest", "checksum-missing-filename", "checksum-escaped-record"];
 
 describe("strong publication CLI transport", () => {
   it.each(scenarios)("preserves byte selection for %s", async (scenario) => {
@@ -29,8 +29,16 @@ describe("strong publication CLI transport", () => {
         expect(report.releaseMutationRan).toBe(false);
         if (report.failurePhase === "copy") expect(report.copyOutputEmpty).toBe(true);
       } else {
-        expect(report.uploadedNames).toContain("SHA256SUMS");
-        expect(report.checksumBytesMatch).toBe(true);
+        expect(report.uploadedBytesMatch).toBe(true);
+        expect(report.aggregateChecksumUploaded).toBe(false);
+        if (scenario === "nested-checksum-asset") {
+          expect(report.uploadedNames).toContain("SHA256SUMS");
+        } else {
+          expect(report.uploadedNames).not.toContain("SHA256SUMS");
+        }
+        if (scenario === "source-release-four-assets") {
+          expect([...report.uploadedNames].sort()).toEqual(["RELEASE_NOTES.md", "artifact-manifest.json", "bootstrap-v1.2.3-source.tar.gz", "bootstrap-v1.2.3-source.tar.gz.sha256"]);
+        }
         const literalName = scenario === "leading-space-alias-bare" ? " file" : scenario === "leading-tab-alias-bare" ? "\tfile" : undefined;
         if (literalName) {
           expect(report.uploadedNames).toContain(literalName);
@@ -48,7 +56,7 @@ describe("strong publication CLI transport", () => {
 
 
 describe("reserved publication evidence names", () => {
-  it.each(["", "nested/"])("includes ordinary suffix names and checksum from %j and excludes exact evidence names", async (prefix) => {
+  it.each(["", "nested/"])("includes ordinary suffix names from %j and excludes metadata and exact evidence names", async (prefix) => {
     const directory = await mkdtemp(path.join(process.env.BOOTSTRAP_RELEASE_TEST_TMPDIR || os.tmpdir(), "release-evidence-names-"));
     try {
       const tree = path.join(directory, "package");
@@ -84,7 +92,7 @@ describe("reserved publication evidence names", () => {
       const copied = spawnSync(python, ["-I", "-S", program, "copy", ...args], { encoding: "utf8", timeout: 10_000 });
       expect(copied.status, copied.stderr).toBe(0);
       const uploaded = Object.fromEntries(await Promise.all(copied.stdout.split("\0").filter(Boolean).map(async (name) => [path.basename(name), await readFile(name, "utf8")])));
-      expect(uploaded).toEqual({ ...Object.fromEntries(Object.entries(selected).map(([name, value]) => [path.basename(name), value])), SHA256SUMS: files.SHA256SUMS });
+      expect(uploaded).toEqual(Object.fromEntries(Object.entries(selected).map(([name, value]) => [path.basename(name), value])));
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

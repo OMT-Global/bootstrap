@@ -1,10 +1,12 @@
 from pathlib import Path
+import gzip
 import hashlib
 import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import zipfile
 
 program, scenario, temporary, *shell = sys.argv[1:]
@@ -15,7 +17,7 @@ tree.mkdir()
 stage_name = {"hash-parent": "stage#label", "star-parent": "stage*", "question-parent": "stage?", "class-parent": "stage[0]", "backslash-parent": "stage\\escape"}.get(scenario, "stage")
 stage = root / stage_name
 stage.mkdir()
-names = {"distinct-hash-label": ["x", "x#label"], "star-name": ["x", "x*"], "question-name": ["xA", "x?"], "class-name": ["x0", "x[0]"], "space-name": ["with space"], "unicode-name": ["café"], "right-bracket-name": ["right]name"], "dash-name": ["-dash"], "normal-name": ["x"], "checksum-only": [], "checksum-flat-collision": ["nested/SHA256SUMS"]}.get(scenario, ["x"])
+names = {"distinct-hash-label": ["x", "x#label"], "star-name": ["x", "x*"], "question-name": ["xA", "x?"], "class-name": ["x0", "x[0]"], "space-name": ["with space"], "unicode-name": ["café"], "right-bracket-name": ["right]name"], "dash-name": ["-dash"], "normal-name": ["x"], "checksum-only": [], "nested-checksum-asset": ["nested/SHA256SUMS"], "selected-flat-collision": ["first/x", "second/x"]}.get(scenario, ["x"])
 literal_checksum_names = {"leading-space-bare": " file", "leading-tab-bare": "\tfile", "leading-space-alias-bare": " file", "leading-tab-alias-bare": "\tfile", "leading-space-binary-bare": " file", "leading-tab-binary-bare": "\tfile", "trailing-space-bare": "file ", "trailing-tab-bare": "file\t", "leading-space-prefixed": " file"}
 if scenario in literal_checksum_names:
     names = [literal_checksum_names[scenario]]
@@ -23,6 +25,19 @@ malformed_checksum = scenario in ("checksum-bad-separator", "checksum-bad-mode",
 valid_checksum = scenario in literal_checksum_names or scenario in ("binary-marker", "checksum-blank-lines", "checksum-no-final-newline")
 payloads = {name: ("owned-" + str(index)).encode() for index, name in enumerate(names)}
 payloads["RELEASE_NOTES.md"] = b"notes"
+if scenario == "source-release-four-assets":
+    archive = "bootstrap-v1.2.3-source.tar.gz"
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode="w") as package:
+        source = b"fabricated tracked source\n"
+        entry = tarfile.TarInfo("bootstrap-v1.2.3/project.bootstrap.yaml")
+        entry.size = len(source)
+        package.addfile(entry, io.BytesIO(source))
+    archive_bytes = gzip.compress(tar_bytes.getvalue(), mtime=0)
+    payloads = {archive: archive_bytes, archive + ".sha256": (hashlib.sha256(archive_bytes).hexdigest() + "  " + archive + "\n").encode(), "RELEASE_NOTES.md": b"Reviewed fabricated source-release notes.\n"}
+    payloads["artifact-manifest.json"] = json.dumps({"schema_version": 1, "version": "v1.2.3", "assets": [{"name": name, "sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)} for name, value in payloads.items()]}, sort_keys=True).encode()
+    names = [archive, archive + ".sha256", "artifact-manifest.json"]
+selected_payloads = {Path(name).name: payloads[name] for name in names + ["RELEASE_NOTES.md"]}
 prefix = str(root / "configured-output")
 marker = "*" if "binary" in scenario else " "
 reference_prefix = "" if scenario.endswith("-bare") else prefix + "/"
@@ -54,12 +69,13 @@ inventory.write_text(json.dumps({name: hashlib.sha256(value).hexdigest() for nam
 plan = root / "publish-plan.json"
 hook = root / "custom-hook-ran"
 mutation = root / "release-mutation-ran"
-expected = scenario in ("space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage") or valid_checksum
+expected = scenario in ("space-name", "unicode-name", "right-bracket-name", "dash-name", "normal-name", "relative-stage", "nested-checksum-asset", "source-release-four-assets") or valid_checksum
 parser_demo = None
 uploaded_names = []
-checksum_bytes_match = False
+uploaded_bytes_match = False
+aggregate_checksum_uploaded = False
 copy_output_empty = True
-post_hook_failure = scenario in ("checksum-mutated-after-hook", "checksum-slot-replaced-after-hook", "checksum-symlink-after-hook")
+post_hook_failure = scenario in ("checksum-mutated-after-hook", "asset-slot-replaced-after-hook", "checksum-symlink-after-hook")
 if scenario == "distinct-hash-label":
     demo = root / "cli-parser-demo"
     demo.mkdir()
@@ -78,10 +94,10 @@ if not shell:
         hook.write_bytes(b"unit-hook-boundary")
         if scenario == "checksum-mutated-after-hook":
             (tree / "SHA256SUMS").write_bytes(b"hook changed checksum bytes")
-        elif scenario == "checksum-slot-replaced-after-hook":
-            slot = stage / "SHA256SUMS"
+        elif scenario == "asset-slot-replaced-after-hook":
+            slot = stage / "x"
             if slot.exists():
-                slot.rename(stage / "original-checksum-slot")
+                slot.rename(stage / "original-asset-slot")
             slot.write_bytes(b"replacement destination")
         elif scenario == "checksum-symlink-after-hook":
             original = tree / "SHA256SUMS"
@@ -94,9 +110,10 @@ if not shell:
     if success:
         destinations = [Path(os.fsdecode(value)) for value in copied.stdout.split(b"\0") if value]
         uploaded_names = [destination.name for destination in destinations]
-        expected_names = {Path(name).name for name in names} | {"RELEASE_NOTES.md", "SHA256SUMS"}
-        checksum_bytes_match = "SHA256SUMS" in uploaded_names and (stage / "SHA256SUMS").read_bytes() == payloads["SHA256SUMS"]
-        success = len(destinations) == len(expected_names) and set(uploaded_names) == expected_names and all(destination.is_absolute() and destination.read_bytes() == payloads[destination.name] for destination in destinations)
+        expected_names = set(selected_payloads)
+        aggregate_checksum_uploaded = any(destination.name == "SHA256SUMS" and destination.read_bytes() == payloads["SHA256SUMS"] for destination in destinations)
+        uploaded_bytes_match = len(destinations) == len(expected_names) and set(uploaded_names) == expected_names and all(destination.is_absolute() and destination.read_bytes() == selected_payloads[destination.name] for destination in destinations)
+        success = uploaded_bytes_match and not aggregate_checksum_uploaded
     copy_output_empty = copied is None or copied.stdout == b""
     stderr = planned.stderr.decode() + (copied.stderr.decode() if copied else "")
 else:
@@ -147,14 +164,14 @@ else:
     stderr = completed.stderr.decode()
     calls = [json.loads(line) for line in (root/"gh-calls.jsonl").read_text().splitlines()]
     if any(call and call[0]=="release" for call in calls): mutation.write_bytes(b"unexpected-release-command")
-report = {"scenario": scenario, "expectedSuccess": expected, "success": success, "hookRan": hook.exists(), "releaseMutationRan": mutation.exists(), "stderr": stderr, "parserDemo": parser_demo, "uploadedNames": uploaded_names, "checksumBytesMatch": checksum_bytes_match, "copyOutputEmpty": copy_output_empty, "failurePhase": "copy" if post_hook_failure else "plan"}
+report = {"scenario": scenario, "expectedSuccess": expected, "success": success, "hookRan": hook.exists(), "releaseMutationRan": mutation.exists(), "stderr": stderr, "parserDemo": parser_demo, "uploadedNames": uploaded_names, "uploadedBytesMatch": uploaded_bytes_match, "aggregateChecksumUploaded": aggregate_checksum_uploaded, "copyOutputEmpty": copy_output_empty, "failurePhase": "copy" if post_hook_failure else "plan"}
 if post_hook_failure:
-    detail = {"checksum-mutated-after-hook": "Consumed bytes differ from approved ZIP member.", "checksum-slot-replaced-after-hook": "Reserved staging slot changed."}.get(scenario, "")
+    detail = {"checksum-mutated-after-hook": "Consumed bytes differ from approved ZIP member.", "asset-slot-replaced-after-hook": "Reserved staging slot changed."}.get(scenario, "")
     report["passed"] = not success and hook.exists() and not mutation.exists() and copy_output_empty and bool(stderr) and detail in stderr
 elif malformed_checksum:
     report["passed"] = not success and not hook.exists() and not mutation.exists() and bool(stderr)
 elif not expected:
-    detail = {"checksum-only": "No approved release assets were selected.", "checksum-flat-collision": "Duplicate flat release asset name."}.get(scenario, "unsupported CLI label/glob syntax")
+    detail = {"checksum-only": "No approved release assets were selected.", "selected-flat-collision": "Duplicate flat release asset name."}.get(scenario, "unsupported CLI label/glob syntax")
     report["passed"] = not success and not hook.exists() and not mutation.exists() and detail in stderr
 else:
     report["passed"] = success

@@ -2266,7 +2266,7 @@ try:
         notes = resolve(notes_reference)
         checksum = resolve("SHA256SUMS")
         assets = []
-        flat_names = {"SHA256SUMS"}
+        flat_names = set()
         with member(checksum["key"]) as checksum_file:
             for line in io.TextIOWrapper(checksum_file, encoding="utf-8", newline="\n"):
                 line = line.removesuffix("\n")
@@ -2284,19 +2284,18 @@ try:
                 record["name"] = name
                 assets.append(record)
         require(assets, "No approved release assets were selected.")
-        checksum["name"] = "SHA256SUMS"
-        assets.append(checksum)
         for record in assets:
             record["slot"] = reserve(upload_argument(record["name"]))
         notes["slot"] = reserve(plan_path + ".notes")
         plan_descriptor = os.open(plan_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         with os.fdopen(plan_descriptor, "w", encoding="utf-8") as plan_file:
-            json.dump({"tree": tree, "stage": asset_stage, "notes": notes, "assets": assets}, plan_file)
+            json.dump({"tree": tree, "stage": asset_stage, "notes": notes, "checksum": checksum, "assets": assets}, plan_file)
     else:
         plan_descriptor = os.open(plan_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         with os.fdopen(plan_descriptor, encoding="utf-8") as plan_file:
             plan = json.load(plan_file)
         require(plan["tree"] == tree and plan["stage"] == asset_stage, "Publication plan context mismatch.")
+        consume(plan["checksum"])
         copy(plan["notes"], plan_path + ".notes")
         destinations = []
         for record in plan["assets"]:

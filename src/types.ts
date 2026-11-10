@@ -387,6 +387,7 @@ export interface BootstrapManifest {
     dev: EnvironmentConfig;
     stage: EnvironmentConfig;
     prod: EnvironmentConfig;
+    "release-publish"?: EnvironmentConfig;
   };
 }
 

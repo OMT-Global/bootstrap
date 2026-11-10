@@ -5,6 +5,7 @@ import { z } from "zod";
 import { isAlias, isMap, isScalar, isSeq, parseDocument, type Document, type Node } from "yaml";
 
 import { validatePolicyExceptions } from "./exceptions.js";
+import { diagnosticForDeviation, evaluateConformanceDeviation, evaluateResponseCommitments } from "./conformance-deviations.js";
 import { readTextIfExists } from "./lib/fs.js";
 import { sha256 } from "./lib/hash.js";
 import { resolveLanguageProfiles } from "./language-profiles.js";
@@ -19,8 +20,8 @@ import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
 import type { ResolvedPolicyContract } from "./policy.js";
 import { flowResponseCommitments, POLICY_SOURCE_FAILURE } from "./security-response-policy.js";
-import { extractPolicyStatements, readPolicyMarkdown, type PolicyMarkdownInput } from "./security-response-markdown.js";
-import type { BootstrapManifest, PolicyException } from "./types.js";
+import { readPolicyMarkdown, type PolicyMarkdownInput } from "./security-response-markdown.js";
+import type { BootstrapManifest } from "./types.js";
 
 export const CONFORMANCE_SCHEMA_VERSION = 2;
 
@@ -115,25 +116,13 @@ function result(
   return { ruleId, severity, classification, evidence: [...evidence].sort(), remediation };
 }
 
-function findWaiver(
+function applyWaiver(
+  entry: ConformanceResult,
   manifest: BootstrapManifest,
-  validExceptionIds: Set<string>,
+  validExceptionIds: ReadonlySet<string>,
   target: { policy: string; scope: string }
-): PolicyException | undefined {
-  return manifest.exceptions.find((entry) =>
-    entry.policy === target.policy && entry.scope === target.scope && validExceptionIds.has(entry.id)
-  );
-}
-
-function applyWaiver(entry: ConformanceResult, waiver: PolicyException | undefined): ConformanceResult {
-  if (!waiver || entry.severity === "pass") return entry;
-  return result(
-    entry.ruleId,
-    "pass",
-    [...entry.evidence, `approved exception ${waiver.id}`],
-    `Keep approved exception ${waiver.id} current until the governed deviation is resolved.`,
-    "waived"
-  );
+): ConformanceResult {
+  return diagnosticForDeviation(evaluateConformanceDeviation(entry, manifest.exceptions, validExceptionIds, target));
 }
 
 function safeEvidence(value: string): string {
@@ -647,21 +636,18 @@ async function publicSecurityResults(manifest: BootstrapManifest, targetDir: str
       });
     }
     if (commitments && policyInput?.kind === "supported") {
-      const extracted = extractPolicyStatements(policyInput.text);
+      const extracted = evaluateResponseCommitments(policyInput.text, commitments);
       if (extracted.kind === "unsupported") {
         baselineFailures.push({
           evidence: `SECURITY.md response policy Markdown is unsupported: ${extracted.reason}.`,
           remediation: "Use the documented HTML-free CommonMark statement grammar within its input and tree limits."
         });
       } else {
-        const statements = new Set(extracted.statements.map((statement) => statement.text));
-        for (const commitment of commitments) {
-          if (!statements.has(commitment.toLowerCase())) {
-            baselineFailures.push({
-              evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
-              remediation: "Restore the complete response commitment in an eligible plain paragraph or list paragraph."
-            });
-          }
+        for (const commitment of extracted.missingCommitments) {
+          baselineFailures.push({
+            evidence: `SECURITY.md does not define the verified Flow response commitment: ${commitment}.`,
+            remediation: "Restore the complete response commitment in an eligible plain paragraph or list paragraph."
+          });
         }
       }
     }
@@ -1132,12 +1118,9 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     : missingRequiredFiles.length === 0
     ? [result("PRS-REQUIRED-FILE-001", "pass", [`${selectedManagedFiles.length} required managed artifact(s) present`], "Keep required managed artifacts present and under Bootstrap ownership.")]
     : [result("PRS-REQUIRED-FILE-001", "blocking", missingRequiredFiles, "Run bootstrap apply repo to restore the required managed artifacts.")];
-  const requiredFilesWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.requiredFiles);
-  results.push(...requiredFileResults.map((entry) => applyWaiver(entry, requiredFilesWaiver)));
-  const actionPinsWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.actionPins);
-  results.push(...(await actionPinResults(manifest, targetDir)).map((entry) => applyWaiver(entry, actionPinsWaiver)));
-  const securityBaselineWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.securityBaseline);
-  results.push(...(await publicSecurityResults(manifest, targetDir, policyInput, projection?.policy)).map((entry) => applyWaiver(entry, securityBaselineWaiver)));
+  results.push(...requiredFileResults.map((entry) => applyWaiver(entry, manifest, validExceptionIds, waiverTargets.requiredFiles)));
+  results.push(...(await actionPinResults(manifest, targetDir)).map((entry) => applyWaiver(entry, manifest, validExceptionIds, waiverTargets.actionPins)));
+  results.push(...(await publicSecurityResults(manifest, targetDir, policyInput, projection?.policy)).map((entry) => applyWaiver(entry, manifest, validExceptionIds, waiverTargets.securityBaseline)));
 
   const githubCapabilities = githubCapabilitySnapshotSchema.parse(options.githubCapabilities ?? { schemaVersion: 1, observations: [] });
   if (manifest.project.visibility === "public") {
@@ -1178,11 +1161,10 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
         `Capture ${control} in a versioned GitHub capability snapshot.`,
         "unverified"
       );
-      const capabilityWaiver = findWaiver(manifest, validExceptionIds, {
+      results.push(applyWaiver(missingObservation, manifest, validExceptionIds, {
         policy: "github-capability",
         scope: `github.${control}`
-      });
-      results.push(applyWaiver(missingObservation, capabilityWaiver));
+      }));
     }
   }
   for (const capability of githubCapabilities.observations) {
@@ -1222,11 +1204,10 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
         : capability.remediation,
       classification
     );
-    const capabilityWaiver = findWaiver(manifest, validExceptionIds, {
+    results.push(applyWaiver(capabilityResult, manifest, validExceptionIds, {
       policy: "github-capability",
       scope: `github.${capability.control}`
-    });
-    results.push(applyWaiver(capabilityResult, capabilityWaiver));
+    }));
   }
 
   results.push(
@@ -1346,7 +1327,6 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
   }
 
   const profiles = await resolveLanguageProfiles(manifest, targetDir);
-  const languageProfileWaiver = findWaiver(manifest, validExceptionIds, waiverTargets.languageProfile);
   if (profiles.conflicts.length === 0) {
     results.push(
       result(
@@ -1360,7 +1340,7 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
     for (const conflict of profiles.conflicts) {
       results.push(applyWaiver(
         result("PRS-PROFILE-001", "warning", [conflict.reason], "Align the archetype or resolve the detected language-profile conflict."),
-        languageProfileWaiver
+        manifest, validExceptionIds, waiverTargets.languageProfile
       ));
     }
   }

@@ -77,6 +77,30 @@ describe("actual protected default webhook native settlement", () => {
     expect(webhook(await deliver()).status).toBe("failed"); expect(native.exchanges).toHaveLength(1);
   });
 
+  it.each([
+    ["nonempty Content-Length", { status: 205, headers: ["Content-Length", "5", "Connection", "close"], body: Buffer.from("reset") }, "failed"],
+    ["nonempty chunked", { status: 205, headers: ["Transfer-Encoding", "chunked", "Connection", "close"], body: Buffer.from("reset"),
+      wire: Buffer.from("HTTP/1.1 205 fixture\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nreset\r\n0\r\n\r\n") }, "failed"],
+    ["nonempty close-delimited", { status: 205, headers: ["Connection", "close"], body: Buffer.from("reset") }, "failed"],
+    ["empty Content-Length", { status: 205, headers: ["Content-Length", "0", "Connection", "close"] }, "delivered"],
+    ["empty chunked", { status: 205, headers: ["Transfer-Encoding", "chunked", "Connection", "close"],
+      wire: Buffer.from("HTTP/1.1 205 fixture\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n") }, "delivered"],
+    ["empty close-delimited", { status: 205, headers: ["Connection", "close"] }, "delivered"]
+  ] satisfies [string, NativePlan, "delivered" | "failed"][])("enforces HTTP 205 content semantics for %s", async (_label, plan, expected) => {
+    native.answers = [{ address: "8.8.8.8", family: 4 }, { address: "1.1.1.1", family: 4 }];
+    native.plans = [{ ...plan, holdClose: ["message"] }, {}]; const delivery = tracked(deliver());
+    try {
+      await spin(() => native.exchanges[0]?.bodyEnded === true); await flush();
+      expect(delivery.result.settled).toBe(false); expect(native.exchanges).toHaveLength(1);
+    } finally { native.exchanges[0]!.close("message"); await delivery.pending; }
+    const report = delivery.result.report!; const exchange = native.exchanges[0]!;
+    expect(webhook(report)).toMatchObject({ status: expected, detail: expected === "delivered" ? "Webhook returned HTTP 205." : "Webhook delivery failed." });
+    expect([exchange.request.closed, exchange.message.closed, exchange.socket.closed]).toEqual([true, true, true]);
+    expect(native.exchanges).toHaveLength(1); expect(exchange.pinnedAddress).toBe("8.8.8.8");
+    expect(exchange.endCalls).toHaveLength(1); expect(exchange.endCalls[0]!.afterSecure).toBe(true);
+    expect(JSON.stringify(report)).not.toContain("fabricated-capability");
+  });
+
   it("does not treat socket-only HTTP bytes as a response acknowledgement, and drains denial", async () => {
     native.plans = [{ mode: "socket-only", holdClose: ["socket"] }]; const delivery = tracked(deliver());
     try { await spin(() => native.exchanges[0]?.socket.destroyed === true); await flush(); expect(delivery.result.settled).toBe(false); }

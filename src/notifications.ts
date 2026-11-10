@@ -628,6 +628,7 @@ function completeWebhookWire(wire: Buffer, headerBytes: number, response: Incomi
   if (transfer !== undefined && (typeof transfer !== "string" || transfer.toLowerCase() !== "chunked" || length !== undefined)) return false;
   if (length !== undefined && (typeof length !== "string" || !/^(0|[1-9][0-9]*)$/.test(length) || Number(length) !== bodyBytes)) return false;
   if (response.statusCode === 204 && (bodyBytes !== 0 || transfer !== undefined)) return false;
+  if (response.statusCode === 205 && bodyBytes !== 0) return false;
   if (!transfer) return wire.length === headerBytes + bodyBytes;
   let cursor = headerBytes;
   let decodedBytes = 0;

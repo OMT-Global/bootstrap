@@ -20,6 +20,26 @@ function clientFor(result: CommandResult) {
   return new GitHubClient({ runner: async () => result });
 }
 
+function absenceClient(
+  listResponse: (page: number) => CommandResult = () => response(200, { total_count: 0, environments: [] }),
+  getResponse = response(404, notFound)
+) {
+  const calls: Array<{ command: string; args: string[]; options: CommandOptions | undefined }> = [];
+  const runner: CommandRunner = async (command, args = [], options) => {
+    calls.push({ command, args, options });
+    const target = args.at(-1)!;
+    if (target === endpoint) return getResponse;
+    const page = /^\/repos\/acme\/example\/environments\?per_page=100&page=([1-9][0-9]*)$/.exec(target);
+    if (!page) throw new Error("unexpected fixture endpoint");
+    return listResponse(Number(page[1]));
+  };
+  return { client: new GitHubClient({ runner, cwd: "/fixture/repo" }), calls };
+}
+
+function listed(start: number, count: number) {
+  return Array.from({ length: count }, (_, offset) => ({ id: start + offset, name: `environment-${start + offset}` }));
+}
+
 async function expectUnknown(result: CommandResult) {
   await expect(clientFor(result).getReleaseEnvironment("acme", "example")).rejects.toThrow("release-publish read UNKNOWN:");
 }
@@ -47,11 +67,11 @@ describe("GitHubClient scoped release environment read", () => {
       result.stdout = result.stdout.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
       result.stderr = result.stderr.replace(/\n/g, "\r\n");
     }
-    await expect(clientFor(result).getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
+    await expect(absenceClient(undefined, result).client.getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
   });
 
   it("accepts the documented error shape without the optional status and documentation fields", async () => {
-    await expect(clientFor(response(404, { message: "Not Found" })).getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
+    await expect(absenceClient(undefined, response(404, { message: "Not Found" })).client.getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
   });
 
   it("returns a successful body containing 404 as data rather than absence", async () => {
@@ -139,6 +159,135 @@ describe("GitHubClient scoped release environment read", () => {
     await expect(client.getReleaseEnvironment(invalid, "example")).rejects.toThrow("UNKNOWN: target");
     await expect(client.getReleaseEnvironment("acme", invalid)).rejects.toThrow("UNKNOWN: target");
     expect(calls).toBe(0);
+  });
+});
+
+describe("release absence requires a complete readable environment inventory", () => {
+  it("proves an empty inventory with the same runner, cwd, headers and fixed repository", async () => {
+    const { client, calls } = absenceClient();
+    await expect(client.getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
+    expect(calls).toEqual([endpoint, "/repos/acme/example/environments?per_page=100&page=1"].map((target) => ({
+      command: "gh",
+      args: ["api", "--method", "GET", "--include", "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28", target],
+      options: { cwd: "/fixture/repo" }
+    })));
+  });
+
+  it.each([403, 404, 500])("does not infer absence from an authorization-masked GET404 and list HTTP%s", async (status) => {
+    const { client, calls } = absenceClient(() => response(status, notFound));
+    await expect(client.getReleaseEnvironment("acme", "example")).rejects.toThrow("release-publish read UNKNOWN:");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("reads every page and accepts a complete short final page", async () => {
+    const { client, calls } = absenceClient((page) => response(200, {
+      total_count: 101, environments: page === 1 ? listed(1, 100) : listed(101, 1)
+    }));
+    await expect(client.getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
+    expect(calls.map((call) => call.args.at(-1))).toEqual([endpoint, "/repos/acme/example/environments?per_page=100&page=1", "/repos/acme/example/environments?per_page=100&page=2"]);
+  });
+
+  it("requires an empty terminal page after a full final page", async () => {
+    const { client, calls } = absenceClient((page) => response(200, {
+      total_count: 100, environments: page === 1 ? listed(1, 100) : []
+    }));
+    await expect(client.getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
+    expect(calls).toHaveLength(3);
+  });
+
+  it("rejects the release name with preserved casing on the last page", async () => {
+    const { client, calls } = absenceClient((page) => response(200, {
+      total_count: 101, environments: page === 1 ? listed(1, 100) : [{ id: 101, name: "Release-Publish" }]
+    }));
+    await expect(client.getReleaseEnvironment("acme", "example")).rejects.toThrow("release-publish read UNKNOWN:");
+    expect(calls).toHaveLength(3);
+  });
+
+  const malformed: Array<[string, unknown]> = [
+    ["null", null], ["array", []], ["missing count", { environments: [] }],
+    ["string count", { total_count: "0", environments: [] }],
+    ["negative count", { total_count: -1, environments: [] }],
+    ["fractional count", { total_count: 0.5, environments: [] }],
+    ["unsafe count", { total_count: Number.MAX_SAFE_INTEGER + 1, environments: [] }],
+    ["missing environments", { total_count: 0 }],
+    ["nonarray environments", { total_count: 0, environments: {} }],
+    ["truncated empty page", { total_count: 1, environments: [] }],
+    ["truncated short page", { total_count: 2, environments: listed(1, 1) }],
+    ["excess items", { total_count: 0, environments: listed(1, 1) }],
+    ["oversized page", { total_count: 101, environments: listed(1, 101) }],
+    ["null item", { total_count: 1, environments: [null] }],
+    ["missing id", { total_count: 1, environments: [{ name: "prod" }] }],
+    ["invalid id", { total_count: 1, environments: [{ id: 0, name: "prod" }] }],
+    ["string id", { total_count: 1, environments: [{ id: "1", name: "prod" }] }],
+    ["fractional id", { total_count: 1, environments: [{ id: 1.5, name: "prod" }] }],
+    ["unsafe id", { total_count: 1, environments: [{ id: Number.MAX_SAFE_INTEGER + 1, name: "prod" }] }],
+    ["missing name", { total_count: 1, environments: [{ id: 1 }] }],
+    ["nonstring name", { total_count: 1, environments: [{ id: 1, name: 7 }] }],
+    ["empty name", { total_count: 1, environments: [{ id: 1, name: "" }] }],
+    ["oversized name", { total_count: 1, environments: [{ id: 1, name: "a".repeat(256) }] }],
+    ["duplicate ids", { total_count: 2, environments: [{ id: 1, name: "prod" }, { id: 1, name: "dev" }] }],
+    ["casefold duplicate names", { total_count: 2, environments: [{ id: 1, name: "prod" }, { id: 2, name: "PROD" }] }],
+    ["item bound exceeded", { total_count: 1001, environments: listed(1, 100) }]
+  ];
+  it.each(malformed)("rejects %s without proving absence", async (_description, body) => {
+    const { client } = absenceClient(() => response(200, body));
+    await expect(client.getReleaseEnvironment("acme", "example")).rejects.toThrow("release-publish read UNKNOWN:");
+  });
+
+  it.each(["count drift", "duplicate id", "casefold duplicate name", "truncated page"])("rejects cross-page %s", async (failure) => {
+    const { client } = absenceClient((page) => {
+      if (page === 1) return response(200, { total_count: 101, environments: listed(1, 100) });
+      return response(200, {
+        total_count: failure === "count drift" ? 100 : 101,
+        environments: failure === "duplicate id" ? [{ id: 1, name: "last" }]
+          : failure === "casefold duplicate name" ? [{ id: 101, name: "ENVIRONMENT-1" }]
+          : failure === "truncated page" ? [] : listed(101, 1)
+      });
+    });
+    await expect(client.getReleaseEnvironment("acme", "example")).rejects.toThrow("release-publish read UNKNOWN:");
+  });
+
+  it("allows at most 1000 items across ten full pages and one empty terminal page", async () => {
+    const { client, calls } = absenceClient((page) => response(200, {
+      total_count: 1000, environments: page <= 10 ? listed((page - 1) * 100 + 1, 100) : []
+    }));
+    await expect(client.getReleaseEnvironment("acme", "example")).resolves.toBeUndefined();
+    expect(calls).toHaveLength(12);
+    expect(calls.at(-1)?.args.at(-1)).toBe("/repos/acme/example/environments?per_page=100&page=11");
+  });
+
+  it("stops within the page/item bounds if the endpoint keeps returning full pages", async () => {
+    const { client, calls } = absenceClient((page) => response(200, {
+      total_count: 1000, environments: listed((page - 1) * 100 + 1, 100)
+    }));
+    await expect(client.getReleaseEnvironment("acme", "example")).rejects.toThrow("release-publish read UNKNOWN:");
+    expect(calls.length).toBeLessThanOrEqual(12);
+  });
+
+  it.each([
+    response(200, null, { stdout: '{"total_count":0,"environments":[]}' }),
+    response(200, null, { stdout: "HTTP/2.0 200 OK\nContent-Type: application/json\n\n{" }),
+    response(200, { total_count: 0, environments: [] }, { exitCode: 1 }),
+    response(200, { total_count: 0, environments: [] }, { stderr: "fixture-list-canary" })
+  ])("retains strict framing, JSON and completion checks on list responses %#", async (result) => {
+    const { client } = absenceClient(() => result);
+    const error = await client.getReleaseEnvironment("acme", "example").catch((caught: unknown) => caught);
+    expect(String(error)).toContain("UNKNOWN");
+    expect(String(error)).not.toContain("fixture-list-canary");
+  });
+
+  it("does not expose a list transport cause or use another runner", async () => {
+    let calls = 0;
+    const client = new GitHubClient({ runner: async () => {
+      calls += 1;
+      if (calls === 1) return response(404, notFound);
+      throw new Error("fixture-list-transport-canary");
+    } });
+    const error = await client.getReleaseEnvironment("acme", "example").catch((caught: unknown) => caught);
+    expect(String(error)).toContain("UNKNOWN");
+    expect(String(error)).not.toContain("fixture-list-transport-canary");
+    expect((error as Error).cause).toBeUndefined();
+    expect(calls).toBe(2);
   });
 });
 

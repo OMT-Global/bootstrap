@@ -989,7 +989,8 @@ describe("strict optional release-publish provisioning", () => {
 
 function releaseHttpClient(
   environmentResponse: (read: number) => CommandResult,
-  target = { owner: "acme", repo: "example", branch: "main", protectionUrl: classicProtection.url }
+  target = { owner: "acme", repo: "example", branch: "main", protectionUrl: classicProtection.url },
+  listResponse: (page: number) => CommandResult = () => framedResponse(200, JSON.stringify({ total_count: 0, environments: [] }))
 ) {
   const calls: ReleaseCall[] = [];
   const repoEndpoint = `/repos/${target.owner}/${target.repo}`;
@@ -1002,6 +1003,9 @@ function releaseHttpClient(
     const method = args[args.indexOf("--method") + 1]!;
     calls.push({ method, endpoint, ...(options?.input ? { payload: JSON.parse(options.input) } : {}) });
     if (endpoint === releaseEndpoint && method === "GET") return environmentResponse(++reads);
+    const listPage = endpoint.startsWith(`${repoEndpoint}/environments?per_page=100&page=`)
+      ? Number(endpoint.split("page=").at(-1)) : undefined;
+    if (listPage !== undefined && method === "GET") return listResponse(listPage);
     let body: unknown = {};
     if (endpoint === repoEndpoint) body = { ...publicRepo(), private: true, visibility: "private" };
     if (endpoint === `/users/${target.owner}`) body = { login: "acme", type: "User" };
@@ -1071,6 +1075,64 @@ describe("release absence uses captured HTTP status in the actual client", () =>
     const actions = await applyGitHub(releaseManifest(), client);
     expect(releaseWrites(calls)).toHaveLength(1);
     expect(actions.some((action) => action.id === "environment-release-publish")).toBe(true);
+    const inventoryRead = calls.findIndex((call) => call.endpoint === "/repos/acme/example/environments?per_page=100&page=1");
+    expect(inventoryRead).toBeGreaterThanOrEqual(0);
+    expect(inventoryRead).toBeLessThan(calls.findIndex((call) => call.endpoint === RELEASE_ENDPOINT && call.method === "PUT"));
+  });
+
+  for (const [name, listResponse] of [
+    ["denied list", () => framedResponse(403, '{"message":"Forbidden"}', "gh: Forbidden (HTTP 403)\n")],
+    ["masked list", () => framedResponse(404, missing, "gh: Not Found (HTTP 404)\n")],
+    ["listed existing target", () => framedResponse(200, JSON.stringify({ total_count: 1, environments: [{ id: 1, name: "Release-Publish" }] }))],
+    ["incomplete list", () => framedResponse(200, JSON.stringify({ total_count: 1, environments: [] }))]
+  ] as const) {
+    it(`never overwrites policy after an ambiguous GET404 and ${name}`, async () => {
+      const { calls, client } = releaseHttpClient((read) => read === 1
+        ? framedResponse(404, missing, "gh: Not Found (HTTP 404)\n")
+        : framedResponse(200, JSON.stringify(releaseRemote())), undefined, listResponse);
+      await expect(applyGitHub(releaseManifest(), client)).rejects.toThrow("release-publish read UNKNOWN:");
+      expect(releaseWrites(calls)).toEqual([]);
+    });
+  }
+
+  it("does not overwrite an existing mixed-case target discovered only on the last page", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, name: `environment-${index + 1}` }));
+    const { calls, client } = releaseHttpClient((read) => read === 1
+      ? framedResponse(404, missing, "gh: Not Found (HTTP 404)\n")
+      : framedResponse(200, JSON.stringify(releaseRemote())), undefined, (page) => framedResponse(200, JSON.stringify({
+        total_count: 101, environments: page === 1 ? first : [{ id: 101, name: "RELEASE-Publish" }]
+      })));
+    await expect(applyGitHub(releaseManifest(), client)).rejects.toThrow("release-publish read UNKNOWN:");
+    expect(releaseWrites(calls)).toEqual([]);
+    expect(calls.some((call) => call.endpoint.endsWith("page=2"))).toBe(true);
+  });
+
+  it.each(["Release-Publish", "RELEASE-PUBLISH"])("preserves matching existing %s without PUT", async (name) => {
+    const { calls, client } = releaseHttpClient(() => framedResponse(200, JSON.stringify({ ...releaseRemote(), name })));
+    await expect(applyGitHub(releaseManifest(), client)).resolves.toContainEqual(expect.objectContaining({ id: "environment-release-publish" }));
+    expect(releaseWrites(calls)).toEqual([]);
+    expect(calls.some((call) => call.endpoint.includes("/environments?"))).toBe(false);
+  });
+
+  it("continues to reject a conflicting mixed-case existing target", async () => {
+    const conflicting = { ...releaseRemote(), name: "Release-Publish", deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } };
+    const { calls, client } = releaseHttpClient(() => framedResponse(200, JSON.stringify(conflicting)));
+    await expect(applyGitHub(releaseManifest(), client)).rejects.toThrow("separate review");
+    expect(releaseWrites(calls)).toEqual([]);
+  });
+
+  it.each([null, 7, {}, ["release-publish"], " release-publish"])("rejects a nonmatching name without coercion %#", async (name) => {
+    const { calls, client } = releaseHttpClient(() => framedResponse(200, JSON.stringify({ ...releaseRemote(), name })));
+    await expect(applyGitHub(releaseManifest(), client)).rejects.toThrow("separate review");
+    expect(releaseWrites(calls)).toEqual([]);
+  });
+
+  it("accepts preserved name casing at creation readback while verifying every policy field", async () => {
+    const { calls, client } = releaseHttpClient((read) => read === 1
+      ? framedResponse(404, missing, "gh: Not Found (HTTP 404)\n")
+      : framedResponse(200, JSON.stringify({ ...releaseRemote(), name: "Release-Publish" })));
+    await expect(applyGitHub(releaseManifest(), client)).resolves.toContainEqual(expect.objectContaining({ id: "environment-release-publish" }));
+    expect(releaseWrites(calls)).toHaveLength(1);
   });
 
   it("stops with safe partial-state diagnostics when actual readback fails after PUT", async () => {

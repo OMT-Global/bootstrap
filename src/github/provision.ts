@@ -531,7 +531,8 @@ async function verifyReleaseBranchProtection(
 
 function releaseEnvironmentMatches(value: unknown, reviewers: ReviewerIdentity[]): boolean {
   if (
-    !isObject(value) || value.name !== "release-publish" || !Array.isArray(value.protection_rules) ||
+    !isObject(value) || typeof value.name !== "string" || value.name.toLowerCase() !== "release-publish" ||
+    !Array.isArray(value.protection_rules) ||
     !value.protection_rules.every((rule) => isObject(rule) && typeof rule.type === "string")
   ) {
     return false;

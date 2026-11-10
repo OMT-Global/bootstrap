@@ -50,9 +50,7 @@ with zipfile.ZipFile(buffer, "w", allowZip64=True) as archive:
         with archive.open(info, "w", force_zip64=bool(spec.get("zip64"))) as member:
             member.write(payload)
 
-data = bytearray(buffer.getvalue())
-mutation = spec.get("mutation")
-if mutation:
+def directory_records(data):
     eocd = data.rfind(b"PK\x05\x06")
     central_start = struct.unpack_from("<I", data, eocd + 16)[0]
     cursor = central_start
@@ -62,6 +60,58 @@ if mutation:
         local = struct.unpack_from("<I", data, cursor + 42)[0]
         records.append((cursor, local, name_size))
         cursor += 46 + name_size + extra_size + comment_size
+    return eocd, central_start, records
+
+data = bytearray(buffer.getvalue())
+variant = spec.get("descriptorVariant")
+if variant:
+    assert spec.get("descriptor"), "descriptor variants need a streamed archive"
+    eocd, central_start, records = directory_records(data)
+    central, local, name_size = records[-1]
+    local_name_size, local_extra_size = struct.unpack_from("<HH", data, local + 26)
+    crc, compressed_size, file_size = struct.unpack_from("<III", data, central + 16)
+    descriptor_start = local + 30 + local_name_size + local_extra_size + compressed_size
+    assert data[descriptor_start:descriptor_start + 4] == b"PK\x07\x08"
+    assert descriptor_start + (24 if spec.get("zip64") else 16) == central_start
+    wide = bool(spec.get("zip64")) or variant == "central-sizes"
+    descriptor = struct.pack("<IQQ" if wide else "<III", crc, compressed_size, file_size)
+    if spec.get("descriptorMutation") == "mismatch":
+        descriptor = struct.pack("<IQQ" if wide else "<III", crc, compressed_size + 1, file_size)
+    if not spec.get("unsignedDescriptor"):
+        descriptor = b"PK\x07\x08" + descriptor
+    if spec.get("descriptorMutation") == "truncated":
+        descriptor = descriptor[:-1]
+    delta = len(descriptor) - (central_start - descriptor_start)
+    data[descriptor_start:central_start] = descriptor
+    central_start += delta
+    central += delta
+    eocd += delta
+    struct.pack_into("<I", data, eocd + 16, central_start)
+    if variant in ("offset-only", "central-sizes"):
+        extra_size = struct.unpack_from("<H", data, central + 30)[0]
+        if variant == "offset-only":
+            extra = struct.pack("<HHQ", 1, 8, local)
+            struct.pack_into("<I", data, central + 42, 0xffffffff)
+        else:
+            extra = struct.pack("<HHQQ", 1, 16, file_size, compressed_size)
+            struct.pack_into("<II", data, central + 20, 0xffffffff, 0xffffffff)
+            data[local + 4] = 45
+        data[central + 4] = data[central + 6] = 45
+        struct.pack_into("<H", data, central + 30, extra_size + len(extra))
+        extra_end = central + 46 + name_size + extra_size
+        data[extra_end:extra_end] = extra
+        eocd += len(extra)
+        directory_size = struct.unpack_from("<I", data, eocd + 12)[0]
+        struct.pack_into("<I", data, eocd + 12, directory_size + len(extra))
+    if not spec.get("descriptorMutation"):
+        with zipfile.ZipFile(io.BytesIO(data)) as readable:
+            assert readable.testzip() is None
+            for entry in spec["entries"]:
+                assert readable.read(entry["name"]) == entry.get("data", "fixture payload").encode("utf-8")
+        print(json.dumps({"stdlibReadSucceeded": True, "archiveBytes": len(data), "descriptorWidth": 8 if wide else 4, "signed": not spec.get("unsignedDescriptor", False), "centralSizeSentinels": variant == "central-sizes", "centralOffsetSentinel": variant == "offset-only", "localSizeSentinels": bool(spec.get("zip64"))}))
+mutation = spec.get("mutation")
+if mutation:
+    eocd, central_start, records = directory_records(data)
     central, local, name_size = records[-1]
     local_name_size, local_extra_size = struct.unpack_from("<HH", data, local + 26)
     payload_start = local + 30 + local_name_size + local_extra_size
@@ -136,6 +186,9 @@ type FixtureOptions = {
   mutation?: string;
   descriptor?: boolean;
   zip64?: boolean;
+  descriptorVariant?: "ordinary" | "offset-only" | "central-sizes";
+  unsignedDescriptor?: boolean;
+  descriptorMutation?: "mismatch" | "truncated";
   evidence?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   attempt?: Record<string, unknown>;
@@ -172,12 +225,13 @@ async function runVerifier(options: FixtureOptions = {}) {
       ...(options.entries || [])
     ];
     const fixture = spawnSync(python, ["-I", "-S", "-c", zipFixtureProgram, archive], {
-      input: JSON.stringify({ entries, mutation: options.mutation, descriptor: options.descriptor, zip64: options.zip64 }),
+      input: JSON.stringify({ entries, mutation: options.mutation, descriptor: options.descriptor, zip64: options.zip64, descriptorVariant: options.descriptorVariant, unsignedDescriptor: options.unsignedDescriptor, descriptorMutation: options.descriptorMutation }),
       encoding: "utf8",
       timeout: 10_000
     });
     if (fixture.error) throw fixture.error;
     if (fixture.status !== 0) throw new Error(`Cannot prepare ZIP fixture: ${fixture.stderr}`);
+    const formatProof = fixture.stdout.trim() ? JSON.parse(fixture.stdout) : undefined;
     const approvedBytes = await readFile(archive);
     const digest = createHash("sha256").update(approvedBytes).digest("hex");
     const downloaded = path.join(directory, "downloaded.zip");
@@ -275,7 +329,7 @@ esac
       expect(result.stdout).toBe("");
       expect(await readdir(runnerTemp)).toEqual([]);
     }
-    return { status: result.status, stderr: result.stderr, calls, files, modes, retainedArchive, approvedBytes };
+    return { status: result.status, stderr: result.stderr, calls, files, modes, retainedArchive, approvedBytes, formatProof };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -461,5 +515,35 @@ describe("immutable preflight verifier", () => {
     const result = await runVerifier(options);
     expectRejected(result);
     expect(result.calls).toHaveLength(2);
+  });
+});
+
+
+const descriptorVariants: Array<[string, FixtureOptions, number]> = [
+  ["ordinary signed 32-bit", { descriptorVariant: "ordinary" }, 4],
+  ["ordinary unsigned 32-bit", { descriptorVariant: "ordinary", unsignedDescriptor: true }, 4],
+  ["offset-only central ZIP64 with signed 32-bit sizes", { descriptorVariant: "offset-only" }, 4],
+  ["offset-only central ZIP64 with unsigned 32-bit sizes", { descriptorVariant: "offset-only", unsignedDescriptor: true }, 4],
+  ["forced local ZIP64 with signed 64-bit sizes", { descriptorVariant: "ordinary", zip64: true }, 8],
+  ["forced local ZIP64 with unsigned 64-bit sizes", { descriptorVariant: "ordinary", zip64: true, unsignedDescriptor: true }, 8],
+  ["central ZIP64 sizes with signed 64-bit sizes", { descriptorVariant: "central-sizes" }, 8],
+  ["central ZIP64 sizes with unsigned 64-bit sizes", { descriptorVariant: "central-sizes", unsignedDescriptor: true }, 8]
+];
+
+describe("streamed ZIP descriptor widths", () => {
+  it.each(descriptorVariants)("accepts %s without inferring width from an offset", async (_label, options, width) => {
+    const data = "descriptor payload".repeat(8);
+    const result = await runVerifier({ ...options, descriptor: true, entries: [{ name: "streamed-probe.txt", data, deflate: true }] });
+    expect(result.formatProof).toEqual({ stdlibReadSucceeded: true, archiveBytes: result.approvedBytes.length, descriptorWidth: width, signed: !options.unsignedDescriptor, centralSizeSentinels: options.descriptorVariant === "central-sizes", centralOffsetSentinel: options.descriptorVariant === "offset-only", localSizeSentinels: !!options.zip64 });
+    expect(result.approvedBytes.length).toBeLessThan(8192);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.files["streamed-probe.txt"]).toBe(data);
+    expect(result.retainedArchive).toEqual(result.approvedBytes);
+  });
+
+  it.each(descriptorVariants)("rejects a mismatched or truncated %s descriptor before exposing a tree", async (_label, options) => {
+    const result = await runVerifier({ ...options, descriptor: true, descriptorMutation: options.unsignedDescriptor ? "truncated" : "mismatch", entries: [{ name: "streamed-probe.txt", data: "descriptor payload", deflate: true }] });
+    expectRejected(result);
+    expect(result.stderr).toContain("ZIP data descriptor mismatch or truncation.");
   });
 });

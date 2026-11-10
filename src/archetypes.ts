@@ -1993,10 +1993,16 @@ try:
         with zipfile.ZipFile(raw) as archive:
             require(isinstance(archive.start_dir, int), "Required ZIP directory boundary is unavailable.")
             boundaries = sorted({item.header_offset for item in archive.infolist()} | {archive.start_dir})
+            central_offset = archive.start_dir
             nodes = {}
             explicit = set()
             members = []
             for item in archive.infolist():
+                raw.seek(central_offset)
+                central_header = raw.read(46)
+                require(len(central_header) == 46 and central_header[:4] == b"PK\x01\x02", "Invalid ZIP central header.")
+                central_sizes = struct.unpack_from("<II", central_header, 20)
+                central_offset += 46 + sum(struct.unpack_from("<HHH", central_header, 28))
                 name = item.orig_filename
                 kind = stat.S_IFMT(item.external_attr >> 16)
                 require(kind in (0, stat.S_IFREG, stat.S_IFDIR), "Special ZIP member rejected.")
@@ -2029,7 +2035,7 @@ try:
                 require(raw.read(local[-2]) == encoded, "Conflicting raw local ZIP name.")
                 local_extra = raw.read(local[-1])
                 require(len(local_extra) == local[-1], "Truncated local ZIP extra.")
-                central_fields = extras(item.extra, name, encoded)
+                extras(item.extra, name, encoded)
                 local_fields = extras(local_extra, name, encoded)
                 start = item.header_offset + 30 + local[-2] + local[-1]
                 boundary = next(offset for offset in boundaries if offset > item.header_offset)
@@ -2046,7 +2052,9 @@ try:
                     require(local[6] in (0, item.CRC) and local_sizes[0] in (0, item.file_size) and local_sizes[1] in (0, item.compress_size), "Conflicting streamed ZIP local sizes/CRC.")
                     raw.seek(start + item.compress_size)
                     prefix = raw.read(4)
-                    descriptor_format = "<IQQ" if 1 in local_fields or 1 in central_fields else "<III"
+                    # ZIP64 offsets alone do not widen per-member descriptor sizes.
+                    zip64_sizes = 0xffffffff in (local[7], local[8], *central_sizes) or max(item.file_size, item.compress_size) > 0xffffffff
+                    descriptor_format = "<IQQ" if zip64_sizes else "<III"
                     descriptor_size = struct.calcsize(descriptor_format)
                     matched = False
                     for signature_size in ([0, 4] if prefix == b"PK\x07\x08" else [0]):

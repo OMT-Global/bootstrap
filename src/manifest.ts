@@ -96,6 +96,25 @@ const environmentSchema = z.object({
   branches: z.array(z.string()).optional()
 });
 
+const releaseEnvironmentSchema = z.object({
+  reviewers: z.array(z.string().refine((value) => value.trim().length > 0)).min(1).max(6),
+  requireApproval: z.boolean().refine((value) => value),
+  preventSelfReview: z.boolean().refine((value) => value),
+  branches: z.array(z.string().min(1)).length(1)
+}).strict();
+
+export function releaseEnvironmentPolicyError(environment: unknown, defaultBranch: string): string | undefined {
+  if (environment === undefined) return undefined;
+  const parsed = releaseEnvironmentSchema.safeParse(environment);
+  if (!parsed.success) {
+    return "release-publish requires 1–6 explicit nonblank reviewers, approval, self-review prevention and one branch, without unsupported fields.";
+  }
+  if (parsed.data.branches[0] !== defaultBranch) {
+    return "release-publish branches must contain exactly the configured default branch.";
+  }
+  return undefined;
+}
+
 const codeownerSchema = z.object({
   pattern: z.string().min(1),
   owners: z.array(z.string().min(1)).min(1)
@@ -542,7 +561,8 @@ const manifestSchema = z.object({
     .object({
       dev: environmentSchema.optional(),
       stage: environmentSchema.optional(),
-      prod: environmentSchema.optional()
+      prod: environmentSchema.optional(),
+      "release-publish": releaseEnvironmentSchema.optional()
     })
     .optional()
 }).passthrough();
@@ -891,6 +911,8 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
   const version = parsed.version ?? 1;
   const reviewers = (parsed.github?.reviewers ?? []).map((reviewer) => reviewer.replace(/^@/, ""));
   const defaultBranch = parsed.project.defaultBranch ?? "main";
+  const releaseEnvironmentError = releaseEnvironmentPolicyError(parsed.environments?.["release-publish"], defaultBranch);
+  if (releaseEnvironmentError) throw new Error(releaseEnvironmentError);
   const moduleName = parsed.archetype.moduleName ?? moduleNameForProject(parsed.project.name);
   const github = parsed.github ?? {};
   const organization = normalizeOrganization(github.organization);
@@ -1096,7 +1118,14 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
         reviewers,
         defaultBranch,
         "prod"
-      )
+      ),
+      ...(environments["release-publish"] ? {
+        "release-publish": {
+          ...environments["release-publish"],
+          reviewers: [...environments["release-publish"].reviewers],
+          branches: [...environments["release-publish"].branches]
+        }
+      } : {})
     },
   };
 }

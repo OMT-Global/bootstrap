@@ -2258,7 +2258,7 @@ try:
         notes = resolve(notes_reference)
         checksum = resolve("SHA256SUMS")
         assets = []
-        flat_names = set()
+        flat_names = {"SHA256SUMS"}
         with member(checksum["key"]) as checksum_file:
             for line in io.TextIOWrapper(checksum_file, encoding="utf-8"):
                 fields = line.rstrip("\n").split(maxsplit=1)
@@ -2275,6 +2275,8 @@ try:
                 record["name"] = name
                 assets.append(record)
         require(assets, "No approved release assets were selected.")
+        checksum["name"] = "SHA256SUMS"
+        assets.append(checksum)
         for record in assets:
             record["slot"] = reserve(upload_argument(record["name"]))
         notes["slot"] = reserve(plan_path + ".notes")

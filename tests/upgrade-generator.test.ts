@@ -10,6 +10,7 @@ import type { CommandOptions } from "../src/upgrade-host.js";
 const scaffold = vi.hoisted(() => ({
   home: "", calls: [] as Array<{ args: readonly string[]; cwd: string; env: NodeJS.ProcessEnv }>,
   reads: [] as string[], directories: [] as string[], cleanupFails: false,
+  ignoreQueries: [] as Array<{ input: string[]; output: string[] }>,
   sourceLimit: undefined as number | undefined, fileLimit: undefined as number | undefined,
   afterCommand: undefined as undefined | ((args: readonly string[]) => Promise<void>)
 }));
@@ -48,6 +49,16 @@ vi.mock("../src/upgrade-host.js", async (original) => {
     boundedGitCommand: async (executable: string, args: readonly string[], options: CommandOptions) => {
       scaffold.calls.push({ args, cwd: options.cwd, env: options.env });
       const result = await actual.boundedGitCommand(executable, args, options);
+      if (args.includes("check-ignore")) {
+        const paths = (bytes: Uint8Array) => {
+          if (bytes.byteLength > 4096) throw new Error("Fixture ignore query exceeds its byte bound.");
+          if (!bytes.byteLength) return [];
+          const names = Buffer.from(bytes).toString("utf8").split("\0");
+          if (names.pop() !== "" || names.length > 16) throw new Error("Fixture ignore query exceeds its path bound.");
+          return names;
+        };
+        scaffold.ignoreQueries.push({ input: paths(options.input ?? Buffer.alloc(0)), output: paths(result) });
+      }
       await scaffold.afterCommand?.(args);
       return result;
     }
@@ -75,7 +86,7 @@ async function fixtureDirectory(): Promise<string> {
   }
   throw new Error("Generator fixture requires private writable ancestry.");
 }
-async function fixture(linked = false) {
+async function fixture(linked = false, nested = false) {
   const directory = await fixtureDirectory();
   const home = path.join(directory, "home");
   const canonical = path.join(directory, "generator");
@@ -94,10 +105,12 @@ async function fixture(linked = false) {
     { path: "README.txt", bytes: Buffer.from("pinned generator source\n") },
     { path: "package-lock.json", bytes: Buffer.from('{"lockfileVersion":3}\n') },
     { path: ".gitignore", bytes: Buffer.from("ignored/\ndist/\nnode_modules/\n") },
-    { path: ".gitattributes", bytes: Buffer.from("*.txt filter=canary\n") }
+    { path: ".gitattributes", bytes: Buffer.from("*.txt filter=canary\n") },
+    ...(nested ? [{ path: "src/entry.txt", bytes: Buffer.from("nested pinned source\n") }] : [])
   ];
   const index: Buffer[] = [];
   for (const file of files) {
+    await mkdir(path.dirname(path.join(canonical, file.path)), { recursive: true });
     await writeFile(path.join(canonical, file.path), file.bytes);
     const oid = git(canonical, env, ["hash-object", "--no-filters", "-w", "--stdin"], file.bytes).toString().trim();
     index.push(Buffer.from(`100644 ${oid}\t${file.path}\0`));
@@ -111,8 +124,9 @@ async function fixture(linked = false) {
     root = path.join(directory, "linked");
     git(canonical, env, ["worktree", "add", "--quiet", "--detach", root, base]);
   }
-  await mkdir(path.join(root, "ignored"));
-  await writeFile(path.join(root, "ignored", "operator-data"), "ignored fabricated bytes\n");
+  const ignored = path.join(root, ...(nested ? ["src", "ignored"] : ["ignored"]));
+  await mkdir(ignored);
+  await writeFile(path.join(ignored, "operator-data"), "ignored fabricated bytes\n");
   const config = (key: string, value: string) => git(canonical, env, ["config", "--local", key, value]);
   return { directory, home, canonical, root, env, base, tree, config, files };
 }
@@ -122,7 +136,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   for (const directory of scaffold.directories.splice(0)) await rm(directory, { recursive: true, force: true });
-  scaffold.calls.length = 0; scaffold.reads.length = 0;
+  scaffold.calls.length = 0; scaffold.reads.length = 0; scaffold.ignoreQueries.length = 0;
 });
 
 describe("agent-free public generator source capture (real Git; simulated Linux eligibility)", () => {
@@ -192,6 +206,50 @@ describe("agent-free public generator source capture (real Git; simulated Linux 
       else controller.abort();
     };
     await expect(capturePublicGenerator(data.root, data.base, { signal: controller.signal })).rejects.toThrow(blocked);
+  });
+
+  it.each([
+    { label: "root nonignored", nested: false, ignored: false },
+    { label: "nested nonignored", nested: true, ignored: false },
+    { label: "root ignored child", nested: false, ignored: true },
+    { label: "nested ignored child", nested: true, ignored: true }
+  ])("checks late inventory $label after the last real check-ignore child", async ({ nested, ignored }) => {
+    const data = await fixture(false, nested);
+    const ignoredDirectory = nested ? "src/ignored/" : "ignored/";
+    const oldQuery = ignoredDirectory + "operator-data";
+    const destination = path.join(data.root, ...(nested ? ["src"] : []), ...(ignored ? ["ignored"] : []), "late-added");
+    const bytes = Buffer.from("late fabricated generator bytes\n");
+    let mutations = 0;
+    let mutationQuery: { input: string[]; output: string[] } | undefined;
+    scaffold.afterCommand = async (args) => {
+      if (!args.includes("check-ignore")) return;
+      const query = scaffold.ignoreQueries.at(-1)!;
+      if (!query.input.includes(ignoredDirectory) && !query.input.includes(oldQuery)) return;
+      expect(mutations).toBe(0);
+      const selected = query.input.includes(ignoredDirectory) ? ignoredDirectory : oldQuery;
+      expect(query.output).toEqual([selected]);
+      mutationQuery = query;
+      await writeFile(destination, bytes);
+      mutations++;
+    };
+    let result: Awaited<ReturnType<typeof capturePublicGenerator>> | undefined;
+    let failure: unknown;
+    try { result = await capturePublicGenerator(data.root, data.base); } catch (error) { failure = error; }
+    expect(mutations).toBe(1);
+    expect(mutationQuery).toBeDefined();
+    expect(scaffold.ignoreQueries.at(-1)).toBe(mutationQuery);
+    expect(await readFile(destination)).toEqual(bytes);
+    expect(scaffold.reads.some((file) => file.includes("/ignored/") || file === destination)).toBe(false);
+    if (ignored) {
+      expect(failure).toBeUndefined();
+      expect(result).toEqual({ sourceCommit: data.base, tree: data.tree, sourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(copySnapshotFiles(generatorSnapshot(result!))).toEqual(data.files.map((file) => ({
+        ...file, mode: "100644"
+      })).sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))));
+    } else {
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(blocked);
+    }
   });
 
   it("rejects a loose ref appearing after packed-ref capture", async () => {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstatSync, opendirSync, type BigIntStats } from "node:fs";
 import { lstat, mkdir, mkdtemp, opendir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -32,6 +33,10 @@ async function optional(file: string, limit: number): Promise<Buffer | undefined
   try { return await readRegular(file, limit, true); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw hostFailure(); }
 }
+const sameDirectory = (before: BigIntStats, after: BigIntStats) =>
+  before.isDirectory() && after.isDirectory() && before.dev === after.dev && before.ino === after.ino &&
+  before.mode === after.mode && before.uid === after.uid && before.gid === after.gid && before.nlink === after.nlink &&
+  before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs;
 async function layout(root: string): Promise<{ gitdir: string; common: string }> {
   demand(path.isAbsolute(root) && await realpath(root) === path.resolve(root) && (await lstat(root)).isDirectory());
   const dot = path.join(root, ".git");
@@ -64,11 +69,15 @@ async function layout(root: string): Promise<{ gitdir: string; common: string }>
 export async function capturePublicGenerator(
   generatorRoot: string, expectedCommit: string, options: { signal?: AbortSignal } = {}
 ): Promise<PublicGeneratorCapture> {
+  const started = performance.now();
   const signal = AbortSignal.any([
     AbortSignal.timeout(ISOLATION_LIMITS.phaseMs), ...(options.signal ? [options.signal] : [])
   ]);
   let directory: string | undefined;
   let snapshot: VerifiedGitSnapshot | undefined;
+  let walked = 0;
+  const inventory: Array<{ prefix: string; location: string; before: BigIntStats; names: Set<string> }> = [];
+  const phase = () => { signal.throwIfAborted(); demand(performance.now() - started <= ISOLATION_LIMITS.phaseMs); };
   try {
     signal.throwIfAborted();
     demand(/^[a-f0-9]{40}$/.test(expectedCommit) &&
@@ -208,10 +217,15 @@ export async function capturePublicGenerator(
     // The aggregate source bound was checked before every read and before the snapshot's owned copy.
     snapshot = verifyGitSnapshot({ baseCommit: expectedCommit, commitBytes, files });
     const tracked = new Set(files.map((file) => file.path));
-    let walked = 0;
     const walk = async (prefix: string): Promise<void> => {
       const names: string[] = [];
-      const entries = await opendir(path.join(generatorRoot, prefix), { encoding: "buffer" as BufferEncoding });
+      const directories = new Set<string>();
+      const location = path.join(generatorRoot, prefix);
+      const before = await lstat(location, { bigint: true });
+      demand(before.isDirectory() && inventory.length < ISOLATION_LIMITS.entries);
+      const witness = { prefix, location, before, names: new Set<string>() };
+      inventory.push(witness);
+      const entries = await opendir(location, { encoding: "buffer" as BufferEncoding });
       for await (const entry of entries) {
         signal.throwIfAborted();
         const raw: unknown = entry.name;
@@ -220,14 +234,16 @@ export async function capturePublicGenerator(
         demand(++walked <= ISOLATION_LIMITS.entries);
         const name = decodeGitPath(raw);
         demand(!name.includes("/"));
-        names.push(decodeGitPath(Buffer.from(prefix ? prefix + "/" + name : name)));
+        const full = decodeGitPath(Buffer.from(prefix ? prefix + "/" + name : name));
+        names.push(full); witness.names.add(name);
+        if (entry.isDirectory()) directories.add(full);
       }
       const unknown = names.filter((name) => !tracked.has(name));
       const ignoredOutput = unknown.length ? await run(["check-ignore", "--no-index", "-z", "--stdin"],
-        Buffer.from(unknown.join("\0") + "\0"), {}, [0, 1]) : Buffer.alloc(0);
+        Buffer.from(unknown.map((name) => name + (directories.has(name) ? "/" : "")).join("\0") + "\0"), {}, [0, 1]) : Buffer.alloc(0);
       demand(!ignoredOutput.length || ignoredOutput.at(-1) === 0);
       const ignored = new Set(ignoredOutput.length ? ignoredOutput.subarray(0, -1).toString("binary")
-        .split("\0").map((name) => decodeGitPath(Buffer.from(name, "binary"))) : []);
+        .split("\0").map((name) => decodeGitPath(Buffer.from(name.endsWith("/") ? name.slice(0, -1) : name, "binary"))) : []);
       for (const name of unknown) {
         if (ignored.has(name)) continue;
         demand((await lstat(path.join(generatorRoot, name))).isDirectory());
@@ -249,7 +265,29 @@ export async function capturePublicGenerator(
     if (directory) try { await rm(directory, { recursive: true, force: true }); }
     catch { throw hostFailure(); }
   }
-  if (signal.aborted) throw hostFailure();
+  try {
+    let remaining = walked;
+    demand(remaining <= ISOLATION_LIMITS.entries);
+    for (const witness of inventory) {
+      phase();
+      demand(sameDirectory(witness.before, lstatSync(witness.location, { bigint: true })));
+      const entries = opendirSync(witness.location, { encoding: "buffer" as BufferEncoding });
+      try {
+        for (let entry = entries.readSync(); entry; entry = entries.readSync()) {
+          phase();
+          const raw: unknown = entry.name;
+          demand(Buffer.isBuffer(raw));
+          if (!witness.prefix && raw.equals(Buffer.from(".git"))) continue;
+          demand(remaining-- > 0);
+          const name = decodeGitPath(raw);
+          demand(!name.includes("/") && witness.names.delete(name));
+        }
+      } finally { entries.closeSync(); }
+      demand(witness.names.size === 0 && sameDirectory(witness.before, lstatSync(witness.location, { bigint: true })));
+    }
+    demand(remaining === 0);
+    phase();
+  } catch { throw hostFailure(); }
   demand(snapshot);
   const capture = Object.freeze({
     sourceCommit: snapshot.baseCommit, tree: snapshot.tree, sourceSha256: snapshot.sourceSha256

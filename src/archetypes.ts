@@ -2266,9 +2266,9 @@ try:
                     continue
                 require(len(fields) == 2, "Malformed SHA256SUMS reference.")
                 record = resolve(fields[1], fields[0])
-                if record["key"].endswith(("release-evidence.json", "validation-evidence.json")):
-                    continue
                 name = record["key"].rsplit("/", 1)[-1]
+                if name in ("release-evidence.json", "validation-evidence.json"):
+                    continue
                 upload_argument(name)
                 require(name not in flat_names, "Duplicate flat release asset name.")
                 flat_names.add(name)

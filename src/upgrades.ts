@@ -17,24 +17,26 @@ export interface FleetUpgradePlanEntry extends FleetUpgradeCandidate {
   reason: string;
 }
 
-type Semver = { major: number; minor: number; patch: number };
+type Semver = { major: string; minor: string; patch: string };
 
 function parseVersion(value: string): Semver | undefined {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value);
-  return match
-    ? { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) }
-    : undefined;
+  const match = /^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(value);
+  if (!match || match[0] !== value) return undefined;
+  return { major: match[1]!, minor: match[2]!, patch: match[3]! };
 }
 
 export function classifyPolicyUpgrade(currentPolicy: string, targetPolicy: string): UpgradeRisk {
   const current = parseVersion(currentPolicy);
   const target = parseVersion(targetPolicy);
-  if (!current || !target || target.major < current.major || (target.major === current.major && target.minor < current.minor) || (target.major === current.major && target.minor === current.minor && target.patch < current.patch)) {
-    return "invalid";
+  if (!current || !target) return "invalid";
+  for (const risk of ["major", "minor", "patch"] as const) {
+    const from = current[risk];
+    const to = target[risk];
+    if (from === to) continue;
+    // Canonical decimal components compare exactly without Number rounding.
+    return to.length > from.length || (to.length === from.length && to > from) ? risk : "invalid";
   }
-  if (target.major !== current.major) return "major";
-  if (target.minor !== current.minor) return "minor";
-  return "patch";
+  return "invalid";
 }
 
 export function planFleetPolicyUpgrades(candidates: FleetUpgradeCandidate[]): FleetUpgradePlanEntry[] {

@@ -1,6 +1,8 @@
 # ADR-0048: Native notification ownership
 
-- Status: accepted bounded source contract; protected-default implementation stage1 only
+Status: Accepted
+
+Scope: accepted bounded source contract; protected-default implementation stage1 only
 - Governing issue: #62
 - Source anchor: `2ee77123ca5591ab1638cd63bdbad46f32c081cd`
 

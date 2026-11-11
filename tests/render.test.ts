@@ -316,7 +316,7 @@ describe("renderManagedFiles", () => {
     expect(workflow?.contents).toContain("permissions:\n  contents: read");
     expect(workflow?.contents).toContain("if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW_ENABLED == 'true'\n    runs-on: ubuntu-latest");
     expect(workflow?.contents).toContain("dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0");
-    expect(workflow?.contents).toContain("codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2");
+    expect(workflow?.contents).toContain("codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3");
     expect(workflow?.contents).toContain("language: javascript-typescript");
     expect(workflow?.contents).toContain("build-mode: none");
     expect(workflow?.contents).toContain("runner: ubuntu-latest");

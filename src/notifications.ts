@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
+import type { ClientRequest, IncomingMessage } from "node:http";
+import type { Socket } from "node:net";
+import type { TLSSocket } from "node:tls";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 
 import { z } from "zod";
@@ -474,6 +477,7 @@ export function planMaterialAction(manifest: BootstrapManifest, input: unknown):
 }
 
 const WEBHOOK_ALLOWED_HOSTS_ENV = "BOOTSTRAP_NOTIFICATION_WEBHOOK_ALLOWED_HOSTS";
+const WEBHOOK_LIMITS = Object.freeze({ request: 65_536, headers: 32_768, body: 1_048_576, wire: 1_081_344, addresses: 64 });
 const reservedWebhookIpv4Addresses = new BlockList();
 const reservedWebhookIpv6Addresses = new BlockList();
 const publicWebhookIpv6Addresses = new BlockList();
@@ -544,10 +548,10 @@ const defaultWebhookResolver: WebhookResolver = async (hostname) => {
   const family = isIP(hostname);
   if (family === 4 || family === 6) return [{ address: hostname, family }];
   const addresses = await lookup(hostname, { all: true, verbatim: true });
-  return addresses.map(({ address, family: resolvedFamily }) => ({
-    address,
-    family: resolvedFamily === 6 ? 6 : 4
-  }));
+  return addresses.map(({ address, family: resolvedFamily }) => {
+    if (resolvedFamily !== 4 && resolvedFamily !== 6) throw new Error("Invalid webhook address family.");
+    return { address, family: resolvedFamily };
+  });
 };
 
 async function validateWebhookDestination(
@@ -566,11 +570,17 @@ async function validateWebhookDestination(
     throw new Error(`Webhook hostname is not approved by ${WEBHOOK_ALLOWED_HOSTS_ENV}.`);
   }
 
-  const addresses = await withDeadline(resolver(hostname), deadline, "Webhook hostname resolution timed out.");
-  if (addresses.length === 0) throw new Error("Webhook hostname did not resolve.");
-  const validated: ResolvedWebhookAddress[] = addresses.map(({ address }) => {
+  // OS lookup cannot be cancelled: retain it through settlement, then deny late sends.
+  // Explicit legacy resolver injection retains its existing bounded-wait behavior.
+  const operation = resolver(hostname);
+  const addresses = resolver === defaultWebhookResolver
+    ? await operation
+    : await withDeadline(operation, deadline, "Webhook hostname resolution timed out.");
+  if (performance.now() >= deadline) throw new Error("Webhook hostname resolution timed out.");
+  if (addresses.length === 0 || addresses.length > WEBHOOK_LIMITS.addresses) throw new Error("Invalid webhook address count.");
+  const validated: ResolvedWebhookAddress[] = addresses.map(({ address, family: declaredFamily }) => {
     const family = isIP(address);
-    if ((family !== 4 && family !== 6) || !isPublicWebhookAddress(address)) {
+    if ((family !== 4 && family !== 6) || family !== declaredFamily || !isPublicWebhookAddress(address)) {
       throw new Error("Webhook hostname resolved to a non-public address.");
     }
     return { address, family: family as 4 | 6 };
@@ -579,7 +589,7 @@ async function validateWebhookDestination(
 }
 
 async function withDeadline<T>(operation: Promise<T>, deadline: number, message: string): Promise<T> {
-  const remainingMilliseconds = deadline - Date.now();
+  const remainingMilliseconds = deadline - performance.now();
   if (remainingMilliseconds <= 0) throw new Error(message);
 
   let timer: NodeJS.Timeout | undefined;
@@ -605,38 +615,188 @@ function pinnedLookup(address: ResolvedWebhookAddress): LookupFunction {
   }) as LookupFunction;
 }
 
-function sendWebhookToAddress(
-  url: URL,
-  body: string,
-  address: ResolvedWebhookAddress,
-  timeoutMilliseconds: number
-): Promise<WebhookResult> {
+// Only an owned, closed, zero-HTTP pre-send failure permits another address.
+class WebhookAttemptError extends Error {
+  constructor(readonly mayRetry: boolean) {
+    super("Webhook delivery failed.");
+  }
+}
+
+function completeWebhookWire(wire: Buffer, headerBytes: number, response: IncomingMessage, bodyBytes: number): boolean {
+  const length = response.headers["content-length"];
+  const transfer = response.headers["transfer-encoding"];
+  if (transfer !== undefined && (typeof transfer !== "string" || transfer.toLowerCase() !== "chunked" || length !== undefined)) return false;
+  if (length !== undefined && (typeof length !== "string" || !/^(0|[1-9][0-9]*)$/.test(length) || Number(length) !== bodyBytes)) return false;
+  if (response.statusCode === 204 && (bodyBytes !== 0 || transfer !== undefined)) return false;
+  if (response.statusCode === 205 && bodyBytes !== 0) return false;
+  if (!transfer) return wire.length === headerBytes + bodyBytes;
+  let cursor = headerBytes;
+  let decodedBytes = 0;
+  while (cursor < wire.length) {
+    const end = wire.indexOf("\r\n", cursor);
+    if (end < 0 || end - cursor > 16) return false;
+    const line = wire.toString("latin1", cursor, end);
+    if (!/^[0-9a-fA-F]+$/.test(line)) return false;
+    const size = Number.parseInt(line, 16);
+    cursor = end + 2;
+    if (!Number.isSafeInteger(size) || size > WEBHOOK_LIMITS.body - decodedBytes) return false;
+    if (size === 0) return cursor + 2 === wire.length && wire.toString("latin1", cursor) === "\r\n" && decodedBytes === bodyBytes;
+    if (cursor + size + 2 > wire.length || wire.toString("latin1", cursor + size, cursor + size + 2) !== "\r\n") return false;
+    decodedBytes += size;
+    cursor += size + 2;
+  }
+  return false;
+}
+
+function sendWebhookToAddress(url: URL, body: string, address: ResolvedWebhookAddress, deadline: number): Promise<WebhookResult> {
   return new Promise((resolve, reject) => {
-    const request = httpsRequest(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body)
-        },
-        agent: false,
-        lookup: pinnedLookup(address),
-        signal: AbortSignal.timeout(timeoutMilliseconds)
-      },
-      (response) => {
-        response.once("error", reject);
-        response.resume();
-        response.once("end", () =>
-          resolve({
-            ok: response.statusCode !== undefined && response.statusCode >= 200 && response.statusCode < 300,
-            status: response.statusCode ?? 0
-          })
-        );
+    let request: ClientRequest | undefined;
+    let response: IncomingMessage | undefined;
+    let requestClosed = false;
+    let failed = false;
+    let ended = false;
+    let possibleSend = false;
+    let socketSeen = false;
+    let headerBytes = 0;
+    let wireBytes = 0;
+    let bodyBytes = 0;
+    const wire = Buffer.alloc(WEBHOOK_LIMITS.wire);
+    const sockets = new Set<Socket>();
+    const seenSockets = new Set<Socket>();
+    const messages = new Set<IncomingMessage>();
+    const seenMessages = new Set<IncomingMessage>();
+    const finish = (): void => {
+      if (!request || !requestClosed || sockets.size || messages.size) return;
+      clearTimeout(timer);
+      const complete = !failed && ended && response?.complete && headerBytes > 0 && performance.now() < deadline &&
+        response.rawTrailers.length === 0 && completeWebhookWire(wire.subarray(0, wireBytes), headerBytes, response, bodyBytes);
+      if (complete && response) {
+        resolve({ ok: response.statusCode! >= 200 && response.statusCode! < 300, status: response.statusCode! });
+      } else {
+        reject(new WebhookAttemptError(socketSeen && !possibleSend && !request.headersSent && wireBytes === 0 && performance.now() < deadline));
       }
-    );
-    request.once("error", reject);
-    request.end(body);
+    };
+    const stop = (): void => {
+      request?.destroy();
+      for (const message of messages) message.destroy();
+      for (const socket of sockets) socket.destroy();
+    };
+    const deny = (): void => {
+      failed = true;
+      stop();
+      finish();
+    };
+    const timer = setTimeout(deny, Math.max(1, deadline - performance.now()));
+    const ownSocket = (socket: Socket): void => {
+      if (seenSockets.has(socket)) return;
+      seenSockets.add(socket);
+      sockets.add(socket);
+      socketSeen = true;
+      socket.on("error", deny);
+      socket.once("close", () => {
+        sockets.delete(socket);
+        finish();
+      });
+      socket.on("data", (chunk: Buffer) => {
+        const before = wireBytes;
+        wireBytes += chunk.length;
+        if (!possibleSend || wireBytes > WEBHOOK_LIMITS.wire) {
+          deny();
+          return;
+        }
+        chunk.copy(wire, before);
+        if (!headerBytes) {
+          const boundary = wire.subarray(0, wireBytes).indexOf("\r\n\r\n");
+          if (boundary >= 0) headerBytes = boundary + 4;
+          if ((headerBytes || wireBytes) > WEBHOOK_LIMITS.headers) deny();
+        }
+      });
+      if (seenSockets.size !== 1) {
+        deny();
+        return;
+      }
+      socket.once("secureConnect", () => {
+        const tls = socket as TLSSocket;
+        if (failed || performance.now() >= deadline || !tls.encrypted || !tls.authorized) {
+          deny();
+          return;
+        }
+        // No write/end/flushHeaders occurs before this fixed TLS gate.
+        possibleSend = true;
+        try {
+          request!.end(body);
+        } catch {
+          deny();
+        }
+      });
+      if (failed) stop();
+    };
+    const ownResponse = (message: IncomingMessage): void => {
+      if (seenMessages.has(message)) return;
+      seenMessages.add(message);
+      messages.add(message);
+      message.on("error", deny);
+      message.once("aborted", deny);
+      message.once("close", () => {
+        messages.delete(message);
+        finish();
+      });
+      if (response) {
+        deny();
+        return;
+      }
+      response = message;
+      const names = message.rawHeaders.filter((_value, index) => index % 2 === 0).map((name) => name.toLowerCase());
+      const length = message.headers["content-length"];
+      const transfer = message.headers["transfer-encoding"];
+      if (message.httpVersion !== "1.1" || !Number.isSafeInteger(message.statusCode) || message.statusCode! < 200 || message.statusCode! > 599 ||
+        message.statusCode! >= 300 && message.statusCode! < 400 || message.rawHeaders.length % 2 || new Set(names).size !== names.length ||
+        names.includes("location") || names.includes("trailer") ||
+        length !== undefined && (typeof length !== "string" || !/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > WEBHOOK_LIMITS.body) ||
+        transfer !== undefined && (typeof transfer !== "string" || transfer.toLowerCase() !== "chunked" || length !== undefined)) {
+        deny();
+        return;
+      }
+      message.on("data", (chunk: Buffer) => {
+        bodyBytes += chunk.length;
+        if (bodyBytes > WEBHOOK_LIMITS.body) deny();
+      });
+      message.once("end", () => {
+        ended = true;
+        if (!message.complete || message.rawTrailers.length || performance.now() >= deadline) deny();
+        finish();
+      });
+      message.resume();
+    };
+    try {
+      if (performance.now() >= deadline) throw new Error("Webhook deadline expired.");
+      request = httpsRequest(url, {
+        method: "POST", agent: false, lookup: pinnedLookup(address), minVersion: "TLSv1.2", rejectUnauthorized: true,
+        maxHeaderSize: WEBHOOK_LIMITS.headers,
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "accept-encoding": "identity", connection: "close" }
+      }, ownResponse);
+      request.once("close", () => {
+        requestClosed = true;
+        finish();
+      });
+      request.on("error", deny);
+      request.once("information", deny);
+      request.once("continue", deny);
+      request.once("upgrade", (message, socket) => {
+        ownResponse(message);
+        ownSocket(socket);
+        deny();
+      });
+      request.on("socket", ownSocket);
+    } catch {
+      failed = true;
+      stop();
+      if (request) finish();
+      else {
+        clearTimeout(timer);
+        reject(new WebhookAttemptError(false));
+      }
+    }
   });
 }
 
@@ -647,21 +807,16 @@ async function defaultWebhookSender(
   deadline: number
 ): Promise<WebhookResult> {
   const body = JSON.stringify(payload);
-  let lastError: unknown;
-
-  for (const [index, address] of addresses.entries()) {
-    const remainingMilliseconds = deadline - Date.now();
-    if (remainingMilliseconds <= 0) break;
-    const remainingAddresses = addresses.length - index;
-    const attemptMilliseconds = Math.max(1, Math.floor(remainingMilliseconds / remainingAddresses));
+  if (Buffer.byteLength(body) > WEBHOOK_LIMITS.request) throw new Error("Webhook request is too large.");
+  for (const address of addresses) {
+    if (performance.now() >= deadline) break;
     try {
-      return await sendWebhookToAddress(url, body, address, attemptMilliseconds);
+      return await sendWebhookToAddress(url, body, address, deadline);
     } catch (error) {
-      lastError = error;
+      if (!(error instanceof WebhookAttemptError) || !error.mayRetry) throw error;
     }
   }
-
-  throw lastError instanceof Error ? lastError : new Error("Webhook delivery exhausted all validated addresses.");
+  throw new Error("Webhook delivery exhausted all validated addresses.");
 }
 
 export async function deliverMaterialAction(
@@ -724,7 +879,7 @@ export async function deliverMaterialAction(
     });
   } else {
     try {
-      const deadline = Date.now() + 10_000;
+      const deadline = performance.now() + 10_000;
       const destination = await validateWebhookDestination(webhookUrl, environment, webhookResolver, deadline);
       const response = options.webhookSender
         ? await withDeadline(

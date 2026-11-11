@@ -102,10 +102,13 @@ function invalidOwnershipSidecar(): never {
 async function loadOwnershipHashes(targetDir: string, renderedFiles: RenderedFile[]): Promise<OwnershipHashes> {
   const raw = await readTextIfExists(path.join(targetDir, ".bootstrap/managed-files.json"));
   if (raw === undefined) return { hashes: {}, claimsLicense: false };
+  return parseOwnershipSidecar(raw, renderedFiles);
+}
 
+export function parseOwnershipSidecar(raw: string, renderedFiles: RenderedFile[]): OwnershipHashes {
   try {
     const sidecar = JSON.parse(raw) as OwnershipSidecar;
-    if (sidecar.schemaVersion !== 1 || sidecar.owner !== "bootstrap" || !sidecar.managedFiles || Array.isArray(sidecar.managedFiles)) {
+    if (sidecar.schemaVersion !== 1 || sidecar.owner !== "bootstrap" || !sidecar.managedFiles || typeof sidecar.managedFiles !== "object" || Array.isArray(sidecar.managedFiles)) {
       return invalidOwnershipSidecar();
     }
     const entries = Object.entries(sidecar.managedFiles);

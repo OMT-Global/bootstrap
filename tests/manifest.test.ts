@@ -1,8 +1,83 @@
 import { describe, expect, it } from "vitest";
+import YAML from "yaml";
 
 import { DEFAULT_ISSUE_LABELS, normalizeManifest, stringifyManifest } from "../src/manifest.js";
 
 const templateDigest = "a".repeat(64);
+
+function releaseEnvironmentPolicy() {
+  return {
+    reviewers: ["@release-approver", "acme/release-operators"],
+    requireApproval: true,
+    preventSelfReview: true,
+    branches: ["main"]
+  };
+}
+
+function releaseManifestInput(environment: unknown, defaultBranch = "main") {
+  return {
+    project: { name: "release-environment", owner: "acme", defaultBranch },
+    archetype: { kind: "generic-empty" },
+    github: { reviewers: ["global-reviewer"] },
+    environments: { "release-publish": environment }
+  };
+}
+
+describe("optional release-publish environment", () => {
+  it("preserves explicit release policy without inheriting global reviewers", () => {
+    const policy = releaseEnvironmentPolicy();
+    const manifest = normalizeManifest(releaseManifestInput(policy) as never);
+
+    expect(manifest.environments).toHaveProperty("release-publish", policy);
+    expect(manifest.environments.stage.reviewers).toEqual(["global-reviewer"]);
+  });
+
+  it("retains the explicit release environment through YAML serialization and parsing", () => {
+    const policy = { ...releaseEnvironmentPolicy(), branches: ["trunk"] };
+    const manifest = normalizeManifest(releaseManifestInput(policy, "trunk") as never);
+    const roundtrip = normalizeManifest(YAML.parse(stringifyManifest(manifest)));
+
+    expect(roundtrip.environments).toHaveProperty("release-publish", policy);
+    expect(roundtrip.environments).toEqual(manifest.environments);
+  });
+
+  it("keeps the release environment absent from default normalization and serialization", () => {
+    const manifest = normalizeManifest({
+      project: { name: "default-environments", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      github: { reviewers: ["global-reviewer"] }
+    });
+
+    expect(Object.keys(manifest.environments)).toEqual(["dev", "stage", "prod"]);
+    expect(stringifyManifest(manifest)).not.toContain("release-publish:");
+  });
+
+  const invalidPolicies: Array<[string, unknown]> = [
+    ["missing approval", { reviewers: ["release-approver"], preventSelfReview: true, branches: ["main"] }],
+    ["disabled approval", { ...releaseEnvironmentPolicy(), requireApproval: false }],
+    ["missing self-review prevention", { reviewers: ["release-approver"], requireApproval: true, branches: ["main"] }],
+    ["disabled self-review prevention", { ...releaseEnvironmentPolicy(), preventSelfReview: false }],
+    ["missing reviewers", { requireApproval: true, preventSelfReview: true, branches: ["main"] }],
+    ["empty reviewers", { ...releaseEnvironmentPolicy(), reviewers: [] }],
+    ["blank reviewer", { ...releaseEnvironmentPolicy(), reviewers: [" \t"] }],
+    ["too many reviewers", { ...releaseEnvironmentPolicy(), reviewers: Array.from({ length: 7 }, (_, i) => `reviewer-${i}`) }],
+    ["missing branches", { reviewers: ["release-approver"], requireApproval: true, preventSelfReview: true }],
+    ["empty branches", { ...releaseEnvironmentPolicy(), branches: [] }],
+    ["multiple branches", { ...releaseEnvironmentPolicy(), branches: ["main", "release"] }],
+    ["non-default branch", { ...releaseEnvironmentPolicy(), branches: ["release"] }],
+    ["unsupported policy field", { ...releaseEnvironmentPolicy(), customBranchPolicies: ["v*"] }],
+    ["null policy", null]
+  ];
+
+  it.each(invalidPolicies)("rejects %s rather than falling back to global defaults", (_name, policy) => {
+    expect(() => normalizeManifest(releaseManifestInput(policy) as never)).toThrow();
+  });
+
+  it("requires the configured default branch even when it is not main", () => {
+    expect(() => normalizeManifest(releaseManifestInput(releaseEnvironmentPolicy(), "trunk") as never))
+      .toThrow("release-publish");
+  });
+});
 
 describe("normalizeManifest", () => {
   it("requires explicit typed licensing and never derives it from repository visibility", () => {

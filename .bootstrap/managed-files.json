@@ -78,7 +78,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/security.yml": {
-      "sha256": "7b14b0d06b7c3f7b253e09be14e8c04fe2785d742c99f31f0fb04891cbdd4a5e",
+      "sha256": "d7eed013d5c0d7c89f95586ff1a2de6316a800e1b5e455ecb7ec0c79b5ea6244",
       "source": "bootstrap"
     },
     ".gitignore": {
@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "944358102c8ed2fd45f976848d9666e13d0caf2938ec680d9fdff9517a5cce41",
+      "sha256": "62ce6942e220df3e886eba299e8551fe206063d875590bfea2337f09b62b554b",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {
@@ -154,11 +154,11 @@
       "source": "bootstrap"
     },
     "scripts/ci/run-extended-validation.sh": {
-      "sha256": "f828050bcb3964fc2f2934be9356bcb1199d32e865966990feb581bede9d2f49",
+      "sha256": "1e10190b273cd20de26101b088e4c8ef9ff27dd3189121d4b52e34c9ec2cc2dd",
       "source": "bootstrap"
     },
     "scripts/ci/run-fast-checks.sh": {
-      "sha256": "1ce0ced6fd12d9ef8d59b6e666f2d8d0848c48b819add4572d4f7f4d965a4454",
+      "sha256": "09f5d82004bb2c5a501b72e62669a1adca1c92e1b5ab471096449c8606cc569b",
       "source": "bootstrap"
     },
     "scripts/ci/run-release-build.sh": {

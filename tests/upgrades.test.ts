@@ -10,6 +10,80 @@ describe("fleet policy upgrades", () => {
     expect(classifyPolicyUpgrade("1.2.3", "1.2.2")).toBe("invalid");
   });
 
+  it.each([
+    ["1.2.3", "1.2.3"],
+    ["v1.2.3", "1.2.3"],
+    ["1.2.3", "v1.2.3"],
+    ["01.2.3", "1.2.4"],
+    ["1.02.3", "1.2.4"],
+    ["1.2.03", "1.2.4"],
+    ["1.2.3", "01.2.4"],
+    ["1.2.3", "1.02.4"],
+    ["1.2.3", "1.2.04"],
+    ["1.2.3\n", "1.2.4"],
+    ["1.2.3", "1.2.4\n"],
+    ["1.2.3", "1.2.4\r\n"],
+    ["1.2.3", "1.2.4\u2028"],
+    ["1.2.3", "1.2.4\u2029"],
+    ["9007199254740993.0.0", "9007199254740992.0.0"],
+    ["1.9007199254740993.0", "1.9007199254740992.0"],
+    ["1.2.9007199254740993", "1.2.9007199254740992"],
+    [`${"9".repeat(400)}.0.0`, `${"8".repeat(400)}.0.0`]
+  ])("rejects non-increasing or noncanonical versions %j → %j", (current, target) => {
+    expect(classifyPolicyUpgrade(current, target)).toBe("invalid");
+  });
+
+  it.each([
+    ["0.0.0", "0.0.1", "patch"],
+    ["v1.2.3", "1.2.4", "patch"],
+    ["1.2.3", "v1.2.4", "patch"],
+    ["1.9.9", "v1.10.0", "minor"],
+    ["v9.9.9", "10.0.0", "major"],
+    ["9007199254740992.0.0", "9007199254740993.0.0", "major"],
+    ["1.9007199254740992.0", "1.9007199254740993.0", "minor"],
+    ["1.2.9007199254740992", "1.2.9007199254740993", "patch"],
+    [`${"9".repeat(100)}.0.0`, `1${"0".repeat(100)}.0.0`, "major"]
+  ])("classifies exact increasing versions %j → %j as %s", (current, target, risk) => {
+    expect(classifyPolicyUpgrade(current, target)).toBe(risk);
+  });
+
+  it.each(["1.2.4-rc.1", "1.2.4+build.1", "^1.2.4", " 1.2.4", "1.2.4 ", "V1.2.4"])(
+    "preserves rejection of unsupported policy version %j", (target) => {
+      expect(classifyPolicyUpgrade("1.2.3", target)).toBe("invalid");
+    }
+  );
+
+  it.each([
+    ["1.2.3", "1.2.3"],
+    ["1.2.3", "1.2.04"],
+    ["1.2.3", "1.2.4\n"],
+    ["9007199254740993.0.0", "9007199254740992.0.0"],
+    ["1.9007199254740993.0", "1.9007199254740992.0"],
+    ["1.2.9007199254740993", "1.2.9007199254740992"]
+  ])("blocks invalid %j → %j despite a recorded passing class pilot", (currentPolicy, targetPolicy) => {
+    const plan = planFleetPolicyUpgrades([
+      { repo: "acme/a-pilot", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "1.0.1", pilotOutcome: "passed" },
+      { repo: "acme/b-candidate", repoClass: "service", currentPolicy, targetPolicy, pilotOutcome: "passed" }
+    ]);
+
+    expect(plan[0]).toMatchObject({ role: "pilot", risk: "patch", status: "eligible" });
+    expect(plan[1]).toMatchObject({
+      role: "batch", risk: "invalid", status: "blocked",
+      reason: "Policy versions must be increasing exact SemVer values."
+    });
+  });
+
+  it.each([
+    ["9007199254740992.0.0", "9007199254740993.0.0", "major", "Major upgrades require notification and an accepted ADR before opening a PR."],
+    ["1.9007199254740992.0", "1.9007199254740993.0", "minor", "Minor upgrades require independent review before merge."]
+  ])("keeps review gates for large exact %s → %s upgrades", (currentPolicy, targetPolicy, risk, reason) => {
+    const [entry] = planFleetPolicyUpgrades([
+      { repo: "acme/pilot", repoClass: "service", currentPolicy, targetPolicy, pilotOutcome: "passed" }
+    ]);
+
+    expect(entry).toMatchObject({ role: "pilot", risk, status: "review-required", reason });
+  });
+
   it("requires a first-class pilot and stops later candidates after a failed pilot", () => {
     const plan = planFleetPolicyUpgrades([
       { repo: "acme/service-a", repoClass: "service", currentPolicy: "1.0.0", targetPolicy: "1.0.1", pilotOutcome: "failed" },

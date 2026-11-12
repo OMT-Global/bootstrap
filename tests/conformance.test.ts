@@ -14,7 +14,56 @@ async function fixtureDirectory(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "bootstrap-conformance-"));
 }
 
+async function ownershipFixture() {
+  const directory = await fixtureDirectory();
+  await writeFile(path.join(directory, "proprietary.txt"), proprietaryTemplate);
+  const manifest = normalizeManifest({
+    project: { name: "sidecar-validation", owner: "acme", maturity: "stable" },
+    repo: { class: "service" },
+    license: { mode: "proprietary", holder: "Acme LLC", holderVerification: "legal-entity:acme-llc", years: "2026", template: { path: "proprietary.txt", sha256: sha256(proprietaryTemplate), approval: "counsel:P-1" }, thirdPartyNotices: [] },
+    archetype: { kind: "generic-empty" }, release: { reusableWorkflowRef: "a".repeat(40) }
+  });
+  await applyRepo(manifest, directory);
+  return { directory, manifest };
+}
+
 describe("runConformance", () => {
+  it.each([
+    ["array", (sidecar: any) => { sidecar.managedFiles = []; }],
+    ["scalar", (sidecar: any) => { sidecar.managedFiles = true; }],
+    ["empty map", (sidecar: any) => { sidecar.managedFiles = {}; }],
+    ["wrong owner", (sidecar: any) => { sidecar.owner = "other"; }],
+    ["missing entry", (sidecar: any) => { delete sidecar.managedFiles[Object.keys(sidecar.managedFiles)[0]!]; }],
+    ["invalid hash", (sidecar: any) => { sidecar.managedFiles[Object.keys(sidecar.managedFiles)[0]!].sha256 = "invalid"; }],
+    ["unsafe path", (sidecar: any) => { sidecar.managedFiles["../escape"] = { sha256: "a".repeat(64) }; }],
+    ["invalid license claim", (sidecar: any) => { sidecar.license = { mode: "spdx", identifier: "MIT", contentSha256: "a".repeat(64) }; }]
+  ])("does not report a valid ownership sidecar for %s", async (_label, mutate) => {
+    const { directory, manifest } = await ownershipFixture();
+    const sidecarPath = path.join(directory, ".bootstrap/managed-files.json");
+    const sidecar = JSON.parse(await readFile(sidecarPath, "utf8"));
+    mutate(sidecar);
+    await writeFile(sidecarPath, JSON.stringify(sidecar));
+
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-OWNERSHIP-001", severity: "blocking", evidence: [".bootstrap/managed-files.json"] }));
+    expect(report.results).not.toContainEqual(expect.objectContaining({ ruleId: "PRS-OWNERSHIP-001", severity: "pass", evidence: [".bootstrap/managed-files.json"] }));
+    expect(report.exitCode).toBe(1);
+  });
+
+  it("reports an intact complete ownership sidecar as valid", async () => {
+    const { directory, manifest } = await ownershipFixture();
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-OWNERSHIP-001", severity: "pass", evidence: [".bootstrap/managed-files.json"] }));
+    expect(report.exitCode).toBe(0);
+  });
+
+  it("blocks malformed sidecar JSON", async () => {
+    const { directory, manifest } = await ownershipFixture();
+    await writeFile(path.join(directory, ".bootstrap/managed-files.json"), "{");
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({ ruleId: "PRS-OWNERSHIP-001", severity: "blocking", evidence: [".bootstrap/managed-files.json"] }));
+    expect(report.exitCode).toBe(1);
+  });
   it("returns deterministic machine-validated blocking results for missing contract fields", async () => {
     const directory = await fixtureDirectory();
     const manifest = normalizeManifest({ project: { name: "missing-contract", owner: "acme" }, archetype: { kind: "generic-empty" } });

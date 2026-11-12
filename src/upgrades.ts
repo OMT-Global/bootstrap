@@ -40,18 +40,30 @@ export function classifyPolicyUpgrade(currentPolicy: string, targetPolicy: strin
 }
 
 export function planFleetPolicyUpgrades(candidates: FleetUpgradeCandidate[]): FleetUpgradePlanEntry[] {
-  const pilots = new Map<string, PilotOutcome>();
+  const pilots = new Map<string, { outcome: PilotOutcome; target: string }>();
+  // This only detects obvious duplicates; repository IDs and aliases still require remote verification.
+  const key = (repo: string) => repo.trim().toLowerCase();
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) counts.set(key(candidate.repo), (counts.get(key(candidate.repo)) ?? 0) + 1);
+  const ambiguousClasses = new Set(candidates.filter((candidate) => counts.get(key(candidate.repo))! > 1).map((candidate) => candidate.repoClass));
+  const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
   return [...candidates]
-    .sort((left, right) => left.repoClass.localeCompare(right.repoClass) || left.repo.localeCompare(right.repo))
+    .sort((left, right) => compare(left.repoClass, right.repoClass) || compare(left.repo, right.repo))
     .map((candidate) => {
       const risk = classifyPolicyUpgrade(candidate.currentPolicy, candidate.targetPolicy);
       const knownPilot = pilots.get(candidate.repoClass);
       const role = knownPilot === undefined ? "pilot" : "batch";
-      if (role === "pilot") pilots.set(candidate.repoClass, candidate.pilotOutcome ?? "pending");
+      const target = candidate.targetPolicy.startsWith("v") ? candidate.targetPolicy.slice(1) : candidate.targetPolicy;
+      if (role === "pilot") pilots.set(candidate.repoClass, {
+        outcome: risk === "invalid" && candidate.pilotOutcome === "passed" ? "pending" : candidate.pilotOutcome ?? "pending",
+        target
+      });
 
+      if (ambiguousClasses.has(candidate.repoClass)) return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} class has a duplicate repository; correct the inventory before planning.` };
       if (risk === "invalid") return { ...candidate, risk, role, status: "blocked", reason: "Policy versions must be increasing exact SemVer values." };
-      if (knownPilot === "failed") return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot failed; stop this batch until remediation is recorded.` };
-      if (role === "batch" && knownPilot !== "passed") return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot has not passed; record a passing representative pilot before rolling this class forward.` };
+      if (knownPilot?.outcome === "failed" || (role === "pilot" && candidate.pilotOutcome === "failed")) return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot failed; stop this batch until remediation is recorded.` };
+      if (role === "batch" && knownPilot?.outcome !== "passed") return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot has not passed; record a passing representative pilot before rolling this class forward.` };
+      if (role === "batch" && knownPilot?.target !== target) return { ...candidate, risk, role, status: "blocked", reason: `The ${candidate.repoClass} pilot passed for a different target; prepare a separate class pilot for this target.` };
       if (candidate.exceptionId) return { ...candidate, risk, role, status: "review-required", reason: `Exception ${candidate.exceptionId} requires human review before a fleet upgrade PR.` };
       if (risk === "major") return { ...candidate, risk, role, status: "review-required", reason: "Major upgrades require notification and an accepted ADR before opening a PR." };
       if (risk === "minor") return { ...candidate, risk, role, status: "review-required", reason: "Minor upgrades require independent review before merge." };

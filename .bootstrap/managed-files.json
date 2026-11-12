@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "62ce6942e220df3e886eba299e8551fe206063d875590bfea2337f09b62b554b",
+      "sha256": "a209f36e45ffaeb9b5457f8863a28c2da84f334cb3f4e022a5db87149f2066b7",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {
@@ -154,7 +154,7 @@
       "source": "bootstrap"
     },
     "scripts/ci/run-extended-validation.sh": {
-      "sha256": "1e10190b273cd20de26101b088e4c8ef9ff27dd3189121d4b52e34c9ec2cc2dd",
+      "sha256": "f37b6e573e2aef0029bb7f088a0bcf6432dae4440311bff935021067378b1067",
       "source": "bootstrap"
     },
     "scripts/ci/run-fast-checks.sh": {

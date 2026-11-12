@@ -10,7 +10,7 @@ import type { BootstrapManifest, RenderedFile } from "./types.js";
 
 const actionPins = {
   pathsFilter: "ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3",
-  codeQl: "1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2",
+  codeQl: "33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3",
   sbom: "66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3"
 } as const;
 

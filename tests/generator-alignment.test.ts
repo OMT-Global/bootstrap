@@ -17,8 +17,8 @@ const reviewedActions = {
   ".github/workflows/extended-validation.yml": ["dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d"],
   ".github/workflows/security.yml": [
     "anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c",
-    "github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26",
-    "github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26"
+    "github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066",
+    "github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066"
   ]
 };
 
@@ -78,8 +78,8 @@ describe("reviewed generator alignment", () => {
 
   it.each([
     ["paths-filter", "ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d", "7b450fff21473bca461d4b92ce414b9d0420d706"],
-    ["CodeQL init", "github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26", "github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a"],
-    ["CodeQL analyze", "github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26", "github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a"],
+    ["CodeQL init", "github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066", "github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a"],
+    ["CodeQL analyze", "github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066", "github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a"],
     ["SBOM", "66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c", "e22c389904149dbc22b58101806040fa8d37a610"]
   ])("detects an immutable but stale %s output", (_name, current, stale) => {
     const downgraded = render().map((file) => ({ ...file, contents: file.contents.replaceAll(current, stale) }));

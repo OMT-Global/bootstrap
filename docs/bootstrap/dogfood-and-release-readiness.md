@@ -2,6 +2,17 @@
 
 This records the remaining acceptance work for [#63](https://github.com/OMT-Global/bootstrap/issues/63) and [#27](https://github.com/OMT-Global/bootstrap/issues/27). A preparation PR does not complete either issue: #63 requires applied conformance in Flow and Bootstrap, and #27 requires a successful real release.
 
+## Dogfood observations on 2026-11-11
+
+At approximately 18:14 UTC, the default branches resolved to Flow [`96b4f859512e3bfce03c2d9b3f54d88f0787070f`](https://github.com/OMT-Global/flow/tree/96b4f859512e3bfce03c2d9b3f54d88f0787070f) and Bootstrap [`5375785ef6c7efff1aefb1ed45b282c178d6ea6b`](https://github.com/OMT-Global/bootstrap/tree/5375785ef6c7efff1aefb1ed45b282c178d6ea6b). Flow's [migration PR #39](https://github.com/OMT-Global/flow/pull/39) and Bootstrap's [migration PR #226](https://github.com/OMT-Global/bootstrap/pull/226) have merged; the [Bootstrap migration record](bootstrap-dogfood-migration.md) describes the Flow-first application and reviewed ownership boundary. The baseline matrix and migration sequence below are historical, not current assertions that those steps remain undone.
+
+- Repo-only previews against archived copies of those exact trees reported five unchanged Flow outputs and 50 unchanged Bootstrap outputs. These were non-mutating previews, not new applies or proof of live settings. Full doctor and broad planner attempts in the isolated local environment could not execute `gh` (`ENOENT`), so neither is reported as passed.
+- Local deterministic Bootstrap conformance reported 10 passes, eight unverified warnings, no blockers, and exit 0 without a remote-capability snapshot. Flow initially reported 10 passes, eight warnings and one unverified CodeQL blocker without a snapshot. A snapshot containing only the observed code-scanning evidence yielded 12 passes, seven unverified warnings, no blockers, and exit 0. These results do not by themselves establish complete #63 acceptance or every remote control.
+- Flow's default CodeQL setup was observed configured for `actions` and `python`. Error-free analyses for both languages were recorded at the Flow commit above, and the corresponding [successful run](https://github.com/OMT-Global/flow/actions/runs/42536409543) used GitHub Actions `ubuntu-latest` runners. GitHub's license API identified MIT for both repositories, with identical LICENSE blob `5d5f440ce222ccab935b58236ef817ef364bfb16`; the local conformance reports still mark recognition unverified because those reports did not include that observation.
+- Flow's `DEPENDENCY_REVIEW_ENABLED` variable was `true`; its dependency-graph SBOM endpoint returned seven packages. Repository metadata reported Dependabot security updates, secret scanning and push protection enabled. No pull-request dependency-review job after activation was observed: the most recent prior PR security run was [skipped](https://github.com/OMT-Global/flow/actions/runs/42536469459), and a scheduled success does not prove PR execution.
+
+The remaining acceptance evidence includes current checks of both repositories' README, diagrams, DCO, provenance and managed artifacts; actual post-activation Flow PR dependency review; and a complete comparison of live branch protections, required checks, environment gates and security capabilities to each resolved contract. Recheck current heads and remote settings before relying on these dated observations. No setting change, release, or issue closure follows from this record.
+
 ## Evidence baseline
 
 Inspected on 2026-11-08:
@@ -10,19 +21,19 @@ Inspected on 2026-11-08:
 - Flow has a published immutable [v1.0.1 policy release](https://github.com/OMT-Global/flow/releases/tag/v1.0.1). Its [public repository standard bundle](https://github.com/OMT-Global/flow/blob/v1.0.1/policies/public-repository-standard-v1.json) declares policy version `1.0.0`; the release version and embedded policy version are distinct.
 - Bootstrap's [release collection](https://api.github.com/repos/OMT-Global/bootstrap/releases) was empty. Its [workflow-dispatch run inventory](https://api.github.com/repos/OMT-Global/bootstrap/actions/runs?event=workflow_dispatch&per_page=100) contained only an Issue Hygiene Report, with no governed release runs.
 - [Issue #27's last recorded preflight attempt](https://github.com/OMT-Global/bootstrap/issues/27#issuecomment-4978266464) failed before dispatch because its reusable reference was invalid. This is historical failure evidence, not a successful pilot.
-- Flow's [current manifest](https://github.com/OMT-Global/flow/blob/main/project.bootstrap.yaml) restricts Bootstrap ownership to two issue forms and preserves product-owned policy and security guidance. Its existing licensing comments cite the stewardship decision in [Flow #26](https://github.com/OMT-Global/flow/issues/26).
+- At this baseline, Flow's [manifest](https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/project.bootstrap.yaml) restricted Bootstrap ownership to two issue forms and preserved product-owned policy and security guidance. Its licensing comments cite the stewardship decision in [Flow #26](https://github.com/OMT-Global/flow/issues/26).
 
 Remote observations can change. Refresh the relevant refs, settings, reviews, and workflow results before applying or publishing.
 
-## Changes prepared in this PR
+## Changes prepared in the original PR
 
 Bootstrap now declares `policy.flow` for `refs/tags/v1.0.1` and loads the byte-preserved local snapshot in `policy/flow-public-standard.json`. The snapshot matches the file retrieved at source commit [`504c79e59689f906a234e7145ee5752588b438b3`](https://github.com/OMT-Global/flow/blob/504c79e59689f906a234e7145ee5752588b438b3/policies/public-repository-standard-v1.json). The public tag object is `6878b46c5e80a22a3acaa3ed550d307106c1ee7d`. This records an immutable source and verified content digest; it does not attest successful signature verification. GitHub reported the tag signature as `verified=false`, `reason=no_user` during inspection.
 
-The Flow migration fixture comes from [`669d095891a2fa2c9772735edf3e9cdf44c1214f`](https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/project.bootstrap.yaml). Offline migration tests preserve both repositories' non-policy contracts and selected generated outputs, including Flow's product-owned security and existing legal approval boundary. A changed bundle fails against the pinned digest. No broad ownership sidecar or applied-conformance claim is added.
+The Flow migration fixture comes from [`669d095891a2fa2c9772735edf3e9cdf44c1214f`](https://github.com/OMT-Global/flow/blob/669d095891a2fa2c9772735edf3e9cdf44c1214f/project.bootstrap.yaml). Offline migration tests preserve both repositories' non-policy contracts and selected generated outputs, including Flow's product-owned security and existing legal approval boundary. A changed bundle fails against the pinned digest. At that stage, no broad ownership sidecar or applied-conformance claim was added.
 
 Focused validation: `npm test -- tests/dogfood.test.ts tests/policy.test.ts --maxWorkers=1 --minWorkers=1` passed ten tests. Before adding the pin, the new Bootstrap resolution regression failed because `manifest.policy.flow` was absent.
 
-## Dogfood acceptance matrix
+## Dogfood acceptance matrix at the 2026-11-08 baseline
 
 | #63 acceptance | Observed status | Required evidence to finish |
 | --- | --- | --- |
@@ -45,7 +56,7 @@ At the inspected Bootstrap baseline this returned exit `1`: seven passing result
 
 This conformance core does not establish the whole #63 contract. Its local success would still need README/diagram, DCO, provenance, applied-state, and live-settings evidence.
 
-## Scoped migration sequence
+## Scoped migration sequence from the 2026-11-08 plan
 
 1. Refresh both default branches and their open PRs. Inventory product-owned versus generated paths; preserve Flow's existing restricted ownership and Bootstrap's reviewed local conventions.
 2. Run doctor, then plan for Flow. Resolve the compatible immutable Flow release with its verified bundle digest and review the exact manifest changes. A compatible policy pin alone requires no additional human hard stop under the existing issue authorization.
@@ -78,7 +89,7 @@ The inspected repository uses restricted default workflow permissions. All four 
 
 Required postpublish hooks are now checked for executability before any publish hook or release/tag mutation. Postpublish verification runs after release publication and before floating-tag promotion; a verification failure leaves aliases unchanged but does not roll back an already published release.
 
-## Release pilot acceptance matrix
+## Release pilot acceptance matrix at the 2026-11-08 baseline
 
 | #27 acceptance | Observed status | Required evidence to finish |
 | --- | --- | --- |
@@ -99,4 +110,4 @@ The owner-requested [v1.0.0 stable preflight](https://github.com/OMT-Global/boot
 
 All three configured hooks were skipped because that historical tag has no `scripts/release/` directory. Its artifacts contain only fallback notes and evidence, with no product build or test execution. This honors the original diagnostic request and does not complete #27. That target also lacks the required postpublish hook; the repaired publisher rejects it before publication writes. A supported stable target, meaningful expected notes/assets or an explicitly approved automation-only scope, matching validation evidence, and human release approval remain necessary. RC-only publication cannot prove stable floating-tag promotion.
 
-The prepared [third-party inventory](third-party-inventory.md) supplies factual license-attribution inputs for #63; ownership, distribution scope, and adoption approval remain separate human evidence.
+The earlier [third-party inventory](third-party-inventory.md) supplied factual license-attribution inputs for #63; ownership, distribution scope, and adoption approval were separate human evidence at that stage. The subsequent [migration record](bootstrap-dogfood-migration.md) describes the adopted Bootstrap license and notice boundary.

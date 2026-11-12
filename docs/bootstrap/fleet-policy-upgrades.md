@@ -4,6 +4,8 @@ Use `bootstrap upgrade-plan --input inventory.json --json` to produce a non-muta
 
 Each manually prepared inventory entry records repository, class, current and target exact SemVer policy versions, optional exception, and pilot outcome. Patch upgrades become eligible only after a passing first representative per class. Pending or missing pilot outcomes block later class members; failed pilots stop their class batch with remediation. Minor upgrades require independent review; major upgrades require notification and an accepted ADR. Exception-bearing upgrades require human review.
 
+The input must be a JSON array of objects with nonblank string `repo` and `repoClass`, and string `currentPolicy` and `targetPolicy` fields. If present, `exceptionId` must be a nonblank string and `pilotOutcome` must be `pending`, `passed`, or `failed`. A missing pilot outcome remains pending. The command rejects malformed inventory before producing a plan; invalid version strings are still represented as blocked entries.
+
 Policy versions use numeric `X.Y.Z` triplets, optionally prefixed by `v`. Components cannot contain leading zeros, and the target must be strictly newer. Components are compared exactly even beyond JavaScript's safe-integer range. Prerelease/build labels, ranges, and surrounding whitespace are not accepted.
 
 The planner does not create PRs, execute target-repository code, or verify remote pilot outcomes. Operators must attach policy diff, validation, exceptions, and provenance evidence to any governed upgrade PR.

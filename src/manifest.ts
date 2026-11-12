@@ -1085,7 +1085,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     },
     ...(capabilities ? { capabilities } : {}),
     ...(parsed.policy
-      ? { policy: { flow: { ref: parsed.policy.flow.ref, bundlePath: parsed.policy.flow.bundlePath, sha256: parsed.policy.flow.sha256.toLowerCase(),
+      ? { policy: { flow: { ref: parsed.policy.flow.ref, sha256: parsed.policy.flow.sha256.toLowerCase(), bundlePath: parsed.policy.flow.bundlePath,
           ...(parsed.policy.flow.canonicalization === undefined ? {} : { canonicalization: parsed.policy.flow.canonicalization }) } } }
       : {}),
     exceptions: (parsed.exceptions ?? []).map((exception) => ({

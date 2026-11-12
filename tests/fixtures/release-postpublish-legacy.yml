@@ -1,0 +1,33 @@
+name: Release Postpublish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact release tag to verify
+        required: true
+        type: string
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options: [rc, beta, stable, maintenance]
+      release_issue:
+        description: Release issue number
+        required: false
+        type: string
+
+jobs:
+  postpublish:
+    permissions:
+      contents: read
+      actions: read
+    uses: OMT-Global/bootstrap/.github/workflows/release-postpublish-reusable.yml@913b298fab0fb008796011d940ee7362a347659d
+    with:
+      tag: ${{ inputs.tag }}
+      channel: ${{ inputs.channel }}
+      release_issue: ${{ inputs.release_issue }}
+      postpublish_script: scripts/release/postpublish.sh
+      artifact_dir: dist/release
+      evidence_artifact_name: release-evidence

@@ -14,7 +14,7 @@ import {
   projectLicensePolicy,
   readManagedLegalOutputTextIfExists
 } from "./licensing.js";
-import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, planRepo, resolveRepositoryProjection } from "./render.js";
+import { BOOTSTRAP_STATE_OUTPUT_PATHS, loadEffectiveRepoState, parseOwnershipSidecar, planRepo, resolveRepositoryProjection } from "./render.js";
 import { OWNERSHIP_SIDECAR_PATH } from "./state.js";
 import { containsCredential, redactPublicText } from "./provenance.js";
 import type { ResolvedPolicyContract } from "./policy.js";
@@ -1381,17 +1381,14 @@ export async function runConformance(manifest: BootstrapManifest, targetDir: str
   const ownershipRaw = await readTextIfExists(ownershipPath);
   if (!ownershipRaw) {
     results.push(result("PRS-OWNERSHIP-001", "blocking", [OWNERSHIP_SIDECAR_PATH], "Run bootstrap apply repo to create the managed-file ownership sidecar."));
+  } else if (!projection) {
+    results.push(result("PRS-OWNERSHIP-001", "blocking", [OWNERSHIP_SIDECAR_PATH], "Restore the managed artifact projection before verifying ownership metadata."));
   } else {
     try {
-      const ownership = JSON.parse(ownershipRaw) as { schemaVersion?: unknown; owner?: unknown; managedFiles?: unknown };
-      const valid = ownership.schemaVersion === 1 && ownership.owner === "bootstrap" && ownership.managedFiles && typeof ownership.managedFiles === "object";
-      results.push(
-        valid
-          ? result("PRS-OWNERSHIP-001", "pass", [OWNERSHIP_SIDECAR_PATH], "Keep the ownership sidecar under Bootstrap management.")
-          : result("PRS-OWNERSHIP-001", "blocking", [OWNERSHIP_SIDECAR_PATH], "Regenerate a valid Bootstrap ownership sidecar.")
-      );
+      parseOwnershipSidecar(ownershipRaw, projection.files);
+      results.push(result("PRS-OWNERSHIP-001", "pass", [OWNERSHIP_SIDECAR_PATH], "Keep the ownership sidecar under Bootstrap management."));
     } catch {
-      results.push(result("PRS-OWNERSHIP-001", "blocking", [OWNERSHIP_SIDECAR_PATH], "Regenerate the malformed Bootstrap ownership sidecar."));
+      results.push(result("PRS-OWNERSHIP-001", "blocking", [OWNERSHIP_SIDECAR_PATH], "Regenerate the invalid or incomplete Bootstrap ownership sidecar."));
     }
   }
 

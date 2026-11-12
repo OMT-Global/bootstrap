@@ -74,6 +74,20 @@ describe("managed verified Flow response policy", () => {
     expect(await readdir(directory)).toEqual([]);
   });
 
+  it("does not claim a sidecar is complete when the policy projection is unavailable", async () => {
+    const { directory, manifest } = await fixture();
+    await applyRepo(manifest, directory);
+    await rm(path.join(directory, "flow-policy.json"));
+    const report = await runConformance(manifest, directory);
+    expect(report.results).toContainEqual(expect.objectContaining({
+      ruleId: "PRS-OWNERSHIP-001", severity: "blocking", evidence: [".bootstrap/managed-files.json"],
+      remediation: expect.stringContaining("projection")
+    }));
+    expect(report.results).not.toContainEqual(expect.objectContaining({
+      ruleId: "PRS-OWNERSHIP-001", severity: "pass", evidence: [".bootstrap/managed-files.json"]
+    }));
+  });
+
   it("uses alternate verified target values and preserves installed-byte hashes across clean clone planning", async () => {
     const { directory, manifest, bundle } = await fixture();
     bundle.security.responseTargets = {

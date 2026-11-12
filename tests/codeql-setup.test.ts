@@ -23,8 +23,8 @@ const scanningAvailabilityWaiver: PolicyException = {
   rationale: "Synthetic temporary provider-availability fixture.", approvedBy: "synthetic-independent-reviewer",
   issue: "#63", permanent: false, expiresAt: "2099-01-01"
 };
-// Captured from parent 161d18e; only the SBOM contents permission changes from write to read.
-const legacySecurityWithReadOnlySbomSha256 = "6c0a34c8b76d73249efe85de18e983c9f23e1598e6c14f21a8e79ec133ee05ae";
+// Preserves the read-only SBOM baseline; the paired CodeQL pins are now v4.39.3.
+const reviewedSecurityWithReadOnlySbomSha256 = "28b305b47f1a485036df12fe850964f4924af95b088d6ba705c78005dba05433";
 
 function input(ci: Record<string, unknown> = {}) {
   return {
@@ -76,7 +76,7 @@ afterEach(async () => {
 });
 
 describe("explicit CodeQL setup mode", () => {
-  it("preserves absent-mode serialization and advanced bytes except the intentional read-only SBOM permission", () => {
+  it("preserves absent-mode serialization and the advanced workflow with read-only SBOM and paired CodeQL pins", () => {
     const absent = normalizeManifest(input());
     const advanced = normalizeManifest(input({ codeqlSetup: "advanced" }));
     expect(parse(stringifyManifest(absent)).ci).not.toHaveProperty("codeqlSetup");
@@ -84,7 +84,7 @@ describe("explicit CodeQL setup mode", () => {
     const workflow = (manifest: typeof absent) => renderManagedFiles(manifest)
       .find((file) => file.path === ".github/workflows/security.yml")!.contents;
     expect(workflow(advanced)).toBe(workflow(absent));
-    expect(sha256(workflow(absent))).toBe(legacySecurityWithReadOnlySbomSha256);
+    expect(sha256(workflow(absent))).toBe(reviewedSecurityWithReadOnlySbomSha256);
   });
 
   it("supports Actions coverage in explicit default mode and rejects unsupported advanced Actions projection", () => {

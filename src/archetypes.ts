@@ -10,7 +10,7 @@ import type { BootstrapManifest, RenderedFile } from "./types.js";
 
 const actionPins = {
   pathsFilter: "ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3",
-  codeQl: "1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2",
+  codeQl: "33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3",
   sbom: "66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3"
 } as const;
 
@@ -1898,6 +1898,427 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
           artifact_dir: ${manifest.release.artifacts.directory}
           evidence_artifact_name: release-evidence
   `;
+}
+
+export function immutablePreflightVerifierScript(): string {
+  return String.raw`import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import zipfile
+import zlib
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+def decimal(value):
+    require(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value), "Invalid canonical identifier.")
+    return value
+
+def api(route):
+    body = subprocess.run(["gh", "api", route], check=True, stdout=subprocess.PIPE).stdout
+    return json.loads(body)
+
+def same_id(value, expected):
+    return type(value) is int and str(value) == expected
+
+def extras(data, name, encoded):
+    fields = {}
+    offset = 0
+    while offset < len(data):
+        require(offset + 4 <= len(data), "Truncated ZIP extra header.")
+        tag, size = struct.unpack_from("<HH", data, offset)
+        offset += 4
+        require(offset + size <= len(data), "Truncated ZIP extra value.")
+        value = data[offset:offset + size]
+        offset += size
+        if tag in (1, 0x7075):
+            require(tag not in fields, "Ambiguous ZIP identity extra fields.")
+            fields[tag] = value
+        if tag == 0x7075:
+            require(len(value) >= 5 and value[0] == 1, "Unsupported ZIP Unicode name extra.")
+            require(struct.unpack_from("<I", value, 1)[0] == zlib.crc32(encoded), "ZIP Unicode name CRC mismatch.")
+            require(value[5:].decode("utf-8") == name, "Conflicting original Unicode ZIP name.")
+    return fields
+
+require(sys.version_info >= (3, 12) and os.name == "posix", "Strong preflight requires POSIX CPython3.12+.")
+require(sys.implementation.name == "cpython", "Strong preflight requires CPython.")
+require(os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd, "Required rooted file APIs are unavailable.")
+require(all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC")), "Required no-follow APIs are unavailable.")
+require(zipfile.ZipInfo("probe\0suffix").orig_filename == "probe\0suffix", "Original ZIP names are unavailable.")
+repository = os.environ["GITHUB_REPOSITORY"]
+require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "Invalid repository identity.")
+repository_id = decimal(os.environ["GITHUB_REPOSITORY_ID"])
+run_id = decimal(os.environ["PREFLIGHT_RUN_ID"])
+artifact_id = decimal(os.environ["PREFLIGHT_ARTIFACT_ID"])
+expected = os.environ["PREFLIGHT_ARTIFACT_SHA256"]
+require(re.fullmatch(r"[0-9a-f]{64}", expected), "Invalid independent ZIP SHA256.")
+target_sha = os.environ["PREFLIGHT_TARGET_SHA"]
+metadata = api(f"repos/{repository}/actions/artifacts/{artifact_id}")
+context = metadata.get("workflow_run") or {}
+require(same_id(metadata.get("id"), artifact_id) and metadata.get("name") == "release-package", "Artifact identity mismatch.")
+require(metadata.get("expired") is False and metadata.get("digest") == "sha256:" + expected, "Artifact expired or metadata digest mismatch.")
+require(same_id(context.get("id"), run_id) and same_id(context.get("repository_id"), repository_id), "Artifact run/repository mismatch.")
+require(isinstance(context.get("head_sha"), str) and context["head_sha"], "Missing artifact platform head.")
+
+stage = tempfile.mkdtemp(prefix="release-approved-", dir=os.environ.get("RUNNER_TEMP", "/tmp"))
+handles = []
+try:
+    os.chmod(stage, 0o700)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    stage_fd = os.open(stage, flags)
+    handles.append(stage_fd)
+    require(stat.S_ISDIR(os.fstat(stage_fd).st_mode) and os.fstat(stage_fd).st_uid == os.getuid(), "Invalid private staging directory.")
+    raw_fd = os.open("package.zip", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=stage_fd)
+    require(stat.S_ISREG(os.fstat(raw_fd).st_mode), "ZIP storage must be regular.")
+    with os.fdopen(raw_fd, "w+b") as raw:
+        with subprocess.Popen(["gh", "api", f"repos/{repository}/actions/artifacts/{artifact_id}/zip"], stdout=subprocess.PIPE) as download:
+            while chunk := download.stdout.read(65536):
+                raw.write(chunk)
+            require(download.wait() == 0, "Exact artifact download failed.")
+        raw.flush()
+        raw.seek(0)
+        digest = hashlib.sha256()
+        while chunk := raw.read(65536):
+            digest.update(chunk)
+        require(digest.hexdigest() == expected, "Actual stored ZIP digest mismatch.")
+        raw.seek(0)
+        with zipfile.ZipFile(raw) as archive:
+            require(isinstance(archive.start_dir, int), "Required ZIP directory boundary is unavailable.")
+            boundaries = sorted({item.header_offset for item in archive.infolist()} | {archive.start_dir})
+            central_offset = archive.start_dir
+            nodes = {}
+            explicit = set()
+            members = []
+            for item in archive.infolist():
+                raw.seek(central_offset)
+                central_header = raw.read(46)
+                require(len(central_header) == 46 and central_header[:4] == b"PK\x01\x02", "Invalid ZIP central header.")
+                central_sizes = struct.unpack_from("<II", central_header, 20)
+                central_offset += 46 + sum(struct.unpack_from("<HHH", central_header, 28))
+                name = item.orig_filename
+                kind = stat.S_IFMT(item.external_attr >> 16)
+                require(kind in (0, stat.S_IFREG, stat.S_IFDIR), "Special ZIP member rejected.")
+                suffix = name.endswith("/")
+                dos_directory = bool(item.external_attr & 0x10)
+                require(not (kind == stat.S_IFREG and (suffix or dos_directory)), "Conflicting ZIP member type.")
+                directory = kind == stat.S_IFDIR or suffix or dos_directory
+                require(name and "\0" not in name and "\\" not in name and not name.startswith("/") and not re.match(r"^[A-Za-z]:", name), "Unsafe original ZIP name.")
+                parts = tuple((name[:-1] if suffix else name).split("/"))
+                require(all(part not in ("", ".", "..") for part in parts), "Noncanonical ZIP path.")
+                require(parts not in explicit, "Duplicate ZIP member.")
+                for length in range(1, len(parts)):
+                    parent = parts[:length]
+                    require(nodes.get(parent, "directory") == "directory", "ZIP file/prefix conflict.")
+                    nodes[parent] = "directory"
+                member_kind = "directory" if directory else "file"
+                require(parts not in nodes or nodes[parts] == member_kind == "directory", "ZIP file/directory conflict.")
+                nodes[parts] = member_kind
+                explicit.add(parts)
+                require(item.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED), "Unsupported strong-mode ZIP compression.")
+                require(not item.flag_bits & 1, "Encrypted ZIP member rejected.")
+                with archive.open(item):
+                    pass
+                raw.seek(item.header_offset)
+                header = raw.read(30)
+                require(len(header) == 30, "Truncated ZIP local header.")
+                local = struct.unpack("<4s5H3I2H", header)
+                require(local[0] == b"PK\x03\x04" and local[2] == item.flag_bits and local[3] == item.compress_type, "Conflicting local ZIP identity.")
+                encoded = name.encode("utf-8" if item.flag_bits & 0x800 else "cp437")
+                require(raw.read(local[-2]) == encoded, "Conflicting raw local ZIP name.")
+                local_extra = raw.read(local[-1])
+                require(len(local_extra) == local[-1], "Truncated local ZIP extra.")
+                extras(item.extra, name, encoded)
+                local_fields = extras(local_extra, name, encoded)
+                start = item.header_offset + 30 + local[-2] + local[-1]
+                boundary = next(offset for offset in boundaries if offset > item.header_offset)
+                require(start + item.compress_size <= boundary, "Overlapping ZIP member ranges.")
+                local_sizes = [local[8], local[7]]
+                zip64_data = local_fields.get(1, b"")
+                zip64_offset = 0
+                for index, size in enumerate(local_sizes):
+                    if size == 0xffffffff:
+                        require(zip64_offset + 8 <= len(zip64_data), "Missing local ZIP64 size.")
+                        local_sizes[index] = struct.unpack_from("<Q", zip64_data, zip64_offset)[0]
+                        zip64_offset += 8
+                if item.flag_bits & 8:
+                    require(local[6] in (0, item.CRC) and local_sizes[0] in (0, item.file_size) and local_sizes[1] in (0, item.compress_size), "Conflicting streamed ZIP local sizes/CRC.")
+                    raw.seek(start + item.compress_size)
+                    prefix = raw.read(4)
+                    # ZIP64 offsets alone do not widen per-member descriptor sizes.
+                    zip64_sizes = 0xffffffff in (local[7], local[8], *central_sizes) or max(item.file_size, item.compress_size) > 0xffffffff
+                    descriptor_format = "<IQQ" if zip64_sizes else "<III"
+                    descriptor_size = struct.calcsize(descriptor_format)
+                    matched = False
+                    for signature_size in ([0, 4] if prefix == b"PK\x07\x08" else [0]):
+                        descriptor_start = start + item.compress_size + signature_size
+                        if descriptor_start + descriptor_size <= boundary:
+                            raw.seek(descriptor_start)
+                            descriptor = raw.read(descriptor_size)
+                            matched |= struct.unpack(descriptor_format, descriptor) == (item.CRC, item.compress_size, item.file_size)
+                    require(matched, "ZIP data descriptor mismatch or truncation.")
+                else:
+                    require(local[6] == item.CRC and local_sizes == [item.file_size, item.compress_size], "Conflicting local ZIP sizes/CRC.")
+                members.append((item, parts, directory, start))
+            os.mkdir("files", 0o700, dir_fd=stage_fd)
+            tree_fd = os.open("files", flags, dir_fd=stage_fd)
+            handles.append(tree_fd)
+            directories = {(): tree_fd}
+            for parts in sorted((key for key, kind in nodes.items() if kind == "directory"), key=len):
+                parent_fd = directories[parts[:-1]]
+                os.mkdir(parts[-1], 0o700, dir_fd=parent_fd)
+                child_fd = os.open(parts[-1], flags, dir_fd=parent_fd)
+                require(stat.S_ISDIR(os.fstat(child_fd).st_mode), "Invalid extracted directory.")
+                handles.append(child_fd)
+                directories[parts] = child_fd
+            member_hashes = {}
+            for item, parts, directory, start in members:
+                output = None
+                if not directory:
+                    fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directories[parts[:-1]])
+                    require(stat.S_ISREG(os.fstat(fd).st_mode), "Invalid extracted regular file.")
+                    output = os.fdopen(fd, "wb")
+                try:
+                    raw.seek(start)
+                    remaining = item.compress_size
+                    expanded = 0
+                    crc = 0
+                    member_digest = hashlib.sha256()
+                    decoder = zlib.decompressobj(-15) if item.compress_type == zipfile.ZIP_DEFLATED else None
+                    while remaining:
+                        compressed = raw.read(min(65536, remaining))
+                        require(compressed, "Truncated ZIP compressed range.")
+                        remaining -= len(compressed)
+                        pending = compressed
+                        while True:
+                            block = decoder.decompress(pending, 65536) if decoder else pending
+                            pending = decoder.unconsumed_tail if decoder else b""
+                            expanded += len(block)
+                            crc = zlib.crc32(block, crc)
+                            member_digest.update(block)
+                            require(expanded <= item.file_size, "ZIP actual expanded size exceeds its declared size.")
+                            if output:
+                                output.write(block)
+                            if decoder and decoder.eof:
+                                require(not decoder.unused_data and not pending and remaining == 0, "Trailing ZIP compressed data.")
+                            if not pending and (not decoder or len(block) < 65536 or decoder.eof):
+                                break
+                    require(not decoder or decoder.eof, "Incomplete ZIP compressed stream.")
+                    require(expanded == item.file_size and crc == item.CRC, "ZIP expanded size/CRC mismatch.")
+                    if not directory:
+                        member_hashes["/".join(parts)] = member_digest.hexdigest()
+                finally:
+                    if output:
+                        output.close()
+            with open(os.path.join(stage, "files", "release-evidence.json"), encoding="utf-8") as evidence_file:
+                evidence = json.load(evidence_file)
+            require(evidence.get("repo") == repository and evidence.get("preflight_run_id") == run_id, "Approved evidence repository/run mismatch.")
+            require(evidence.get("target_sha") == target_sha, "Preflight evidence target SHA does not match tag SHA.")
+            attempt = decimal(evidence.get("run_attempt"))
+            completed = api(f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}")
+            completed_repository = completed.get("repository") or {}
+            require(same_id(completed.get("id"), run_id) and same_id(completed.get("run_attempt"), attempt), "Exact attempt identity mismatch.")
+            require(same_id(completed_repository.get("id"), repository_id) and completed_repository.get("full_name") == repository, "Exact attempt repository mismatch.")
+            require(completed.get("status") == "completed" and completed.get("conclusion") == "success", "Selected preflight attempt has not completed successfully.")
+            require(completed.get("head_sha") == context["head_sha"], "Platform run head mismatch.")
+            inventory_fd = os.open("verified-files.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=stage_fd)
+            with os.fdopen(inventory_fd, "w", encoding="utf-8") as inventory:
+                json.dump(member_hashes, inventory, sort_keys=True)
+    print(os.path.join(stage, "files"))
+except BaseException:
+    shutil.rmtree(stage)
+    raise
+finally:
+    for handle in reversed(handles):
+        os.close(handle)`;
+}
+
+function immutablePreflightSelectionScript(legacyDownload: boolean): string {
+  const lines = [
+    'immutable_preflight_selected=false',
+    'if [[ "${REQUIRE_IMMUTABLE_PREFLIGHT:-false}" == "true" || -n "${PREFLIGHT_ARTIFACT_ID:-}" || -n "${PREFLIGHT_ARTIFACT_SHA256:-}" ]]; then',
+    '  immutable_preflight_selected=true',
+    '  export PREFLIGHT_TARGET_SHA="$(git rev-parse "$TAG^{commit}")"',
+    '  PREFLIGHT_ARTIFACT_DIR="$(',
+    "python3 -I -S - <<'BOOTSTRAP_PREFLIGHT_PY'",
+    immutablePreflightVerifierScript(),
+    'BOOTSTRAP_PREFLIGHT_PY',
+    ')"',
+    '  PREFLIGHT_PACKAGE_ZIP="$(dirname "$PREFLIGHT_ARTIFACT_DIR")/package.zip"',
+    '  export PREFLIGHT_ARTIFACT_DIR PREFLIGHT_PACKAGE_ZIP'
+  ];
+  if (legacyDownload) {
+    lines.push(
+      'else',
+      '  PREFLIGHT_ARTIFACT_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/release-preflight.XXXXXX")"',
+      '  gh run download "$PREFLIGHT_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-package --dir "$PREFLIGHT_ARTIFACT_DIR"'
+    );
+  }
+  return [...lines, 'fi'].join("\n");
+}
+
+export function immutablePreflightPublisherScript(): string {
+  const program = String.raw`import hashlib
+import io
+import json
+import os
+import re
+import stat
+import sys
+
+phase, tree, inventory_path, artifact_prefix, notes_reference, asset_stage, plan_path = sys.argv[1:]
+asset_stage = os.path.abspath(asset_stage)
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+def canonical(value):
+    require(value and "\0" not in value and "\\" not in value and not value.startswith("/") and not re.match(r"^[A-Za-z]:", value), "Noncanonical approved asset reference.")
+    require(all(part not in ("", ".", "..") for part in value.split("/")), "Noncanonical approved asset reference.")
+    return value
+
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+tree_fd = os.open(tree, directory_flags)
+with open(inventory_path, encoding="utf-8") as inventory_file:
+    inventory = json.load(inventory_file)
+
+def member(name):
+    parts = canonical(name).split("/")
+    current = tree_fd
+    parents = []
+    try:
+        for part in parts[:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            parents.append(current)
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=current)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise ValueError("Selected member is not a contained regular file.")
+        return os.fdopen(descriptor, "rb")
+    finally:
+        for parent in reversed(parents):
+            os.close(parent)
+
+def consume(record, output=None):
+    require(inventory.get(record["key"]) == record["sha"], "Plan differs from verified member inventory.")
+    with member(record["key"]) as source:
+        digest = hashlib.sha256()
+        while block := source.read(65536):
+            digest.update(block)
+            if output is not None:
+                output.write(block)
+    require(digest.hexdigest() == record["sha"], "Consumed bytes differ from approved ZIP member.")
+
+def resolve(requested, declared_sha=""):
+    prefix = artifact_prefix + "/"
+    if requested.startswith(prefix):
+        candidates = [canonical(requested[len(prefix):])]
+        if not requested.startswith("/") and "\\" not in requested and all(part not in ("", ".", "..") for part in requested.split("/")):
+            candidates.append(requested)
+    else:
+        candidates = [canonical(requested)]
+    selected = set(name for name in candidates if name in inventory)
+    require(len(selected) == 1, "Asset reference is absent or ambiguous in the approved ZIP.")
+    key = selected.pop()
+    sha = inventory[key]
+    require(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha), "Invalid derived member digest.")
+    require(not declared_sha or re.fullmatch(r"[0-9a-f]{64}", declared_sha) and declared_sha == sha, "SHA256SUMS disagrees with approved member bytes.")
+    record = {"key": key, "sha": sha}
+    consume(record)
+    return record
+
+def upload_argument(name):
+    argument = os.path.join(asset_stage, name)
+    require(not any(character in argument for character in "#*?[\\"), "Release upload argument contains unsupported CLI label/glob syntax.")
+    return argument
+
+def reserve(path):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        identity = os.fstat(descriptor)
+        require(stat.S_ISREG(identity.st_mode), "Staging slot must be regular.")
+        return [identity.st_dev, identity.st_ino]
+    finally:
+        os.close(descriptor)
+
+def copy(record, destination):
+    descriptor = os.open(destination, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        identity = os.fstat(descriptor)
+        require(stat.S_ISREG(identity.st_mode) and [identity.st_dev, identity.st_ino] == record["slot"], "Reserved staging slot changed.")
+        os.ftruncate(descriptor, 0)
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            consume(record, output)
+    finally:
+        os.close(descriptor)
+
+try:
+    require(phase in ("plan", "copy"), "Unknown publication planning phase.")
+    if phase == "plan":
+        notes = resolve(notes_reference)
+        checksum = resolve("SHA256SUMS")
+        assets = []
+        flat_names = set()
+        with member(checksum["key"]) as checksum_file:
+            for line in io.TextIOWrapper(checksum_file, encoding="utf-8", newline="\n"):
+                line = line.removesuffix("\n")
+                if not line.strip():
+                    continue
+                # Untagged SHA256 uses 64 hex chars, a space, a mode, then the literal filename.
+                require(len(line) > 66 and re.fullmatch(r"[0-9a-f]{64}", line[:64]) and line[64:66] in ("  ", " *"), "Malformed SHA256SUMS reference.")
+                record = resolve(line[66:], line[:64])
+                name = record["key"].rsplit("/", 1)[-1]
+                if name in ("release-evidence.json", "validation-evidence.json"):
+                    continue
+                upload_argument(name)
+                require(name not in flat_names, "Duplicate flat release asset name.")
+                flat_names.add(name)
+                record["name"] = name
+                assets.append(record)
+        require(assets, "No approved release assets were selected.")
+        for record in assets:
+            record["slot"] = reserve(upload_argument(record["name"]))
+        notes["slot"] = reserve(plan_path + ".notes")
+        plan_descriptor = os.open(plan_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(plan_descriptor, "w", encoding="utf-8") as plan_file:
+            json.dump({"tree": tree, "stage": asset_stage, "notes": notes, "checksum": checksum, "assets": assets}, plan_file)
+    else:
+        plan_descriptor = os.open(plan_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(plan_descriptor, encoding="utf-8") as plan_file:
+            plan = json.load(plan_file)
+        require(plan["tree"] == tree and plan["stage"] == asset_stage, "Publication plan context mismatch.")
+        consume(plan["checksum"])
+        copy(plan["notes"], plan_path + ".notes")
+        destinations = []
+        for record in plan["assets"]:
+            require(record["name"] == canonical(record["key"]).rsplit("/", 1)[-1], "Publication plan asset-name mismatch.")
+            destination = upload_argument(record["name"])
+            copy(record, destination)
+            destinations.append(destination)
+        for destination in destinations:
+            sys.stdout.buffer.write(os.fsencode(destination) + b"\0")
+finally:
+    os.close(tree_fd)`;
+  return [
+    'plan_immutable_preflight_assets() {',
+    "  python3 -I -S - \"$1\" \"$PREFLIGHT_ARTIFACT_DIR\" \"$(dirname \"$PREFLIGHT_ARTIFACT_DIR\")/verified-files.json\" \"$ARTIFACT_DIR\" \"$RELEASE_NOTES_FILE\" \"$RELEASE_ASSET_DIR\" \"$PREFLIGHT_PUBLISH_PLAN\" <<'BOOTSTRAP_PUBLISH_PLAN_PY'",
+    program,
+    'BOOTSTRAP_PUBLISH_PLAN_PY',
+    '}',
+    'if [[ "$immutable_preflight_selected" == "true" ]]; then',
+    '  RELEASE_ASSET_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/release-assets.XXXXXX")"',
+    '  PREFLIGHT_PUBLISH_PLAN="$(dirname "$PREFLIGHT_ARTIFACT_DIR")/publication-plan.json"',
+    '  plan_immutable_preflight_assets plan',
+    'fi'
+  ].join("\n");
 }
 
 function releasePreflightReusableWorkflow(): string {

@@ -15,7 +15,8 @@ import {
 } from "./manifest.js";
 import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
-import { planFleetPolicyUpgrades, type FleetUpgradeCandidate } from "./upgrades.js";
+import { planFleetPolicyUpgrades } from "./upgrades.js";
+import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -221,7 +222,7 @@ async function main(): Promise<void> {
     .option("--json", "Emit JSON")
     .action(async (options) => {
       const raw = await import("node:fs/promises").then(({ readFile }) => readFile(path.resolve(options.input), "utf8"));
-      const plan = planFleetPolicyUpgrades(JSON.parse(raw) as FleetUpgradeCandidate[]);
+      const plan = planFleetPolicyUpgrades(parseFleetUpgradeInventory(JSON.parse(raw)));
       if (options.json) {
         process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
         return;

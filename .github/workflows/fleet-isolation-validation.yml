@@ -22,6 +22,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # The real-source fixture bundles HEAD and must include its parents.
+          fetch-depth: 0
 
       - name: Verify hosted Docker and fetch the immutable profile image
         run: |

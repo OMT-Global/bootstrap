@@ -79,6 +79,7 @@ export interface DataRepository {
   readIndex(bytes: Uint8Array): Promise<GitIndexEntry[]>;
   configEntries(bytes: Uint8Array): Promise<Array<[string, string]>>;
   ignored(paths: readonly string[]): Promise<Set<string>>;
+  archive(prefix: string): Promise<Buffer>;
   dispose(): Promise<void>;
 }
 async function gitExecutable(): Promise<string> {
@@ -141,6 +142,10 @@ export async function openDataRepository(snapshot: VerifiedGitSnapshot, options:
     demand(text(await run(["hash-object", "-t", "commit", "-w", "--stdin"], data.commit)).trim() === snapshot.baseCommit);
     await run(["update-ref", "refs/heads/codex/bootstrap-public-base", snapshot.baseCommit]);
     return Object.freeze({ root,
+      archive: (prefix: string): Promise<Buffer> => protect(async () => {
+        demand(!closed && !signal.aborted && /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}\/$/.test(prefix));
+        return run(["archive", "--format=tar", `--prefix=${prefix}`, snapshot.baseCommit]);
+      }),
       readIndex: (bytes: Uint8Array): Promise<GitIndexEntry[]> => protect(async () => {
         demand(!closed && !signal.aborted);
         demand(bytes.byteLength >= 32 && bytes.byteLength <= ISOLATION_LIMITS.lockBytes);

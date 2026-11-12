@@ -1050,12 +1050,14 @@ environments:
   stage:
     reviewers:
       - jmcte
+      - athena-omt
     requireApproval: true
     preventSelfReview: true
     branches: []
   prod:
     reviewers:
       - jmcte
+      - athena-omt
     requireApproval: true
     preventSelfReview: true
     branches:

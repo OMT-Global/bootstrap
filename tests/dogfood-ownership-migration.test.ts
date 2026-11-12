@@ -15,6 +15,20 @@ const authoritativeReviewRule = "- Before opening or updating a PR, use the `aut
 const privateReviewConsentRule = "- For private repositories, before transmitting a concrete prepared diff to an external autoreviewer, verify required network access and explicit authorization for that diff scope and reviewer provider. Request only missing access or authorization; reuse grants already supplied in the current session.";
 
 describe("Bootstrap ownership migration", () => {
+  it("keeps deployment reviewer authority limited to stage and production", async () => {
+    const manifest = await loadManifest(path.resolve("project.bootstrap.yaml"));
+    for (const environment of [manifest.environments.stage, manifest.environments.prod]) {
+      expect(environment.reviewers).toEqual(["jmcte", "athena-omt"]);
+      expect(environment.requireApproval).toBe(true);
+      expect(environment.preventSelfReview).toBe(true);
+    }
+    expect(manifest.environments.dev.reviewers).toEqual([]);
+    expect(manifest.environments.dev.requireApproval).toBe(false);
+    expect(manifest.github.reviewers).toEqual(["jmcte"]);
+    expect(manifest.environments.stage.branches).toEqual([]);
+    expect(manifest.environments.prod.branches).toEqual([manifest.project.defaultBranch]);
+  });
+
   it("preserves the owner's authoritative autoreview rule verbatim in managed AGENTS", () => {
     const manifest = normalizeManifest({
       project: { name: "instruction-preservation", owner: "acme" },

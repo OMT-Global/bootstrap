@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "62ce6942e220df3e886eba299e8551fe206063d875590bfea2337f09b62b554b",
+      "sha256": "5d8e59c4b81a6b3bbf7b653660e63aac2c64838745bea8708a99b2312a187e16",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {

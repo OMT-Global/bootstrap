@@ -17,6 +17,7 @@ import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
 import { planFleetPolicyUpgrades } from "./upgrades.js";
 import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
+import { runPublicDiscovery } from "./upgrade-discovery-command.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -213,6 +214,18 @@ async function main(): Promise<void> {
       }
 
       process.stdout.write(`${formatFleetReport(report)}\n`);
+    });
+
+  program
+    .command("discover-public-fleet")
+    .description("Read-only public manifest discovery; does not assess policy versions, drift or upgrade eligibility.")
+    .requiredOption("--org <name>", "Public GitHub organization")
+    .option("--json", "Emit JSON")
+    .option("--read-token-stdin", "Read a trusted broker-supplied public-read capability from a nonterminal stdin")
+    .action(async (options) => {
+      const result = await runPublicDiscovery(options.org, options, process.stdin);
+      process.stdout.write(`${result.output}\n`);
+      process.exitCode = result.exitCode;
     });
 
   program

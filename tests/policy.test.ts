@@ -1,15 +1,62 @@
 import { describe, expect, it } from "vitest";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import YAML from "yaml";
 
-import { normalizeManifest } from "../src/manifest.js";
+import { normalizeManifest, stringifyManifest } from "../src/manifest.js";
 import { flowPolicyDigest, loadResolvedFlowPolicy, requireImmutableProductionWorkflowRef, resolveFlowPolicy } from "../src/policy.js";
 
 const bundle = { standard: "public-repository-standard" as const, version: "1.0.0", publisher: { identitySource: "publisherKey" } };
 const manifest = normalizeManifest({ project: { name: "example", owner: "acme" }, archetype: { kind: "generic-empty" } });
 
 describe("resolveFlowPolicy", () => {
+  it("offers an explicit locale-independent digest without changing legacy pins", () => {
+    const program = `import {flowPolicyDigest,resolveFlowPolicy} from './src/policy.ts';
+import {normalizeManifest} from './src/manifest.ts';
+const bundle={standard:'public-repository-standard',version:'1.0.0','Å':1,Z:2};
+const manifest=normalizeManifest({project:{name:'example',owner:'acme'},archetype:{kind:'generic-empty'}});
+const legacy=flowPolicyDigest(bundle), stable=flowPolicyDigest(bundle,'sorted-utf16-v1');
+resolveFlowPolicy(manifest,bundle,{ref:'refs/tags/v1.0.0',sha256:legacy});
+resolveFlowPolicy(manifest,bundle,{ref:'refs/tags/v1.0.0',sha256:stable,canonicalization:'sorted-utf16-v1'});
+process.stdout.write(JSON.stringify({legacy,stable}));`;
+    const observe = (locale: string) => JSON.parse(execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program], {
+      cwd: process.cwd(), encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: locale, LC_ALL: locale }, timeout: 10000
+    })) as { legacy: string; stable: string };
+    const en = observe("en_US.UTF-8"), sv = observe("sv_SE.UTF-8");
+    const expected = createHash("sha256").update('{"Z":2,"standard":"public-repository-standard","version":"1.0.0","Å":1}').digest("hex");
+    expect(en.legacy).not.toBe(sv.legacy);
+    expect(en.stable).toBe(expected); expect(sv.stable).toBe(expected);
+  });
+
+  it("keeps the released Flow policy digest under both algorithms", () => {
+    const released = JSON.parse(readFileSync("policy/flow-public-standard.json", "utf8"));
+    const digest = "52877f4225a192c6ac2250a7f289f479be83a923ce15152c517db77ab0d5249d";
+    expect(flowPolicyDigest(released)).toBe(digest);
+    expect(flowPolicyDigest(released, "sorted-utf16-v1")).toBe(digest);
+  });
+
+  it("preserves an explicit canonicalization in the manifest and rejects unsupported values", () => {
+    const config = { project: { name: "example", owner: "acme" }, archetype: { kind: "generic-empty" },
+      policy: { flow: { ref: "refs/tags/v1.0.0", sha256: "a".repeat(64), bundlePath: "policy.json", canonicalization: "sorted-utf16-v1" } } };
+    const parsed = normalizeManifest(config as never);
+    expect(parsed.policy?.flow.canonicalization).toBe("sorted-utf16-v1");
+    expect(YAML.parse(stringifyManifest(parsed)).policy.flow.canonicalization).toBe("sorted-utf16-v1");
+    const { canonicalization: _removed, ...legacy } = config.policy.flow;
+    expect(YAML.parse(stringifyManifest(normalizeManifest({ ...config, policy: { flow: legacy } } as never))).policy.flow).not.toHaveProperty("canonicalization");
+    expect(() => normalizeManifest({ ...config, policy: { flow: { ...config.policy.flow, canonicalization: "future-version" } } } as never)).toThrow();
+  });
+
+  it("does not silently accept a pin from the other canonicalization", () => {
+    const policy = { standard: "public-repository-standard", version: "1.0.0", "Å": 1, Z: 2 };
+    const legacy = "e88a1aa09c5649429049493ddecb919813f821d1649b8a2b6bde4adb19d8073a";
+    const stable = flowPolicyDigest(policy, "sorted-utf16-v1");
+    expect(legacy).not.toBe(stable);
+    expect(() => resolveFlowPolicy(manifest, policy, { ref: "refs/tags/v1.0.0", sha256: legacy, canonicalization: "sorted-utf16-v1" })).toThrow("digest does not match");
+  });
   it("resolves a verified local bundle from an exact tag without changing the manifest", () => {
     const resolved = resolveFlowPolicy(manifest, bundle, { ref: "refs/tags/v1.0.0", sha256: flowPolicyDigest(bundle) }, ["future.setting"]);
     expect(resolved.manifest).toBe(manifest);

@@ -74,6 +74,37 @@ describe("upgrade-plan inventory input", () => {
     expect(JSON.parse(empty.stdout)).toEqual([]);
   }, 20000);
 
+  it("blocks an invalid claimed pilot and a different-target batch in the JSON plan", async () => {
+    const result = await run([
+      { ...valid, repo: "example/a", currentPolicy: "invalid" },
+      { ...valid, repo: "example/b" },
+      { ...valid, repo: "example/c", repoClass: "other", targetPolicy: "1.0.1" },
+      { ...valid, repo: "example/d", repoClass: "other", targetPolicy: "1.0.2" }
+    ]);
+    expect(result.code).toBe(0);
+    const rows = JSON.parse(result.stdout);
+    for (const repo of ["example/a", "example/b", "example/d"]) {
+      expect(rows.find((row: { repo: string }) => row.repo === repo)).toMatchObject({ status: "blocked" });
+    }
+    expect(rows.find((row: { repo: string }) => row.repo === "example/d").reason).toContain("different target");
+  }, 20000);
+
+  it("reports a failed pilot as blocked in human-readable output", async () => {
+    const result = await run([{ ...valid, pilotOutcome: "failed" }], false);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("[blocked] example/project");
+    expect(result.stdout).toContain("pilot failed");
+  }, 20000);
+
+  it("blocks the entire affected class for conflicting duplicate repository rows", async () => {
+    const result = await run([valid, { ...valid, repo: " EXAMPLE/PROJECT ", pilotOutcome: "failed" },
+      { ...valid, repo: "example/next" }]);
+    expect(result.code).toBe(0);
+    const rows = JSON.parse(result.stdout);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row: {status: string; reason: string}) => row.status === "blocked" && row.reason.includes("duplicate"))).toBe(true);
+  }, 20000);
+
   it("checks input before human-readable output without echoing rejected values", async () => {
     const marker = "fabricated-invalid-outcome-marker";
     const rejected = await run([{ ...valid, pilotOutcome: marker }], false);

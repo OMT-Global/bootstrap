@@ -56,8 +56,8 @@ describe("Bootstrap ownership migration", () => {
     const manifest = await loadManifest(path.resolve("project.bootstrap.yaml"));
     expect(manifest.repo.managedPaths).toHaveLength(47);
     expect(manifest.ci.githubHostedImage).toBe("ubuntu-24.04");
-    expect(manifest.release.postpublishRequiresPreflight).toBeUndefined();
-    expect(manifest.release.reusableWorkflowRef).toBe("913b298fab0fb008796011d940ee7362a347659d");
+    expect(manifest.release.postpublishRequiresPreflight).toBe(true);
+    expect(manifest.release.reusableWorkflowRef).toBe("9b77eaaa3ed9ad2da35ec1af9fe13d1563c7cce4");
     const plan = await planRepo(manifest, process.cwd());
     expect(plan.changes).toHaveLength(50);
     expect(plan.changes.every((change) => change.type === "unchanged")).toBe(true);

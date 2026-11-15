@@ -15,6 +15,7 @@ import {
 } from "./manifest.js";
 import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
+import { registerSignedProvenanceCommands } from "./provenance-cli.js";
 import { planFleetPolicyUpgrades } from "./upgrades.js";
 import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
 import { runPublicDiscovery } from "./upgrade-discovery-command.js";
@@ -389,6 +390,8 @@ async function main(): Promise<void> {
       );
       process.stdout.write(`Wrote ${outputPath}\n`);
     });
+
+  registerSignedProvenanceCommands(provenance);
 
   await program.parseAsync(process.argv);
 }

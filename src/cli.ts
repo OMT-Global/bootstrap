@@ -15,9 +15,11 @@ import {
 } from "./manifest.js";
 import { planRepo, applyRepo } from "./render.js";
 import { createPublicProvenance, validatePublicProvenance } from "./provenance.js";
+import { registerSignedProvenanceCommands } from "./provenance-cli.js";
 import { planFleetPolicyUpgrades } from "./upgrades.js";
 import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
 import { runPublicDiscovery } from "./upgrade-discovery-command.js";
+import { runPublicInventory } from "./upgrade-public-inventory.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -229,6 +231,22 @@ async function main(): Promise<void> {
     });
 
   program
+    .command("inventory-public-fleet")
+    .description("Read-only public policy, managed-file drift and exception inventory; never publishes upgrades.")
+    .requiredOption("--org <name>", "Public GitHub organization")
+    .requiredOption("--target-ref <ref>", "Exact Flow tag ref or commit")
+    .requiredOption("--target-sha256 <digest>", "Independently selected target policy digest")
+    .requiredOption("--generator-root <path>", "Trusted clean generator source checkout (Linux)")
+    .requiredOption("--generator-commit <sha>", "Exact trusted generator commit")
+    .option("--json", "Emit JSON")
+    .option("--read-token-stdin", "Read a trusted broker-supplied public-read capability from nonterminal stdin")
+    .action(async (options) => {
+      const result = await runPublicInventory({ ...options, generatorRoot: path.resolve(options.generatorRoot) }, process.stdin);
+      process.stdout.write(`${result.output}\n`);
+      process.exitCode = result.exitCode;
+    });
+
+  program
     .command("upgrade-plan")
     .description("Dry-run version-aware fleet policy upgrade inventory; never opens pull requests or mutates repositories.")
     .requiredOption("--input <path>", "JSON array of fleet upgrade candidates")
@@ -389,6 +407,8 @@ async function main(): Promise<void> {
       );
       process.stdout.write(`Wrote ${outputPath}\n`);
     });
+
+  registerSignedProvenanceCommands(provenance);
 
   await program.parseAsync(process.argv);
 }

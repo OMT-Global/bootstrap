@@ -133,40 +133,56 @@ export async function resolvePublicCommit(read: PublicObservationRead, repositor
   throw new ObservationFailure("invalid-response");
 }
 
-export async function readPublicFile(read: PublicObservationRead, repository: string, commit: string, file: string, expectedTree?: string): Promise<{ bytes: Buffer; text: string; oid: string; sha256: string; mode: "100644" | "100755" }> {
-  objectId(commit);
-  const parts = file.split("/");
-  if (parts.length > 32 || parts.some((part) => !part || part === "." || part === ".." || /[\x00-\x20\x7f\\]/.test(part)) || file.length > 4096) throw new ObservationFailure("invalid-input");
-  const prefix = repositoryPath(repository);
+type PublicTreeEntry = Readonly<{ path: string; mode: string; type: string; sha: string; size?: number }>;
+async function readTree(read: PublicObservationRead, prefix: string, tree: string): Promise<readonly PublicTreeEntry[]> {
+  const response = record((await read.json(`${prefix}/git/trees/${tree}`)).value);
+  if (response.sha !== tree || response.truncated !== false || !Array.isArray(response.tree) || response.tree.length > 10000) throw new ObservationFailure("invalid-response");
+  const entries = response.tree.map(record);
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    if (typeof entry.path !== "string" || !entry.path || entry.path.length > 1024 || /[\x00/]/.test(entry.path) || paths.has(entry.path) ||
+        !["100644", "100755", "120000", "040000", "160000"].includes(String(entry.mode)) ||
+        entry.type !== (entry.mode === "040000" ? "tree" : entry.mode === "160000" ? "commit" : "blob")) throw new ObservationFailure("invalid-response");
+    if (entry.size !== undefined && (typeof entry.size !== "number" || !Number.isSafeInteger(entry.size) || entry.size < 0)) throw new ObservationFailure("invalid-response");
+    paths.add(entry.path); objectId(entry.sha);
+  }
+  entries.sort((a, b) => Buffer.compare(Buffer.from(String(a.path) + (a.type === "tree" ? "/" : "")), Buffer.from(String(b.path) + (b.type === "tree" ? "/" : ""))));
+  const raw = Buffer.concat(entries.map((entry) => Buffer.concat([Buffer.from(`${String(entry.mode).replace(/^0+/, "")} ${entry.path}\0`), Buffer.from(String(entry.sha), "hex")])));
+  if (createHash("sha1").update(`tree ${raw.length}\0`).update(raw).digest("hex") !== tree) throw new ObservationFailure("invalid-response");
+  return Object.freeze(entries.map((entry) => Object.freeze({ path: String(entry.path), mode: String(entry.mode), type: String(entry.type), sha: String(entry.sha),
+    ...(entry.size === undefined ? {} : { size: entry.size as number }) })));
+}
+function sourceParts(value: string, directory = false): string[] {
+  const parts = directory && value === "" ? [] : value.split("/");
+  if (parts.length > 32 || parts.some((part) => !part || part === "." || part === ".." || /[\x00-\x20\x7f\\]/.test(part)) || value.length > 4096) throw new ObservationFailure("invalid-input");
+  return parts;
+}
+/** Complete immutable directory data bound to the selected commit/tree, never a recursive/truncated listing. */
+export async function readPublicDirectory(read: PublicObservationRead, repository: string, commit: string, directory = "", expectedTree?: string): Promise<Readonly<{ tree: string; entries: readonly PublicTreeEntry[] }>> {
+  objectId(commit); const parts = sourceParts(directory, true); const prefix = repositoryPath(repository);
   const source = record((await read.json(`${prefix}/git/commits/${commit}`)).value);
   if (source.sha !== commit) throw new ObservationFailure("invalid-response");
   let tree = objectId(record(source.tree).sha);
   if (expectedTree !== undefined && tree !== expectedTree) throw new ObservationFailure("changed-repository");
-  for (let depth = 0; depth < parts.length; depth++) {
-    const response = record((await read.json(`${prefix}/git/trees/${tree}`)).value);
-    if (response.sha !== tree || response.truncated !== false || !Array.isArray(response.tree) || response.tree.length > 10000) throw new ObservationFailure("invalid-response");
-    const entries = response.tree.map(record);
-    const paths = new Set<string>();
-    for (const entry of entries) {
-      if (typeof entry.path !== "string" || !entry.path || entry.path.length > 1024 || /[\x00/]/.test(entry.path) || paths.has(entry.path) ||
-        !["100644", "100755", "120000", "040000", "160000"].includes(String(entry.mode)) ||
-        entry.type !== (entry.mode === "040000" ? "tree" : entry.mode === "160000" ? "commit" : "blob")) throw new ObservationFailure("invalid-response");
-      paths.add(entry.path); objectId(entry.sha);
-    }
-    entries.sort((a, b) => Buffer.compare(Buffer.from(String(a.path) + (a.type === "tree" ? "/" : "")), Buffer.from(String(b.path) + (b.type === "tree" ? "/" : ""))));
-    const raw = Buffer.concat(entries.map((entry) => Buffer.concat([Buffer.from(`${String(entry.mode).replace(/^0+/, "")} ${entry.path}\0`), Buffer.from(String(entry.sha), "hex")])));
-    if (createHash("sha1").update(`tree ${raw.length}\0`).update(raw).digest("hex") !== tree) throw new ObservationFailure("invalid-response");
-    const selected = entries.find((entry) => entry.path === parts[depth]);
-    if (!selected) throw new ObservationFailure("missing-source");
-    if (depth < parts.length - 1) { if (selected.type !== "tree") throw new ObservationFailure("invalid-response"); tree = objectId(selected.sha); continue; }
-    if (selected.type !== "blob" || selected.mode !== "100644" && selected.mode !== "100755" || !Number.isSafeInteger(selected.size) || Number(selected.size) < 0 || Number(selected.size) > 1024 ** 2) throw new ObservationFailure("invalid-response");
-    const blob = record((await read.json(`${prefix}/git/blobs/${objectId(selected.sha)}`)).value);
-    if (blob.kind === "invalid-source") throw new ObservationFailure("invalid-source");
-    if (blob.sha !== selected.sha || blob.size !== selected.size || blob.encoding !== "base64" || typeof blob.content !== "string" || blob.content.length > 2 * 1024 ** 2) throw new ObservationFailure("invalid-response");
-    const compact = blob.content.replace(/[\r\n]/g, "");
-    const bytes = Buffer.from(compact, "base64");
-    if (bytes.length !== selected.size || bytes.toString("base64") !== compact || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== selected.sha) throw new ObservationFailure("invalid-response");
-    return { bytes, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), oid: String(selected.sha), sha256: createHash("sha256").update(bytes).digest("hex"), mode: selected.mode };
+  for (const part of parts) {
+    const entry = (await readTree(read, prefix, tree)).find((value) => value.path === part);
+    if (!entry) throw new ObservationFailure("missing-source");
+    if (entry.type !== "tree") throw new ObservationFailure("invalid-response");
+    tree = entry.sha;
   }
-  throw new ObservationFailure("missing-source");
+  return Object.freeze({ tree, entries: await readTree(read, prefix, tree) });
+}
+export async function readPublicFile(read: PublicObservationRead, repository: string, commit: string, file: string, expectedTree?: string): Promise<{ bytes: Buffer; text: string; oid: string; sha256: string; mode: "100644" | "100755" }> {
+  const parts = sourceParts(file);
+  const directory = await readPublicDirectory(read, repository, commit, parts.slice(0, -1).join("/"), expectedTree);
+  const selected = directory.entries.find((entry) => entry.path === parts.at(-1));
+  if (!selected) throw new ObservationFailure("missing-source");
+  if (selected.type !== "blob" || selected.mode !== "100644" && selected.mode !== "100755" || !Number.isSafeInteger(selected.size) || Number(selected.size) < 0 || Number(selected.size) > 1024 ** 2) throw new ObservationFailure("invalid-response");
+  const blob = record((await read.json(`${repositoryPath(repository)}/git/blobs/${selected.sha}`)).value);
+  if (blob.kind === "invalid-source") throw new ObservationFailure("invalid-source");
+  if (blob.sha !== selected.sha || blob.size !== selected.size || blob.encoding !== "base64" || typeof blob.content !== "string" || blob.content.length > 2 * 1024 ** 2) throw new ObservationFailure("invalid-response");
+  const compact = blob.content.replace(/[\r\n]/g, "");
+  const bytes = Buffer.from(compact, "base64");
+  if (bytes.length !== selected.size || bytes.toString("base64") !== compact || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== selected.sha) throw new ObservationFailure("invalid-response");
+  return { bytes, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), oid: selected.sha, sha256: createHash("sha256").update(bytes).digest("hex"), mode: selected.mode };
 }

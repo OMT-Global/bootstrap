@@ -1,6 +1,8 @@
 # ADR-0037: public policy and managed CI observations
 
-Status: Accepted for this source component; production qualification and GitHub approval remain separate.
+Status: Accepted
+
+Acceptance covers this source component; production qualification and GitHub approval remain separate.
 
 Issue: #62.
 

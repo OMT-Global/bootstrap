@@ -2,6 +2,10 @@
 
 Use `bootstrap upgrade-plan --input inventory.json --json` to produce a non-mutating inventory before preparing upgrade PRs. Omit `--json` for human-readable output.
 
+For inventory derived from public repository observations, use
+[`bootstrap inventory-public-fleet`](fleet-public-inventory.md). It collects policy
+bindings, managed drift and declared exceptions while retaining pending pilot gates.
+
 Each manually prepared inventory entry records repository, class, current and target exact SemVer policy versions, optional exception, and pilot outcome. Patch upgrades become eligible only after a passing first representative per class for the same target version. An invalid pilot cannot confer a pass; pending or missing pilot outcomes block later class members, and failed pilots and their class batch are blocked until remediation. The plan blocks every class containing a duplicate repository string, comparing without case or surrounding whitespace; this does not detect remote aliases. If the inventory mixes target versions within a class, run a separate plan with a representative pilot for each target; an optional leading `v` does not distinguish otherwise identical versions. Minor upgrades require independent review; major upgrades require notification and an accepted ADR. Exception-bearing upgrades require human review.
 
 The first representative is selected by locale-independent UTF-16 code-unit ordering of class and repository names. Identical class and repository strings retain input order; this does not authenticate or normalize repository identities.

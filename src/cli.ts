@@ -19,6 +19,7 @@ import { registerSignedProvenanceCommands } from "./provenance-cli.js";
 import { planFleetPolicyUpgrades } from "./upgrades.js";
 import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
 import { runPublicDiscovery } from "./upgrade-discovery-command.js";
+import { runPublicInventory } from "./upgrade-public-inventory.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -225,6 +226,22 @@ async function main(): Promise<void> {
     .option("--read-token-stdin", "Read a trusted broker-supplied public-read capability from a nonterminal stdin")
     .action(async (options) => {
       const result = await runPublicDiscovery(options.org, options, process.stdin);
+      process.stdout.write(`${result.output}\n`);
+      process.exitCode = result.exitCode;
+    });
+
+  program
+    .command("inventory-public-fleet")
+    .description("Read-only public policy, managed-file drift and exception inventory; never publishes upgrades.")
+    .requiredOption("--org <name>", "Public GitHub organization")
+    .requiredOption("--target-ref <ref>", "Exact Flow tag ref or commit")
+    .requiredOption("--target-sha256 <digest>", "Independently selected target policy digest")
+    .requiredOption("--generator-root <path>", "Trusted clean generator source checkout (Linux)")
+    .requiredOption("--generator-commit <sha>", "Exact trusted generator commit")
+    .option("--json", "Emit JSON")
+    .option("--read-token-stdin", "Read a trusted broker-supplied public-read capability from nonterminal stdin")
+    .action(async (options) => {
+      const result = await runPublicInventory({ ...options, generatorRoot: path.resolve(options.generatorRoot) }, process.stdin);
       process.stdout.write(`${result.output}\n`);
       process.exitCode = result.exitCode;
     });

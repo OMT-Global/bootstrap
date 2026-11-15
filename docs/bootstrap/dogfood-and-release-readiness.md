@@ -75,6 +75,8 @@ canonical SHA-256: 52877f4225a192c6ac2250a7f289f479be83a923ce15152c517db77ab0d52
 
 The preview added a manifest-local, digest-pinned immutable snapshot and `policy.flow`, then called `loadResolvedFlowPolicy` and `planRepo`. Relative to the same baseline projection, only the rendered manifest and ownership sidecar contents changed. The committed snapshot is input data, not an editable replacement policy authority; updates must retrieve a released immutable source, recheck its digest, and preserve [ADR-0001's](../decisions/ADR-0001-public-repository-standard-v1.md) pinned-source boundary.
 
+[ADR-0055](../decisions/ADR-0055-versioned-policy-digest.md) specifies an explicit locale-independent digest mode while preserving legacy pins. The current Flow v1.0.1 policy has the same digest under both modes; adoption still requires an upgraded Bootstrap and an explicit pin migration.
+
 The baseline plan already proposed fourteen file changes, including README, AGENTS, CODEOWNERS, onboarding, and workflow updates. Those changes predate the candidate Flow pin and require separate inspection. No apply, home sync, legal-file change, GitHub setting change, or live repository migration was performed for this preview.
 
 ## Required GitHub evidence

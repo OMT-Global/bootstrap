@@ -50,7 +50,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/pr-fast-ci.yml": {
-      "sha256": "e787165a22218228dd2d6ac1799b64227701f97fc6379031c5dd801026e202f1",
+      "sha256": "6d14e466a2004a7bdd5f62b479719428123ce70d4d14bbaee0de02cb81e4c1f4",
       "source": "bootstrap"
     },
     ".github/workflows/release-postpublish-reusable.yml": {
@@ -146,7 +146,7 @@
       "source": "bootstrap"
     },
     "scripts/ci/check-pr-governance.sh": {
-      "sha256": "296a576f96a19af3785a31a472640bf5e342113f64a366f7ca3292883c46f17c",
+      "sha256": "b483ae0fdd93dffba12d204389d2f428fb4579b6d2a0884e748e63a5b92f8edb",
       "source": "bootstrap"
     },
     "scripts/ci/report-issue-hygiene.mjs": {

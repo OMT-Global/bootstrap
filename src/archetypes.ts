@@ -991,9 +991,9 @@ function prGovernanceScript(manifest: BootstrapManifest): string {
     fetch() {
       local url="$1"
       local destination="$2"
-      curl --fail --silent --show-error --location --retry 2 \\
+      printf 'Authorization: Bearer %s\\n' "$GITHUB_TOKEN" | curl --fail --silent --show-error --location --retry 2 \\
         --header "Accept: application/vnd.github+json" \\
-        --header "Authorization: Bearer $GITHUB_TOKEN" \\
+        --header @- \\
         "$url" >"$destination"
     }
 
@@ -3066,8 +3066,7 @@ ${indentBlock(setupSteps(manifest), 10)}
               git -C "$merge_tree_repo" init -q
               git -C "$merge_tree_repo" remote add origin "https://github.com/$PR_BASE_REPO.git"
               git_auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\\n')"
-              git -C "$merge_tree_repo" config http.extraheader "Authorization: Basic $git_auth"
-              git -C "$merge_tree_repo" fetch --no-tags origin "$PR_BASE_SHA" >/dev/null 2>&1
+              BOOTSTRAP_GIT_AUTH_HEADER="Authorization: Basic $git_auth" git -C "$merge_tree_repo" --config-env=http.extraHeader=BOOTSTRAP_GIT_AUTH_HEADER fetch --no-tags origin "$PR_BASE_SHA" >/dev/null 2>&1
               base_first_parent_contains() {
                 git -C "$merge_tree_repo" rev-list --first-parent "$PR_BASE_SHA" | grep -F -x "$1" >/dev/null
               }
@@ -3075,7 +3074,7 @@ ${indentBlock(setupSteps(manifest), 10)}
                 local merge_commit="$1"
                 local first_parent="$2"
                 local second_parent="$3"
-                git -C "$merge_tree_repo" fetch --no-tags origin "$merge_commit" "$first_parent" "$second_parent" >/dev/null 2>&1 || return 1
+                BOOTSTRAP_GIT_AUTH_HEADER="Authorization: Basic $git_auth" git -C "$merge_tree_repo" --config-env=http.extraHeader=BOOTSTRAP_GIT_AUTH_HEADER fetch --no-tags origin "$merge_commit" "$first_parent" "$second_parent" >/dev/null 2>&1 || return 1
                 local actual_tree
                 local expected_tree
                 actual_tree="$(git -C "$merge_tree_repo" rev-parse "$merge_commit^{tree}")" || return 1
@@ -3088,7 +3087,7 @@ ${indentBlock(setupSteps(manifest), 10)}
                 bot_only=true
                 previous_commit=""
                 while :; do
-                  response="$(curl --fail-with-body --silent --show-error --location --header "Authorization: Bearer $GITHUB_TOKEN" --header "Accept: application/vnd.github+json" "$PR_COMMITS_URL?per_page=100&page=$page")"
+                  response="$(printf 'Authorization: Bearer %s\\n' "$GITHUB_TOKEN" | curl --fail-with-body --silent --show-error --location --header @- --header "Accept: application/vnd.github+json" "$PR_COMMITS_URL?per_page=100&page=$page")"
                   jq -e 'type == "array"' <<<"$response" >/dev/null
                   count="$(jq 'length' <<<"$response")"
                   [[ "$count" -gt 0 ]] || break

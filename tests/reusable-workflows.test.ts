@@ -111,32 +111,61 @@ describe("reusable workflows", () => {
     expect((publish.jobs as any).publish.environment).toBe(
       "${{ inputs.publish_environment || 'release-publish' }}"
     );
-    expect((publish.jobs as any).publish.steps[1].run).toContain("PREFLIGHT_ARTIFACT_DIR");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("RELEASE_ASSET_DIR");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("while read -r asset_sha asset_path; do");
-    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
-    expect((publish.jobs as any).publish.steps[1].run).toContain("resolve_preflight_asset()");
-    expect((publish.jobs as any).publish.steps[1].run).toContain('if ! release_notes_source="$(resolve_preflight_asset "$RELEASE_NOTES_FILE")"; then');
-    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p -- "$release_notes_source" "$RELEASE_NOTES_FILE"');
-    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
-    expect((publish.jobs as any).publish.steps[1].run).toContain('if ! asset_source="$(resolve_preflight_asset "$asset_path")"; then');
-    expect((publish.jobs as any).publish.steps[1].run).toContain('cp -p -- "$asset_source" "$RELEASE_ASSET_DIR/$asset_name"');
-    expect((publish.jobs as any).publish.steps[1].run).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
-    expect((publish.jobs as any).publish.steps[1].run).toContain('[[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }');
-    expect((publish.jobs as any).publish.steps[1].run).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
-    expect((publish.jobs as any).publish.steps[1].run).toContain(
+    const publishSteps = (publish.jobs as any).publish.steps;
+    const publishMatches = publishSteps.filter((step: any) => step.name === "Publish proven release artifact");
+    expect(publishMatches).toHaveLength(1);
+    const publishStep = publishMatches[0];
+    expect(publishStep.run).toContain("PREFLIGHT_ARTIFACT_DIR");
+    expect(publishStep.run).toContain("SHA256SUMS");
+    expect(publishStep.run).toContain("RELEASE_ASSET_DIR");
+    expect(publishStep.run).toContain("while read -r asset_sha asset_path; do");
+    expect(publishStep.run).toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS" ]] || { echo "Missing preflight SHA256SUMS manifest." >&2; exit 1; }');
+    expect(publishStep.run).toContain("resolve_preflight_asset()");
+    expect(publishStep.run).toContain('if ! release_notes_source="$(resolve_preflight_asset "$RELEASE_NOTES_FILE")"; then');
+    expect(publishStep.run).toContain('cp -p -- "$release_notes_source" "$RELEASE_NOTES_FILE"');
+    expect(publishStep.run).toContain('[[ "$asset_path" != *"release-evidence.json" && "$asset_path" != *"validation-evidence.json" ]] || continue');
+    expect(publishStep.run).toContain('if ! asset_source="$(resolve_preflight_asset "$asset_path")"; then');
+    expect(publishStep.run).toContain('cp -p -- "$asset_source" "$RELEASE_ASSET_DIR/$asset_name"');
+    expect(publishStep.run).toContain('release_assets+=("$RELEASE_ASSET_DIR/$asset_name")');
+    expect(publishStep.run).toContain('[[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }');
+    expect(publishStep.run).not.toContain('gh release upload "$TAG" "$ARTIFACT_DIR"/*');
+    expect(publishStep.run).toContain(
       'Preflight evidence run ID does not match the requested preflight run.'
     );
-    expect((publish.jobs as any).publish.steps[1].run).toContain("Preflight evidence target SHA does not match tag SHA.");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence target SHA does not match tag SHA.");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence-validation");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("release-evidence.json");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("SHA256SUMS");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("while read -r asset_sha asset_path; do");
-    expect((publish.jobs as any).publish.steps[1].run).not.toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/$asset_path" ]] ||');
-    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence run ID does not match the requested validation run.");
-    expect((publish.jobs as any).publish.steps[1].run).toContain("Validation evidence repo does not match the current repository.");
+    expect(publishStep.run).toContain("Preflight evidence target SHA does not match tag SHA.");
+    expect(publishStep.run).toContain("Validation evidence target SHA does not match tag SHA.");
+    expect(publishStep.run).toContain("release-evidence-validation");
+    expect(publishStep.run).toContain("release-evidence.json");
+    expect(publishStep.run).toContain("SHA256SUMS");
+    expect(publishStep.run).toContain("while read -r asset_sha asset_path; do");
+    expect(publishStep.run).not.toContain('[[ -f "$PREFLIGHT_ARTIFACT_DIR/$asset_path" ]] ||');
+    expect(publishStep.run).toContain("Validation evidence run ID does not match the requested validation run.");
+    expect(publishStep.run).toContain("Validation evidence repo does not match the current repository.");
+    expect((publish.on as any).workflow_call.inputs.verify_existing_release.default).toBe(false);
+    expect(publishStep.env).toMatchObject({
+      TAG: "${{ inputs.tag }}", PREFLIGHT_RUN_ID: "${{ inputs.preflight_run_id }}",
+      VALIDATION_RUN_ID: "${{ inputs.validation_run_id }}", VERIFY_EXISTING_RELEASE: "${{ inputs.verify_existing_release }}",
+      APPROVAL_PULL_NUMBER: "${{ inputs.approval_pull_number }}", RELEASE_RUNTIME_COMMIT: "${{ vars.RELEASE_RUNTIME_COMMIT }}",
+      APPROVED_RUNTIME_ROOT: "${{ github.workspace }}/.bootstrap-release-runtime",
+      RELEASE_APP_PRIVATE_KEY: "${{ inputs.verify_existing_release && secrets.RELEASE_APP_PRIVATE_KEY || '' }}"
+    });
+    const targetCheckout = publishSteps.find((step: any) => step.with?.ref === "${{ inputs.tag }}");
+    expect(targetCheckout.with).toMatchObject({ path: "${{ inputs.verify_existing_release && 'release-target' || '.' }}",
+      "persist-credentials": "${{ !inputs.verify_existing_release }}" });
+    for (const name of ["Validate approved retry runtime selection", "Checkout approved retry runtime", "Build approved retry runtime before exposing App key"]) {
+      const matches = publishSteps.filter((step: any) => step.name === name);
+      expect(matches).toHaveLength(1);
+      expect(matches[0].if).toBe("inputs.verify_existing_release");
+      expect(publishSteps.indexOf(matches[0])).toBeLessThan(publishSteps.indexOf(publishStep));
+      expect(matches[0].env ?? {}).not.toHaveProperty("RELEASE_APP_PRIVATE_KEY");
+    }
+    expect(publishSteps.find((step: any) => step.name === "Checkout approved retry runtime").with).toMatchObject({
+      repository: "OMT-Global/bootstrap", ref: "${{ vars.RELEASE_RUNTIME_COMMIT }}", path: ".bootstrap-release-runtime", "persist-credentials": false
+    });
+    expect(publishSteps.find((step: any) => step.name === "Build approved retry runtime before exposing App key").run)
+      .toContain('[[ "$(git rev-parse HEAD)" == "$RELEASE_RUNTIME_COMMIT" ]] || exit 1');
+    expect(publishSteps.find((step: any) => step.with?.name === "${{ inputs.evidence_artifact_name }}-publish").with.path)
+      .toBe("${{ inputs.verify_existing_release && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}");
     expect(postpublish.name).toBe("Reusable Release Postpublish");
     expect((postpublish.jobs as any).postpublish).toBeTruthy();
     expect(JSON.stringify(postpublish)).not.toContain("|| true");

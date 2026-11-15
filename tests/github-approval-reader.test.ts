@@ -34,9 +34,10 @@ function harness(overrides?: (kind: string, count: number, url: URL) => unknown)
 describe("read-only GitHub approval observations", () => {
   it("feeds an exact digest-bound GitHub approval into the comparator", async () => {
     const manifest: ReleaseApprovalManifest = {
-      schema_version: 1, approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617", expires_at: "2026-11-12T12:30:00.000Z", action: "publish_new_release",
+      schema_version: 2, approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617", expires_at: "2026-11-12T12:30:00.000Z", action: "publish_new_release",
       repository: { id: "100", full_name: "example/project" }, tag: "v1.2.3", version: "v1.2.3", channel: "stable",
-      target: { commit: "c".repeat(40), tree: "d".repeat(40) },
+      publication: { notes_asset: "archive.tar.gz", latest: true },
+  target: { commit: "c".repeat(40), tree: "d".repeat(40) },
       preflight: { workflow_path: ".github/workflows/preflight.yml", workflow_id: "122", workflow_commit: "e".repeat(40), run_id: "120", attempt: "1", artifact_id: "121", archive_sha256: "f".repeat(64), requester_id: "112", attempt_actor_id: "114" },
       assets: [{ name: "archive.tar.gz", size: 19, sha256: "1".repeat(64) }]
     };

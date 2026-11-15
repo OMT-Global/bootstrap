@@ -32,9 +32,10 @@ function harness(override?: (kind: string, count: number) => unknown) {
 describe("GitHub preflight metadata", () => {
   it("binds the observed run identities and target tree to a digest-approved manifest", async () => {
     const metadata = await readGitHubPreflightMetadata(harness().input);
-    const actual = { schema_version: 1 as const, action: "publish_new_release" as const,
+    const actual = { schema_version: 2 as const, action: "publish_new_release" as const,
       repository: { id: metadata.repository_id, full_name: "example/project" }, tag: "v1.2.3", version: "v1.2.3", channel: "stable" as const,
-      target: { commit: metadata.target_commit, tree: metadata.target_tree },
+      publication: { notes_asset: "source.tar.gz", latest: true },
+  target: { commit: metadata.target_commit, tree: metadata.target_tree },
       preflight: { workflow_path: metadata.workflow_path, workflow_id: metadata.workflow_id, workflow_commit: metadata.workflow_commit, run_id: metadata.run_id, attempt: metadata.attempt,
         artifact_id: metadata.artifact_id, archive_sha256: metadata.archive_sha256, requester_id: metadata.requester_id, attempt_actor_id: metadata.attempt_actor_id },
       assets: [{ name: "source.tar.gz", size: 10, sha256: "e".repeat(64) }] };

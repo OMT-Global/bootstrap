@@ -41,7 +41,8 @@ export function prepareApprovedReleasePackage(input: {
       if (createHash("sha256").update(copy).digest("hex") !== asset.sha256) throw new Error();
       assets.set(asset.name, copy);
     }
-    const notesBytes = assets.get(input.notesAssetName);
+    if (input.notesAssetName !== manifest.publication.notes_asset) throw new Error();
+    const notesBytes = assets.get(manifest.publication.notes_asset);
     if (!notesBytes || notesBytes.byteLength > 1024 * 1024) throw new Error();
     const notes = new TextDecoder("utf-8", { fatal: true }).decode(notesBytes);
     if (notes.includes("\0")) throw new Error();
@@ -57,13 +58,13 @@ export function prepareApprovedReleasePackage(input: {
 
 /** Immutable metadata is derived from the verified approval, not caller labels. */
 export function approvedReleasePackageMetadata(value: ApprovedReleasePackage): Readonly<{
-  repositoryId: string; repository: string; tag: string; commit: string; notes: string; approvalId: string; approvalSha256: string; approvedAt: string;
-  prerelease: boolean; assets: readonly Readonly<{ name: string; size: number; sha256: string }>[];
+  repositoryId: string; repository: string; tag: string; commit: string; notes: string; notesAssetName: string; approvalId: string; approvalSha256: string; approvedAt: string;
+  prerelease: boolean; latest: boolean; assets: readonly Readonly<{ name: string; size: number; sha256: string }>[];
 }> {
   const data = dataFor(value);
   return Object.freeze({ repositoryId: data.manifest.repository.id, repository: data.manifest.repository.full_name,
-    tag: data.manifest.tag, commit: data.manifest.target.commit, notes: data.notes, approvalId: data.manifest.approval_id,
-    approvalSha256: data.approvalSha256, approvedAt: data.approvedAt, prerelease: data.manifest.channel === "rc" || data.manifest.channel === "beta",
+    tag: data.manifest.tag, commit: data.manifest.target.commit, notes: data.notes, notesAssetName: data.manifest.publication.notes_asset, approvalId: data.manifest.approval_id,
+    approvalSha256: data.approvalSha256, approvedAt: data.approvedAt, prerelease: data.manifest.channel === "rc" || data.manifest.channel === "beta", latest: data.manifest.publication.latest,
     assets: Object.freeze(data.manifest.assets.map((item) => Object.freeze({ ...item }))) });
 }
 

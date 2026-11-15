@@ -11,10 +11,11 @@ function sorted(value: unknown): unknown {
 export function packageFixture() {
   const notes = Buffer.from("Release notes\n");
   const archive = Buffer.from("asset");
-  const manifest: ReleaseApprovalManifest = { schema_version: 1, approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617",
+  const manifest: ReleaseApprovalManifest = { schema_version: 2, approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617",
     expires_at: new Date(referenceTime + 30 * 60_000).toISOString(), action: "publish_new_release",
     repository: { id: "100", full_name: "Example/repo" }, tag: "v1.2.3", version: "v1.2.3", channel: "stable",
-    target: { commit: "a".repeat(40), tree: "b".repeat(40) },
+    publication: { notes_asset: "RELEASE_NOTES.md", latest: true },
+  target: { commit: "a".repeat(40), tree: "b".repeat(40) },
     preflight: { workflow_path: ".github/workflows/preflight.yml", workflow_id: "122", workflow_commit: "c".repeat(40),
       run_id: "120", attempt: "1", artifact_id: "121", archive_sha256: "d".repeat(64), requester_id: "112", attempt_actor_id: "114" },
     assets: [{ name: "RELEASE_NOTES.md", size: notes.length, sha256: digest(notes) }, { name: "archive.tar.gz", size: archive.length, sha256: digest(archive) }] };

@@ -21,6 +21,7 @@ describe("approved first-publication package", () => {
     ["missing asset", (i: ReturnType<typeof packageFixture>) => { i.assets.pop(); }],
     ["extra asset", (i: ReturnType<typeof packageFixture>) => { i.assets.push({ name: "extra", bytes: Buffer.from("x") }); }],
     ["duplicate name", (i: ReturnType<typeof packageFixture>) => { i.assets[0]!.name = "RELEASE_NOTES.md"; }],
+    ["different approved asset used as notes", (i: ReturnType<typeof packageFixture>) => { i.notesAssetName = "archive.tar.gz"; }],
     ["wrong notes name", (i: ReturnType<typeof packageFixture>) => { i.notesAssetName = "missing"; }],
     ["wrong approver", (i: ReturnType<typeof packageFixture>) => { i.observation.reviews[0]!.reviewer_id = "999"; }],
     ["wrong target", (i: ReturnType<typeof packageFixture>) => { i.observation.actual.target.commit = "c".repeat(40); }]

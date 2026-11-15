@@ -6,7 +6,7 @@ const sha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
 const asset = z.object({ name: z.string().min(1).max(255).regex(/^[^/\\\x00-\x1f\x7f]+$/), size: z.number().int().nonnegative().safe(), sha256: digest }).strict();
 const manifestSchema = z.object({
-  schema_version: z.literal(1),
+  schema_version: z.literal(2),
   approval_id: z.string().uuid(),
   expires_at: z.string().datetime(),
   action: z.literal("publish_new_release"),
@@ -14,6 +14,7 @@ const manifestSchema = z.object({
   tag: z.string().max(255).regex(/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:rc|beta)\.[0-9]+)?$/),
   version: z.string().max(255),
   channel: z.enum(["rc", "beta", "stable", "maintenance"]),
+  publication: z.object({ notes_asset: z.string().min(1).max(255), latest: z.boolean() }).strict(),
   target: z.object({ commit: sha, tree: sha }).strict(),
   preflight: z.object({ workflow_path: z.string().regex(/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/), workflow_id: id, workflow_commit: sha, run_id: id, attempt: id, artifact_id: id, archive_sha256: digest, requester_id: id, attempt_actor_id: id }).strict(),
   assets: z.array(asset).min(1).max(100)
@@ -71,7 +72,8 @@ export function verifyReleaseApproval(observation: ApprovalObservation, policy: 
     const prerelease = /-(?:rc|beta)\.[0-9]+$/.test(manifest.tag);
     if (manifest.version !== manifest.tag || prerelease !== (manifest.channel === "rc" || manifest.channel === "beta")) throw new Error();
     const names = manifest.assets.map((entry) => entry.name);
-    if (new Set(names).size !== names.length || names.some((name, index) => index > 0 && (names[index - 1] ?? "") >= name)) throw new Error();
+    if (!names.includes(manifest.publication.notes_asset) || (prerelease && manifest.publication.latest) ||
+        new Set(names).size !== names.length || names.some((name, index) => index > 0 && (names[index - 1] ?? "") >= name)) throw new Error();
     const { approval_id: _approval, expires_at: _expiry, ...bound } = manifest;
     if (canonical(bound) !== canonical(observation.actual)) throw new Error();
     const pull = observation.pull;

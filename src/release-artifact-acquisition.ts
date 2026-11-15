@@ -51,19 +51,25 @@ async function invoke(python: string, ghDirectory: string, environment: Record<s
 export async function acquireReviewedPreflight(input: {
   reviewed: ReviewedReleaseManifest; token: string; pythonPath: string; pythonSha256: string;
   ghPath: string; ghSha256: string; runtimeDir: string; maxAssetBytes: number;
+  maxArchiveBytes: number; maxExpandedBytes: number; maxMembers: number;
 }): Promise<{ assets: readonly { name: string; bytes: Uint8Array }[]; evidence: Readonly<{ version: string; channel: string; targetCommit: string; runId: string; attempt: string }> }> {
   let scratch = "";
   try {
     if (process.platform === "win32" || !path.isAbsolute(input.runtimeDir) || path.basename(input.ghPath) !== "gh" ||
         !/^[\x21-\x7e]{1,4096}$/.test(input.token) || !Number.isSafeInteger(input.maxAssetBytes) ||
-        input.maxAssetBytes < 1 || input.maxAssetBytes > 256 * 1024 * 1024) throw new Error();
+        input.maxAssetBytes < 1 || input.maxAssetBytes > 256 * 1024 * 1024 ||
+        !Number.isSafeInteger(input.maxArchiveBytes) || input.maxArchiveBytes < 1 || input.maxArchiveBytes > 1024 ** 3 ||
+        !Number.isSafeInteger(input.maxExpandedBytes) || input.maxExpandedBytes < 1 || input.maxExpandedBytes > 2 * 1024 ** 3 ||
+        !Number.isSafeInteger(input.maxMembers) || input.maxMembers < 1 || input.maxMembers > 10000) throw new Error();
     const selection = reviewedReleaseSelectors(input.reviewed);
     const total = selection.assets.reduce((sum, asset) => sum + asset.size, 0);
     if (!Number.isSafeInteger(total) || total > input.maxAssetBytes) throw new Error();
     await pinnedExecutable(input.pythonPath, input.pythonSha256);
     await pinnedExecutable(input.ghPath, input.ghSha256);
     scratch = await mkdtemp(path.join(await realpath(input.runtimeDir), "bootstrap-approved-acquisition-"));
-    const output = await invoke(input.pythonPath, path.dirname(input.ghPath), reviewedPreflightEnvironment(input.reviewed), input.token, scratch);
+    const output = await invoke(input.pythonPath, path.dirname(input.ghPath), { ...reviewedPreflightEnvironment(input.reviewed),
+      PREFLIGHT_MAX_ARCHIVE_BYTES: String(input.maxArchiveBytes), PREFLIGHT_MAX_EXPANDED_BYTES: String(input.maxExpandedBytes),
+      PREFLIGHT_MAX_MEMBERS: String(input.maxMembers) }, input.token, scratch);
     if (!/^\/[^\n\r]+\n$/.test(output)) throw new Error();
     const root = output.slice(0, -1);
     const relative = path.relative(scratch, root).split(path.sep);

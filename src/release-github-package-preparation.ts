@@ -22,7 +22,7 @@ export async function prepareGitHubReleasePackage(input: {
   preflightWorkflowPath: string; preflightWorkflowCommit: string;
   tag: string; notesAssetName: string; latest: boolean; requireSignedTag: boolean;
   pythonPath: string; pythonSha256: string; ghPath: string; ghSha256: string;
-  runtimeDir: string; maxAssetBytes: number; sourceSnapshot: VerifiedGitSnapshot;
+  runtimeDir: string; maxAssetBytes: number; maxArchiveBytes: number; maxExpandedBytes: number; maxMembers: number; sourceSnapshot: VerifiedGitSnapshot;
   assertTarget: (tag: string, commit: string) => Promise<void>;
 }): Promise<ApprovedReleasePackage> {
   try {
@@ -44,7 +44,8 @@ export async function prepareGitHubReleasePackage(input: {
           ...(input.approval.fetchImpl ? { fetchImpl: input.approval.fetchImpl } : {}) });
         const acquired = await acquireReviewedPreflight({ reviewed, token: input.approval.token, pythonPath: input.pythonPath,
           pythonSha256: input.pythonSha256, ghPath: input.ghPath, ghSha256: input.ghSha256,
-          runtimeDir: input.runtimeDir, maxAssetBytes: input.maxAssetBytes });
+          runtimeDir: input.runtimeDir, maxAssetBytes: input.maxAssetBytes, maxArchiveBytes: input.maxArchiveBytes,
+          maxExpandedBytes: input.maxExpandedBytes, maxMembers: input.maxMembers });
         await checkTarget(metadata.target_commit);
         if (input.notesAssetName !== "RELEASE_NOTES.md") throw new Error();
         await verifySourceReleasePackage({ snapshot: input.sourceSnapshot, repository: input.approval.repository,

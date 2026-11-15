@@ -20,3 +20,11 @@ token authority, protected execution, tag protection, trusted tool pins, source
 checkout provenance, runtime resource bounds and later review checks remain
 separate gates. The Linux source capture has only simulated Linux eligibility
 in local macOS tests. No workflow invokes these helpers.
+
+The inactive acquisition adapter requires explicit ZIP download, expanded-byte
+and member-count limits. It rejects values above 1 GiB, 2 GiB and 10,000 members,
+respectively; the eventual runtime policy must choose suitable limits at or below
+those ceilings. Provider metadata is capped at 1 MiB and duplicate JSON keys are
+rejected. A caller that invokes the older verifier directly without limits keeps
+its earlier behavior and is not evidence of the bounded approved path. Runtime
+CPU, memory and disk isolation remain separate requirements.

@@ -212,7 +212,7 @@ type FixtureOptions = {
   metadataFailure?: boolean;
   downloadFailure?: boolean;
   attemptFailure?: boolean;
-  metadataText?: string;
+  metadataText?: string | ((digest: string) => string);
   attemptText?: string;
   wrongDownloadedBytes?: boolean;
   reviewEnvironment?: (digest: string) => Record<string, string>;
@@ -284,7 +284,7 @@ async function runVerifier(options: FixtureOptions = {}) {
     const attemptFile = path.join(directory, "attempt.json");
     const callsFile = path.join(directory, "calls");
     await Promise.all([
-      writeFile(metadataFile, options.metadataText ?? platformJson(metadata)),
+      writeFile(metadataFile, typeof options.metadataText === "function" ? options.metadataText(digest) : options.metadataText ?? platformJson(metadata)),
       writeFile(attemptFile, options.attemptText ?? platformJson(attempt)),
       writeFile(callsFile, "")
     ]);
@@ -479,7 +479,7 @@ describe("immutable preflight verifier", () => {
         const { actual: _actual, ...review } = source.observation;
         return { fact: reviewReleaseManifest(review, source.policy, source.now), source };
       }
-      const base = { token: "fabricated-read-token", pythonPath, pythonSha256, ghPath: gh, ghSha256, runtimeDir: location, maxAssetBytes: 1024 * 1024 };
+      const base = { token: "fabricated-read-token", pythonPath, pythonSha256, ghPath: gh, ghSha256, runtimeDir: location, maxAssetBytes: 1024 * 1024, maxArchiveBytes: 2 * 1024 * 1024, maxExpandedBytes: 2 * 1024 * 1024, maxMembers: 100 };
       const selected = await reviewed();
       const assets = await acquireReviewedArtifact({ ...base, reviewed: selected.fact });
       expect(assets.map((asset) => asset.name)).toEqual(["RELEASE_NOTES.md", "artifact-manifest.json", sourceName, `${sourceName}.sha256`]);
@@ -529,7 +529,7 @@ describe("immutable preflight verifier", () => {
           expectedWorkflowCommit: publishRun.head_sha, token: base.token, fetchImpl: fakeFetch },
         preflightWorkflowPath: preflightRun.path, preflightWorkflowCommit: preflightRun.head_sha,
         tag: "v1.2.3", notesAssetName: "RELEASE_NOTES.md", latest: true, requireSignedTag: false,
-        pythonPath, pythonSha256, ghPath: gh, ghSha256, runtimeDir: location, maxAssetBytes: base.maxAssetBytes, sourceSnapshot: snapshot,
+        pythonPath, pythonSha256, ghPath: gh, ghSha256, runtimeDir: location, maxAssetBytes: base.maxAssetBytes, maxArchiveBytes: base.maxArchiveBytes, maxExpandedBytes: base.maxExpandedBytes, maxMembers: base.maxMembers, sourceSnapshot: snapshot,
         async assertTarget(tag, commit) { targetChecks.push(`${tag}:${commit}`); }
       };
       const observed = await prepareGitHubReleasePackage(githubInput);
@@ -541,6 +541,9 @@ describe("immutable preflight verifier", () => {
       await expect(prepareGitHubReleasePackage({ ...githubInput, sourceSnapshot: { ...snapshot } })).rejects.toThrow("GitHub release preparation unavailable.");
       await expect(prepareGitHubReleasePackage({ ...githubInput, latest: false })).rejects.toThrow("GitHub release preparation unavailable.");
       await expect(acquireReviewedArtifact({ ...base, reviewed: selected.fact, ghSha256: "0".repeat(64) })).rejects.toThrow("Reviewed artifact acquisition unavailable.");
+      for (const limits of [{ maxArchiveBytes: 0 }, { maxExpandedBytes: -1 }, { maxMembers: 10001 }]) {
+        await expect(acquireReviewedPreflight({ ...base, ...limits, reviewed: selected.fact })).rejects.toThrow();
+      }
       await expect(acquireReviewedArtifact({ ...base, reviewed: (await reviewed([], true)).fact })).rejects.toThrow();
       await expect(acquireReviewedArtifact({ ...base, reviewed: (await reviewed([{ name: "nested/RELEASE_NOTES.md", data: "different" }])).fact })).rejects.toThrow();
       for (const evidence of [{ version: "v9.0.0" }, { channel: "beta" }, { checks: { prep: "skipped", preflight: "passed", build: "passed" } }]) {
@@ -591,6 +594,38 @@ describe("immutable preflight verifier", () => {
     const changed = await runVerifier({ evidence: { run_attempt: "2" }, attemptRoute: "2", env: { PREFLIGHT_APPROVED_ATTEMPT: selectors.attempt } });
     expectRejected(changed);
     expect(changed.calls.some((call) => call.includes("/attempts/"))).toBe(false);
+  });
+
+  it.each([
+    ["archive", { PREFLIGHT_MAX_ARCHIVE_BYTES: "1", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: "100" }],
+    ["expanded", { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "1", PREFLIGHT_MAX_MEMBERS: "100" }],
+    ["members", { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: "2" }],
+    ["incomplete limits", { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000" }]
+  ])("rejects an exceeded or invalid %s resource bound", async (_name, env) => {
+    expectRejected(await runVerifier({ env }));
+  });
+
+  it("rejects an oversized provider metadata response before downloading the archive", async () => {
+    const result = await runVerifier({ metadataText: " ".repeat(1024 * 1024 + 1) });
+    expectRejected(result);
+    expect(result.stderr).toContain("Provider response exceeds bound.");
+    expect(result.calls).toHaveLength(1);
+  });
+
+  it("rejects duplicate keys in provider artifact metadata", async () => {
+    const result = await runVerifier({ metadataText: (digest) => `{"id":202,"id":202,"name":"release-package","expired":false,"digest":"sha256:${digest}","workflow_run":{"id":101,"repository_id":42,"head_repository_id":42,"head_sha":"${platformHeadSha}"}}` });
+    expectRejected(result);
+    expect(result.calls).toHaveLength(1);
+  });
+
+  it("accepts a package at the exact member-count bound", async () => {
+    const result = await runVerifier({ env: { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: "3" } });
+    expect(result.status, result.stderr).toBe(0);
+  });
+  it.each(["0", "01", "-1", "1e3", "10001"])("rejects invalid member limit %j before provider access", async (value) => {
+    const result = await runVerifier({ env: { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: value } });
+    expectRejected(result);
+    expect(result.calls).toEqual([]);
   });
 
   it("accepts the independently approved attempt matching the archive stamp", async () => {

@@ -1958,6 +1958,7 @@ require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "Invalid r
 repository_id = decimal(os.environ["GITHUB_REPOSITORY_ID"])
 run_id = decimal(os.environ["PREFLIGHT_RUN_ID"])
 artifact_id = decimal(os.environ["PREFLIGHT_ARTIFACT_ID"])
+approved_attempt = decimal(os.environ["PREFLIGHT_APPROVED_ATTEMPT"]) if "PREFLIGHT_APPROVED_ATTEMPT" in os.environ else None
 expected = os.environ["PREFLIGHT_ARTIFACT_SHA256"]
 require(re.fullmatch(r"[0-9a-f]{64}", expected), "Invalid independent ZIP SHA256.")
 target_sha = os.environ["PREFLIGHT_TARGET_SHA"]
@@ -2122,6 +2123,7 @@ try:
             require(evidence.get("repo") == repository and evidence.get("preflight_run_id") == run_id, "Approved evidence repository/run mismatch.")
             require(evidence.get("target_sha") == target_sha, "Preflight evidence target SHA does not match tag SHA.")
             attempt = decimal(evidence.get("run_attempt"))
+            require(approved_attempt is None or attempt == approved_attempt, "Approved preflight attempt mismatch.")
             completed = api(f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}")
             completed_repository = completed.get("repository") or {}
             require(same_id(completed.get("id"), run_id) and same_id(completed.get("run_attempt"), attempt), "Exact attempt identity mismatch.")

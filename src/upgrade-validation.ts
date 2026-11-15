@@ -82,8 +82,13 @@ export async function prepareCandidateHook(candidate: PreparedUpgrade, plan: Can
   finally { if (history) await discardPreparedHistory(history).catch(() => { throw failure(); }); }
 }
 /** Only available after the owned prepared-hook result. No key or agent is selected. */
-export function copyCandidateSigningRequest(ticket: PreparedHookTicket): { unsignedCommit: Buffer; publicKey: string; commitPlanSha256: string } {
-  try { const value = active(ticket); return { unsignedCommit: Buffer.from(value.unsigned), publicKey: value.key, commitPlanSha256: value.input.commitPlanSha256 }; }
+export function copyCandidateSigningRequest(ticket: PreparedHookTicket): Readonly<{ unsignedCommit: Buffer; publicKey: string; commitPlanSha256: string;
+  repository: string; repositoryId: number; baseCommit: string; sourceSha256: string; preparedTree: string }> {
+  try {
+    const value = active(ticket); const facts = describePreparedUpgrade(value.candidate);
+    return Object.freeze({ unsignedCommit: Buffer.from(value.unsigned), publicKey: value.key, commitPlanSha256: value.input.commitPlanSha256,
+      repository: facts.repository, repositoryId: facts.repositoryId, baseCommit: facts.baseCommit, sourceSha256: facts.sourceSha256, preparedTree: facts.tree });
+  }
   catch { throw failure(); }
 }
 async function verifySignature(value: HookData, raw: Buffer): Promise<void> {

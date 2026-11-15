@@ -95,6 +95,11 @@ describe("candidate history, hook and signature composition (fabricated isolatio
     expect(() => copyCandidateSigningRequest({ ...ticket })).toThrow("unavailable");
     expect((await inspectBundle(data, Buffer.from(data.calls[0]!.baseBundle), data.head)).count).toBe(4);
     const request = copyCandidateSigningRequest(ticket); expect(request.unsignedCommit.toString()).toContain("author Fixture Author <author@example.invalid> 1767225600 +0530\ncommitter Fixture Committer <committer@example.invalid> 1767225700 -0600");
+    expect(request).toMatchObject({ repository: "OMT-Global/bootstrap-fixture", repositoryId: 42, baseCommit: data.head,
+      preparedTree: describePreparedUpgrade(data.candidate).tree, sourceSha256: describePreparedUpgrade(data.candidate).sourceSha256 });
+    expect(Object.isFrozen(request)).toBe(true);
+    expect(() => Object.assign(request, { repositoryId: 999 })).toThrow();
+    expect(copyCandidateSigningRequest(ticket).repositoryId).toBe(42);
     const raw = await sign(data, request.unsignedCommit); request.unsignedCommit.fill(0);
     const checked = await completeSignedCandidate(ticket, raw); const facts = describeCheckedCandidate(checked);
     expect(data.calls.map((call) => call.phase)).toEqual(["prepared-hook", "final-check"]);

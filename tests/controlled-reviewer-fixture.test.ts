@@ -304,7 +304,11 @@ class InheritedAddressSpaceTests(unittest.TestCase):
             with self.subTest(case=case), mocked_gate('platform') as (order, emit, native, emitted):
                 self.assertEqual(fixture_entry(case), 0)
                 self.assertNotIn('admissionFailure', emitted[0])
-                self.assertEqual(set(emitted[0]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
+                if case == 'sandbox':
+                    self.assertEqual(set(emitted[0]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests', 'sandboxFailure'})
+                    self.assertEqual(emitted[0]['sandboxFailure'], {'stage': 'gate'})
+                else:
+                    self.assertEqual(set(emitted[0]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
                 self.assertNotIn(CANARY, json.dumps(emitted))
                 self.assertEqual(order, [])
                 native.assert_not_called()
@@ -755,5 +759,542 @@ describe("controlled reviewer mountinfo byte parsing", () => {
     expect(report).toMatchObject({ testCases: 8, ok: true, failureCount: 0, errorCount: 0, actualFilesystemResourceNativeCalls: 0 });
     expect(report.observations).toHaveLength(24);
     expect(report.observations.every((value: { reads: string[] }) => value.reads.length === 1 && value.reads[0] === "bytes")).toBe(true);
+  });
+});
+
+const fixtureDiscriminatorHarness = String.raw`import argparse
+import ast
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
+import sys
+import types
+import unittest
+from unittest import mock
+import io
+
+SOURCE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('scripts/ci/controlled-reviewer-fixture.py')
+MODE = sys.argv[2] if len(sys.argv) > 2 else 'current'
+TEXT = SOURCE.read_text()
+TREE = ast.parse(TEXT)
+FUNCTIONS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and
+             node.name in {'require', 'sandbox_stage', 'policy', 'sandbox', 'run_case'}]
+ENTRY_NODE = next(node for node in TREE.body if isinstance(node, ast.If) and
+                  ast.unparse(node.test) == "__name__ == '__main__'")
+ENTRY = compile(ast.Module(body=[ENTRY_NODE], type_ignores=[]), str(SOURCE), 'exec')
+DEFINITIONS = compile(ast.Module(body=FUNCTIONS, type_ignores=[]), str(SOURCE), 'exec')
+CASES = ast.literal_eval(next(node.value for node in TREE.body if isinstance(node, ast.Assign) and
+                             any(isinstance(target, ast.Name) and target.id == 'CASES' for target in node.targets)))
+STAGES = ('gate', 'dispatch', 'version-call', 'version-exit', 'version-stdout', 'version-stderr',
+          'workspace-setup', 'loopback-control', 'sandbox-call', 'sandbox-exit', 'listener-postcheck', 'listener-close')
+CANARY = 'private-discriminator-canary'
+OBSERVATIONS = []
+EXPECTED_POLICY = ['--ask-for-approval', 'never', '-c', 'cli_auth_credentials_store="file"',
+                   '-c', 'project_doc_max_bytes=0', '-c', 'features.hooks=false', '-c', 'features.plugins=false',
+                   '-c', 'features.shell_snapshot=false', '-c', 'skills.include_instructions=false',
+                   '-c', 'skills.config=[]', '-c', 'allow_login_shell=false', '-c', 'default_permissions="autoreview"',
+                   '-c', 'permissions.autoreview.filesystem={":minimal"="read",":workspace_roots"="read","/opt/codex"="read"}',
+                   '-c', 'permissions.autoreview.network.enabled=false', '-c', 'sqlite_home="/run/review/state"',
+                   '-c', 'log_dir="/run/review/log"']
+EXPECTED_COMMAND = """from pathlib import Path
+import socket
+assert Path('public').read_text() == 'public fixture'
+for operation in [lambda: Path('/synthetic/private/canary').read_bytes(), lambda: Path('forbidden').write_text('x'), lambda: socket.create_connection(('127.0.0.1', 31337), timeout=1)]:
+    try: operation()
+    except OSError: pass
+    else: raise RuntimeError('sandbox boundary failed')
+"""
+
+
+class PrimaryFailure(RuntimeError):
+    pass
+
+
+class CloseFailure(OSError):
+    pass
+
+
+def exercise(fault='success', code=7, case='sandbox', direct=False, stale=False):
+    state = {'nativeCalls': [], 'writes': [], 'socketCalls': [], 'gateCalls': 0,
+             'stdoutStrips': 0, 'stderrComparisons': 0, 'forbiddenCalls': [], 'emitted': []}
+    primary, closing = PrimaryFailure(CANARY), CloseFailure(CANARY)
+
+    def forbidden(*args, **kwargs):
+        state['forbiddenCalls'].append(True)
+        raise AssertionError('real native/resource/socket/provider work is forbidden')
+
+    class Forbidden:
+        def __getattr__(self, name):
+            return forbidden
+
+    class FakePath(PurePosixPath):
+        def write_text(self, value):
+            state['writes'].append(str(self))
+            if (fault == 'public-write' and self.name == 'public') or (fault == 'private-write' and self.name == 'canary'):
+                raise primary
+            return len(value)
+
+    class Output:
+        def strip(self):
+            state['stdoutStrips'] += 1
+            if fault == 'version-code':
+                raise AssertionError('stdout evaluated after failed version exit')
+            return b'wrong-' + CANARY.encode() if fault == 'version-stdout' else b'codex-cli 0.167.0'
+
+    class ErrorOutput(bytes):
+        def __new__(cls):
+            value = (b'WARNING: proceeding, even though we could not create PATH aliases: ' + CANARY.encode()
+                     if fault == 'version-warning' else CANARY.encode() if fault == 'version-stderr' else b'')
+            return super().__new__(cls, value)
+        def __eq__(self, other):
+            state['stderrComparisons'] += 1
+            if fault in ('version-code', 'version-stdout'):
+                raise AssertionError('stderr evaluated before earlier version admission')
+            return super().__eq__(other)
+
+    class Connection:
+        def close(self):
+            state['socketCalls'].append('connection-close')
+
+    class Listener:
+        accepts = 0
+        def bind(self, address):
+            state['socketCalls'].append('bind')
+            if fault == 'socket-bind':
+                raise primary
+        def listen(self):
+            state['socketCalls'].append('listen')
+        def getsockname(self):
+            state['socketCalls'].append('getsockname')
+            return ('127.0.0.1', 31337)
+        def accept(self):
+            self.accepts += 1
+            state['socketCalls'].append('accept-' + str(self.accepts))
+            if self.accepts == 1:
+                if fault == 'socket-accept':
+                    raise primary
+                return Connection(), ('127.0.0.1', 31338)
+            if fault in ('listener-error', 'close-after-postcheck'):
+                raise primary
+            if fault == 'listener-escaped':
+                return Connection(), ('127.0.0.1', 31338)
+            raise TimeoutError('synthetic postcheck timeout')
+        def settimeout(self, timeout):
+            state['socketCalls'].append('settimeout')
+            assert timeout == 0.1
+            if fault == 'listener-settimeout':
+                raise primary
+        def close(self):
+            state['socketCalls'].append('listener-close')
+            if fault in ('close-after-native', 'close-after-code', 'close-after-success', 'close-after-postcheck'):
+                raise closing
+
+    listener = Listener()
+    def socket():
+        state['socketCalls'].append('socket')
+        if fault == 'socket-create':
+            raise primary
+        return listener
+    def connect(address, timeout):
+        state['socketCalls'].append('connect')
+        assert address == ('127.0.0.1', 31337) and timeout == 1
+        if fault == 'socket-connect':
+            raise primary
+        return Connection()
+
+    def native(args, input_bytes=b'', cap=16384):
+        state['nativeCalls'].append(list(args))
+        assert input_bytes == b'' and cap == 16384
+        if len(state['nativeCalls']) == 1:
+            assert args == ['--version']
+            if fault == 'version-call':
+                raise primary
+            result = code if fault == 'version-code' else 0
+            return result, Output(), ErrorOutput()
+        assert len(state['nativeCalls']) == 2
+        assert args == [*EXPECTED_POLICY, 'sandbox', '--permission-profile', 'autoreview', '--cd',
+                        '/synthetic/workspace', '--', '/usr/bin/python3', '-I', '-S', '-c', EXPECTED_COMMAND]
+        if fault in ('sandbox-call', 'close-after-native'):
+            raise primary
+        return (code if fault in ('sandbox-code', 'close-after-code') else 0), CANARY.encode(), CANARY.encode()
+
+    def gate():
+        state['gateCalls'] += 1
+        if fault == 'gate':
+            raise primary
+
+    emitted = state['emitted']
+    emit_calls = 0
+    def emit(value):
+        nonlocal emit_calls
+        emit_calls += 1
+        if fault == 'success-emit' and emit_calls == 1:
+            raise primary
+        emitted.append(json.loads(json.dumps(value)))
+
+    namespace = {'__name__': '__main__', 'argparse': argparse, 'sys': sys,
+                 'ROOT': FakePath('/synthetic'), 'SOURCE': FakePath('/synthetic/auth.json'),
+                 'CASES': CASES, 'MOCK_REQUESTS': 0, 'ADMISSION': {'stage': 'ready'},
+                 'SANDBOX_FAILURE': {'stage': 'sandbox-exit', 'exitCode': 9} if stale else {},
+                 'socket': types.SimpleNamespace(socket=socket, create_connection=connect),
+                 'native': native, 'gate': gate, 'emit': emit, 'subprocess': Forbidden(),
+                 'resource': Forbidden(), 'http': Forbidden(), 'urllib': Forbidden(), 'os': Forbidden()}
+    exec(DEFINITIONS, namespace)
+    if fault == 'policy-build':
+        namespace['policy'] = lambda: (_ for _ in ()).throw(primary)
+    if fault == 'dispatch':
+        namespace['run_case'] = lambda case: (_ for _ in ()).throw(primary)
+    if fault == 'non-sandbox-success':
+        namespace['run_case'] = lambda case: {'providerRequests': 0}
+
+    caught = None
+    if direct:
+        try:
+            namespace['sandbox']()
+        except BaseException as error:
+            caught = error
+    else:
+        with mock.patch.object(sys, 'argv', ['synthetic-fixture', '--case', case]):
+            try:
+                exec(ENTRY, namespace)
+            except SystemExit as error:
+                assert error.code == 1
+    assert not state['forbiddenCalls']
+    state.update(snapshot=namespace['SANDBOX_FAILURE'].copy(), caught=caught,
+                 primary=primary, closing=closing, namespace=namespace)
+    if not direct:
+        assert len(emitted) == 1
+        assert CANARY not in json.dumps(emitted) and '/synthetic' not in json.dumps(emitted)
+        OBSERVATIONS.append({'fault': fault, 'case': case, 'ok': emitted[0]['ok'],
+                             'sandboxFailure': emitted[0].get('sandboxFailure'),
+                             'mockedNativeCalls': len(state['nativeCalls']), 'actualUnsafeCalls': 0})
+    return state
+
+
+class SandboxDiscriminatorTests(unittest.TestCase):
+    def failure(self, fault, stage, expected_code=None, **kwargs):
+        result = exercise(fault, **kwargs)
+        event = result['emitted'][0]
+        self.assertEqual({k: event[k] for k in ('event', 'case', 'ok', 'phase', 'reason', 'providerRequests')},
+                         {'event': 'result', 'case': 'sandbox', 'ok': False, 'phase': 'native-sandbox',
+                          'reason': 'unsupported', 'providerRequests': 0})
+        expected = {'stage': stage}
+        if expected_code is not None:
+            expected['exitCode'] = expected_code
+        if MODE == 'legacy-comparison':
+            self.assertEqual(set(event), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
+            self.assertNotIn('sandboxFailure', event)
+        else:
+            self.assertEqual(set(event), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests', 'sandboxFailure'})
+            self.assertEqual(event['sandboxFailure'], expected)
+            self.assertEqual(result['snapshot'], expected)
+        return result
+
+    def test_failure_version_helper_raise_has_no_exit_or_setup(self):
+        value = self.failure('version-call', 'version-call')
+        self.assertEqual(value['nativeCalls'], [['--version']])
+        self.assertEqual(value['writes'], [])
+        self.assertEqual(value['socketCalls'], [])
+
+    def test_failure_version_exit_codes_preserve_short_circuit(self):
+        for code in (1, -15, 255, -255):
+            with self.subTest(code=code):
+                value = self.failure('version-code', 'version-exit', expected_code=code, code=code)
+                self.assertEqual((value['stdoutStrips'], value['stderrComparisons']), (0, 0))
+                self.assertEqual(len(value['nativeCalls']), 1)
+                self.assertEqual(value['writes'], [])
+
+    def test_failure_version_stdout_prevents_stderr_and_stale_zero(self):
+        value = self.failure('version-stdout', 'version-stdout')
+        self.assertEqual((value['stdoutStrips'], value['stderrComparisons']), (1, 0))
+        self.assertEqual(value['writes'], [])
+
+    def test_failure_nonempty_stderr_and_path_warning_stay_private(self):
+        for fault in ('version-stderr', 'version-warning'):
+            with self.subTest(fault=fault):
+                value = self.failure(fault, 'version-stderr')
+                self.assertEqual((value['stdoutStrips'], value['stderrComparisons']), (1, 1))
+                self.assertEqual(value['writes'], [])
+
+    def test_failure_workspace_setup_has_no_stale_exit_or_socket(self):
+        for fault in ('public-write', 'private-write'):
+            with self.subTest(fault=fault):
+                value = self.failure(fault, 'workspace-setup')
+                self.assertEqual(len(value['nativeCalls']), 1)
+                self.assertEqual(value['socketCalls'], [])
+
+    def test_failure_socket_controls_have_no_second_native_or_close_move(self):
+        for fault in ('socket-create', 'socket-bind', 'socket-connect', 'socket-accept'):
+            with self.subTest(fault=fault):
+                value = self.failure(fault, 'loopback-control')
+                self.assertEqual(len(value['nativeCalls']), 1)
+                self.assertNotIn('listener-close', value['socketCalls'])
+
+    def test_failure_second_native_or_policy_raise_clears_prior_code(self):
+        for fault, calls in (('sandbox-call', 2), ('policy-build', 1)):
+            with self.subTest(fault=fault):
+                value = self.failure(fault, 'sandbox-call')
+                self.assertEqual(len(value['nativeCalls']), calls)
+                self.assertEqual(value['socketCalls'][-1], 'listener-close')
+
+    def test_failure_second_native_nonzero_survives_successful_close(self):
+        for code in (7, -9):
+            with self.subTest(code=code):
+                value = self.failure('sandbox-code', 'sandbox-exit', expected_code=code, code=code)
+                self.assertEqual(value['socketCalls'][-1], 'listener-close')
+                self.assertEqual(len(value['nativeCalls']), 2)
+
+    def test_failure_postcheck_error_or_escape_has_no_stale_exit(self):
+        for fault in ('listener-settimeout', 'listener-error', 'listener-escaped'):
+            with self.subTest(fault=fault):
+                value = self.failure(fault, 'listener-postcheck')
+                self.assertEqual(value['socketCalls'][-1], 'listener-close')
+
+    def test_failure_gate_and_dispatch_do_not_claim_native_entry(self):
+        for fault in ('gate', 'dispatch'):
+            with self.subTest(fault=fault):
+                value = self.failure(fault, fault)
+                self.assertEqual(value['gateCalls'], 1)
+                self.assertEqual(value['nativeCalls'], [])
+                self.assertEqual(value['writes'], [])
+
+    def test_close_exception_precedence_matches_actual_sandbox(self):
+        for fault in ('close-after-native', 'close-after-code', 'close-after-success', 'close-after-postcheck'):
+            with self.subTest(fault=fault):
+                value = exercise(fault, direct=True)
+                self.assertIs(value['caught'], value['closing'])
+                self.assertEqual(value['snapshot'], {'stage': 'listener-close'})
+                self.failure(fault, 'listener-close')
+        value = exercise('sandbox-call', direct=True)
+        self.assertIs(value['caught'], value['primary'])
+        self.assertEqual(value['snapshot'], {'stage': 'sandbox-call'})
+
+    def test_successful_actual_sandbox_and_handler_have_exact_legacy_fields(self):
+        value = exercise()
+        self.assertEqual(value['emitted'], [{'event': 'result', 'case': 'sandbox', 'ok': True,
+                                           'phase': 'sandbox', 'providerRequests': 0}])
+        self.assertEqual(value['snapshot'], {})
+        self.assertEqual(value['namespace']['policy'](), EXPECTED_POLICY)
+        self.assertEqual(len(value['nativeCalls']), 2)
+
+    def test_entry_reset_omits_stale_stage_from_all_other_cases(self):
+        for case in CASES:
+            if case == 'sandbox':
+                continue
+            with self.subTest(case=case):
+                failed = exercise('gate', case=case, stale=True)
+                self.assertEqual(set(failed['emitted'][0]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
+                self.assertEqual(failed['snapshot'], {})
+                self.assertEqual(failed['nativeCalls'], [])
+                success = exercise('non-sandbox-success', case=case, stale=True)
+                self.assertEqual(success['emitted'], [{'event': 'result', 'case': case, 'ok': True,
+                                                     'phase': case, 'providerRequests': 0}])
+                self.assertEqual(success['snapshot'], {})
+
+    def test_success_clears_stage_before_a_later_emit_failure(self):
+        value = exercise('success-emit')
+        self.assertEqual(set(value['emitted'][0]), {'event', 'case', 'ok', 'phase', 'reason', 'providerRequests'})
+        self.assertEqual(value['snapshot'], {})
+        self.assertEqual(len(value['nativeCalls']), 2)
+
+    def test_setter_replaces_map_and_omits_non_builtin_or_unbounded_codes(self):
+        namespace = exercise()['namespace']
+        setter = namespace['sandbox_stage']
+        class Integer(int):
+            pass
+        for code in (-256, 256, True, False, '7', 1.0, None, Integer(7), object()):
+            with self.subTest(codeType=type(code).__name__):
+                setter('version-exit', code)
+                self.assertEqual(namespace['SANDBOX_FAILURE'], {'stage': 'version-exit'})
+        for stage in STAGES:
+            setter('sandbox-exit', -255)
+            self.assertEqual(namespace['SANDBOX_FAILURE'], {'stage': 'sandbox-exit', 'exitCode': -255})
+            setter(stage, 255)
+            expected = {'stage': stage, **({'exitCode': 255} if stage in ('version-exit', 'sandbox-exit') else {})}
+            self.assertEqual(namespace['SANDBOX_FAILURE'], expected)
+        additions = []
+        for stage in STAGES:
+            values = [{'stage': stage}]
+            if stage in ('version-exit', 'sandbox-exit'):
+                values += [{'stage': stage, 'exitCode': code} for code in (-255, 0, 255)]
+            additions += [len((',"sandboxFailure":' + json.dumps(value, separators=(',', ':'))).encode()) for value in values]
+        self.assertEqual(max(additions), 58)
+
+    def test_failure_unexpected_return_codes_never_serialize_objects(self):
+        class Integer(int):
+            pass
+        for fault, stage in (('version-code', 'version-exit'), ('sandbox-code', 'sandbox-exit')):
+            for code in (True, -256, 256, Integer(7), CANARY):
+                with self.subTest(fault=fault, codeType=type(code).__name__):
+                    self.failure(fault, stage, **{'code': code})
+
+
+suite = unittest.defaultTestLoader.loadTestsFromTestCase(SandboxDiscriminatorTests)
+if MODE in ('comparison', 'legacy-comparison'):
+    suite = unittest.TestSuite(test for test in suite if test._testMethodName.startswith('test_failure_') and
+                               test._testMethodName != 'test_failure_unexpected_return_codes_never_serialize_objects')
+log = io.StringIO()
+result = unittest.TextTestRunner(stream=log).run(suite)
+print(json.dumps({'testCases': result.testsRun, 'ok': result.wasSuccessful(), 'sourceSha256': hashlib.sha256(TEXT.encode()).hexdigest(),
+                  'failureCount': len(result.failures), 'errorCount': len(result.errors),
+                  'observations': OBSERVATIONS, 'actualNativeResourceSocketProviderCalls': 0,
+                  'mode': MODE}))
+if not result.wasSuccessful():
+    print(log.getvalue(), file=sys.stderr)
+    sys.exit(1)
+`;
+
+describe("controlled reviewer pre-auth sandbox failure discriminator", () => {
+  it("executes actual sandbox and handler transitions with only fabricated native, filesystem and socket work", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", fixtureDiscriminatorHarness], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 256 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({ testCases: 16, ok: true, actualNativeResourceSocketProviderCalls: 0, mode: "current" });
+    expect(new Set(report.observations.flatMap((value: { sandboxFailure?: { stage: string } }) =>
+      value.sandboxFailure ? [value.sandboxFailure.stage] : []))).toEqual(new Set([
+      "gate", "dispatch", "version-call", "version-exit", "version-stdout", "version-stderr", "workspace-setup",
+      "loopback-control", "sandbox-call", "sandbox-exit", "listener-postcheck", "listener-close"
+    ]));
+    expect(report.observations.every((value: { actualUnsafeCalls: number }) => value.actualUnsafeCalls === 0)).toBe(true);
+    expect(JSON.stringify(report)).not.toContain("private-discriminator-canary");
+    expect(JSON.stringify(report)).not.toContain("/synthetic");
+  });
+});
+
+const fixtureReadonlyCodexRootHarness = fixtureDiscriminatorHarness.split("\nsuite = unittest.defaultTestLoader.loadTestsFromTestCase(SandboxDiscriminatorTests)", 1)[0]! + String.raw`import tomllib
+
+CAPTURE = {}
+
+
+def capture_policy_and_native_argv():
+    policy_node = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == 'policy')
+    actual = {}
+    exec(compile(ast.Module(body=[policy_node], type_ignores=[]), str(SOURCE), 'exec'), actual)
+    policy = actual['policy']()
+    # Capture old and new actual argv before asserting the added root; the existing
+    # sandbox adapter still checks every other literal argument and predicate.
+    global EXPECTED_POLICY
+    expected = EXPECTED_POLICY
+    try:
+        EXPECTED_POLICY = policy
+        sandbox = exercise()
+    finally:
+        EXPECTED_POLICY = expected
+    assert sandbox['emitted'] == [{'event': 'result', 'case': 'sandbox', 'ok': True,
+                                  'phase': 'sandbox', 'providerRequests': 0}]
+    namespace = sandbox['namespace']
+    files, operations, api_argv = {}, [], []
+    fake_key = 'bootstrap-fixture-pure-read-root'
+
+    class APIPath(PurePosixPath):
+        def read_bytes(self):
+            assert str(self) == '/operator/.codex/auth.json'
+            return json.dumps({'OPENAI_API_KEY': fake_key}).encode()
+        def write_text(self, text):
+            files[str(self)] = text
+            return len(text)
+
+    server = None
+    class FakeServer:
+        def __init__(self, address, handler):
+            nonlocal server
+            assert address == ('127.0.0.1', 0)
+            self.handler, self.server_port = handler, 31337
+            server = self
+            operations.append('fake-server-created')
+        def serve_forever(self, **kwargs):
+            raise AssertionError('real or fake server loop must not run')
+        def shutdown(self):
+            operations.append('shutdown')
+        def server_close(self):
+            operations.append('server-close')
+
+    class FakeThread:
+        def __init__(self, target, kwargs, daemon):
+            assert target.__self__ is server and kwargs == {'poll_interval': 0.05} and daemon is True
+        def start(self):
+            operations.append('fake-thread-start')
+        def join(self, timeout):
+            assert timeout == 2
+            operations.append('fake-thread-join')
+
+    class CaptureComplete(Exception):
+        pass
+    captured = CaptureComplete('pure native-argument capture complete')
+    def api_native(argv, input_bytes=b'', cap=16384):
+        api_argv.append(list(argv))
+        assert input_bytes == b'Return the requested fixture JSON.\n' and cap == 65536
+        raise captured
+
+    namespace.update(ROOT=APIPath('/synthetic'), SOURCE=APIPath('/operator/.codex/auth.json'), json=json,
+                     file_auth=lambda: True, native=api_native, MOCK_REQUESTS=0,
+                     http=types.SimpleNamespace(server=types.SimpleNamespace(BaseHTTPRequestHandler=object,
+                                                                           HTTPServer=FakeServer)),
+                     threading=types.SimpleNamespace(Thread=FakeThread))
+    api_node = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == 'api')
+    exec(compile(ast.Module(body=[api_node], type_ignores=[]), str(SOURCE), 'exec'), namespace)
+    try:
+        namespace['api']()
+    except CaptureComplete as error:
+        assert error is captured
+    else:
+        raise AssertionError('API did not reach the intentional argument-capture sentinel')
+    assert operations[-3:] == ['shutdown', 'server-close', 'fake-thread-join']
+    assert not sandbox['forbiddenCalls'] and len(api_argv) == 1
+    return {'policy': policy, 'sandboxArgv': sandbox['nativeCalls'][1], 'apiArgv': api_argv[0],
+            'apiNativeCaptureReached': True, 'apiFakeCleanup': operations[-3:], 'actualUnsafeCalls': 0,
+            'claim': 'Declared roots and captured argv only; no API success or kernel accessibility proof'}
+
+
+class ReadonlyCodexRootTests(unittest.TestCase):
+    def test_shared_actual_policy_delivers_only_the_fixed_readonly_codex_root(self):
+        global CAPTURE
+        CAPTURE = capture_policy_and_native_argv()
+        expected = {':minimal': 'read', ':workspace_roots': 'read', '/opt/codex': 'read'}
+        for label, argv in (('policy', CAPTURE['policy']), ('sandbox', CAPTURE['sandboxArgv']), ('api', CAPTURE['apiArgv'])):
+            configurations = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == '-c']
+            filesystem = [value for value in configurations if value.startswith('permissions.autoreview.filesystem=')]
+            self.assertEqual(len(filesystem), 1)
+            declared = tomllib.loads(filesystem[0])['permissions']['autoreview']['filesystem']
+            CAPTURE[label + 'DeclaredRoots'] = declared
+            self.assertEqual(declared, expected)
+            self.assertTrue(all(mode == 'read' for mode in declared.values()))
+            self.assertNotIn('/', declared)
+            self.assertNotIn('/opt', declared)
+        self.assertTrue(PurePosixPath('/opt/codex/bin/codex').is_relative_to('/opt/codex'))
+        self.assertEqual(CAPTURE['sandboxArgv'][CAPTURE['sandboxArgv'].index('--cd') + 1], '/synthetic/workspace')
+        self.assertEqual(CAPTURE['apiArgv'][CAPTURE['apiArgv'].index('-C') + 1], '/synthetic/workspace')
+        roots = (PurePosixPath('/opt/codex'), PurePosixPath('/synthetic/workspace'))
+        self.assertFalse(roots[1].is_relative_to(roots[0]))
+        for excluded in ('/opt/other/tool', '/operator/.codex/auth.json', '/synthetic/private',
+                         '/synthetic/codex-home', '/run/review/state', '/run/review/log'):
+            self.assertFalse(any(PurePosixPath(excluded).is_relative_to(root) for root in roots))
+        # These are declarations, not a reimplementation of the permissions engine.
+        self.assertEqual(CAPTURE['actualUnsafeCalls'], 0)
+
+
+log = io.StringIO()
+result = unittest.TextTestRunner(stream=log).run(unittest.defaultTestLoader.loadTestsFromTestCase(ReadonlyCodexRootTests))
+print(json.dumps({'testCases': result.testsRun, 'ok': result.wasSuccessful(), 'failureCount': len(result.failures),
+                  'errorCount': len(result.errors), 'capture': CAPTURE,
+                  'sourceSha256': hashlib.sha256(TEXT.encode()).hexdigest(), 'actualNativeResourceSocketProviderThreadServerCalls': 0}))
+if not result.wasSuccessful():
+    print(log.getvalue(), file=sys.stderr)
+    sys.exit(1)
+`;
+
+describe("controlled reviewer immutable Codex read-root declaration", () => {
+  it("captures the actual shared policy in sandbox and API argv without launching native or provider work", async () => {
+    const result = await execute("python3", ["-B", "-I", "-S", "-c", fixtureReadonlyCodexRootHarness], {
+      cwd: process.cwd(), timeout: 10_000, maxBuffer: 128 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" }
+    });
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({ testCases: 1, ok: true, failureCount: 0, errorCount: 0,
+      actualNativeResourceSocketProviderThreadServerCalls: 0,
+      capture: { apiNativeCaptureReached: true, apiFakeCleanup: ["shutdown", "server-close", "fake-thread-join"], actualUnsafeCalls: 0 } });
+    expect(JSON.stringify(report)).not.toContain("bootstrap-fixture-pure-read-root");
   });
 });

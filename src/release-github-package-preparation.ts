@@ -6,12 +6,12 @@ import { acquireReviewedPreflight } from "./release-artifact-acquisition.js";
 import { readReviewedGitHubPreflight } from "./release-reviewed-github-preflight.js";
 import { prepareReleaseForPublication } from "./release-prepare-publication.js";
 import { captureReviewedReleaseSource } from "./release-reviewed-source.js";
-import { verifySourceReleasePackage } from "./release-source-package.js";
+import { verifyBootstrapSourcePublishHook, verifySourceReleasePackage } from "./release-source-package.js";
 import type { VerifiedGitSnapshot } from "./upgrade-git.js";
 import type { ApprovedReleasePackage } from "./release-approved-package.js";
 
 /**
- * Composition used by a trusted, isolated retry runtime. Runtime identity,
+ * Composition used by a trusted, isolated release runtime. Runtime identity,
  * configured policy/tool pins, authenticated token, target and source checks
  * remain caller requirements. It does not publish or prove exclusive writers.
  */
@@ -19,6 +19,7 @@ export async function prepareGitHubReleasePackage(input: {
   policy: ApprovalPolicy;
   approval: Parameters<typeof readGitHubPublicationApproval>[0];
   preflightWorkflowPath: string; preflightWorkflowCommit: string;
+  publishScript?: string;
   tag: string; notesAssetName: string; latest: boolean; requireSignedTag: boolean;
   pythonPath: string; pythonSha256: string; ghPath: string; ghSha256: string;
   runtimeDir: string; maxAssetBytes: number; maxArchiveBytes: number; maxExpandedBytes: number; maxMembers: number; sourceSnapshot: VerifiedGitSnapshot;
@@ -26,6 +27,7 @@ export async function prepareGitHubReleasePackage(input: {
 }): Promise<ApprovedReleasePackage> {
   try {
     input = { ...input, policy: { ...input.policy }, approval: { ...input.approval } };
+    if (input.publishScript !== undefined) verifyBootstrapSourcePublishHook(input.sourceSnapshot, input.publishScript);
     return await prepareReleaseForPublication({ policy: input.policy,
       async readApproval() { return await readGitHubPublicationApproval(input.approval); },
       async acquire(_environment, reviewed) {

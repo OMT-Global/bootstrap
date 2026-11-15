@@ -7,10 +7,12 @@ import { nextReleasePage, releaseJson, releaseObject } from "./github-release-tr
  */
 export async function verifyExistingGitHubRelease(input: {
   package: ApprovedReleasePackage; token: string; revalidate: () => Promise<void>; fetchImpl?: typeof fetch;
+  created?: { releaseId: number; assetIds: readonly number[] };
 }): Promise<Readonly<{ kind: "verified-existing"; repository: string; releaseId: string; tag: string; commit: string; approvalSha256: string }>> {
   try {
     const { package: packageFact, token, revalidate } = input;
     const fetcher = input.fetchImpl ?? fetch;
+    const created = input.created ? { releaseId: input.created.releaseId, assetIds: [...input.created.assetIds] } : undefined;
     const expected = approvedReleasePackageMetadata(packageFact);
     if (!/^[\x21-\x7e]{1,4096}$/.test(token) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(expected.repository) ||
         expected.repository.split("/").some((part) => part === "." || part === "..")) throw new Error();
@@ -42,7 +44,7 @@ export async function verifyExistingGitHubRelease(input: {
     }
     function release(value: unknown, id: number) {
       const r = releaseObject(value);
-      if (r.id !== id || r.tag_name !== expected.tag || r.draft !== false || r.body !== expected.notes || r.prerelease !== expected.prerelease) throw new Error();
+      if (r.id !== id || r.tag_name !== expected.tag || r.draft !== false || r.body !== expected.notes || r.prerelease !== expected.prerelease || (created && r.name !== expected.tag)) throw new Error();
       return { id, tag: r.tag_name, draft: r.draft, body: r.body, prerelease: r.prerelease };
     }
     async function snapshot() {
@@ -56,6 +58,7 @@ export async function verifyExistingGitHubRelease(input: {
       const selected = releases.filter((r) => r.tag_name === expected.tag);
       if (selected.length !== 1) throw new Error();
       const id = selected[0]!.id as number;
+      if (created && id !== created.releaseId) throw new Error();
       const listed = release(selected[0], id);
       const byId = release((await get(`${base}/releases/${id}`)).value, id);
       if (JSON.stringify(listed) !== JSON.stringify(byId)) throw new Error();
@@ -66,6 +69,7 @@ export async function verifyExistingGitHubRelease(input: {
       }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
       if (assets.length !== expected.assets.length || assets.some((a, i) => a.name !== expected.assets[i]!.name ||
           a.size !== expected.assets[i]!.size || a.sha256 !== expected.assets[i]!.sha256)) throw new Error();
+      if (created && (assets.length !== created.assetIds.length || assets.some((a, i) => a.id !== created.assetIds[i]))) throw new Error();
       const latest = releaseObject((await get(`${base}/releases/latest`)).value);
       if (typeof latest.id !== "number" || !Number.isSafeInteger(latest.id) || latest.id < 1 ||
           !releases.some((r) => r.id === latest.id && r.draft === false && r.prerelease === false) ||

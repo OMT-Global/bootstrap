@@ -5,6 +5,14 @@ import { verifySourceReleaseArchive } from "./release-source-archive.js";
 
 const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 
+/** Only the selected source profile's exact known inert hook is supported.
+ * Inspect approved Git data; never execute target source with publication authority. */
+export function verifyBootstrapSourcePublishHook(snapshot: VerifiedGitSnapshot, selected: string): void {
+  const hook = copySnapshotFiles(snapshot).find((file) => file.path === selected);
+  if (selected !== "scripts/release/publish.sh" || !hook || hook.mode !== "100755" ||
+      hash(hook.bytes) !== "a9a3d51032ef51514b4a89cea989ef15579fecda0d2709909ba658fe1f24e0c1") throw new Error("Unsupported source publication hook.");
+}
+
 /**
  * Verify Bootstrap's source distribution using a verified Git snapshot and
  * acquired asset bytes. Repository and snapshot origin, artifact provenance,

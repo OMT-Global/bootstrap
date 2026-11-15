@@ -27,6 +27,19 @@ describe("source-only publication preparation", () => {
     expect(h.events).toEqual(["review", "acquire", "review"]);
     expect(approvedReleasePackageMetadata(pkg)).toMatchObject({ notes: "Release notes\n", notesAssetName: "RELEASE_NOTES.md", latest: true });
   });
+  it("keeps the selected callbacks and policy when retained options change during the first read", async () => {
+    const h = setup();
+    const read = h.input.readApproval;
+    h.input.readApproval = async () => {
+      h.input.acquire = async () => { throw new Error("replacement acquisition callback ran"); };
+      h.input.readApproval = async () => { throw new Error("replacement review callback ran"); };
+      h.input.policy.reviewer_id = "999";
+      return await read();
+    };
+    const pkg = await prepareReleaseForPublication(h.input);
+    expect(approvedReleasePackageMetadata(pkg).tag).toBe("v1.2.3");
+    expect(h.events).toEqual(["review", "acquire", "review"]);
+  });
   it("composes reviewed provider metadata into package preparation", async () => {
     const source = packageFixture();
     const calls: string[] = [];

@@ -18,6 +18,7 @@ export async function prepareReleaseForPublication(input: {
   acquire: (environment: Environment, reviewed: ReviewedReleaseManifest) => Promise<AcquiredPackage>;
 }): Promise<ApprovedReleasePackage> {
   try {
+    input = { ...input };
     const policy = Object.freeze({ ...input.policy });
     const first = structuredClone(await input.readApproval());
     const reviewed = reviewReleaseManifest(first, policy, new Date());

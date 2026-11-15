@@ -26,6 +26,7 @@ export async function prepareGitHubReleasePackage(input: {
   assertTarget: (tag: string, commit: string) => Promise<void>;
 }): Promise<ApprovedReleasePackage> {
   try {
+    input = { ...input, policy: { ...input.policy }, approval: { ...input.approval } };
     return await prepareReleaseForPublication({ policy: input.policy,
       async readApproval() { return await readGitHubPublicationApproval(input.approval); },
       async acquire(_environment, reviewed) {
@@ -78,6 +79,7 @@ export async function prepareGitHubReleasePackageFromCheckout(
   input: Omit<Parameters<typeof prepareGitHubReleasePackage>[0], "sourceSnapshot"> & { sourceRoot: string }
 ): Promise<ApprovedReleasePackage> {
   try {
+    input = { ...input, policy: { ...input.policy }, approval: { ...input.approval } };
     const observation = await readGitHubPublicationApproval(input.approval);
     const reviewed = reviewReleaseManifest(observation, input.policy, new Date());
     const snapshot = await captureReviewedReleaseSource(reviewed, input.sourceRoot);

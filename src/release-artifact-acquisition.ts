@@ -55,6 +55,7 @@ export async function acquireReviewedPreflight(input: {
 }): Promise<{ assets: readonly { name: string; bytes: Uint8Array }[]; evidence: Readonly<{ version: string; channel: string; targetCommit: string; runId: string; attempt: string }> }> {
   let scratch = "";
   try {
+    input = { ...input };
     if (process.platform === "win32" || !path.isAbsolute(input.runtimeDir) || path.basename(input.ghPath) !== "gh" ||
         !/^[\x21-\x7e]{1,4096}$/.test(input.token) || !Number.isSafeInteger(input.maxAssetBytes) ||
         input.maxAssetBytes < 1 || input.maxAssetBytes > 256 * 1024 * 1024 ||

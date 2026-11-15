@@ -537,6 +537,22 @@ describe("immutable preflight verifier", () => {
       expect(targetChecks).toEqual([`v1.2.3:${sourceCommit}`, `v1.2.3:${sourceCommit}`, `v1.2.3:${sourceCommit}`]);
       expect(requests.filter((request) => request.endsWith("/actions/runs/130/attempts/3"))).toHaveLength(4);
       expect(requests.filter((request) => request.endsWith("/git/ref/tags/v1.2.3"))).toHaveLength(6);
+      const retained = { ...githubInput, policy: { ...githubInput.policy }, approval: { ...githubInput.approval } };
+      let changedOptions = false;
+      retained.approval.fetchImpl = async (request, init) => {
+        if (!changedOptions) {
+          changedOptions = true;
+          retained.policy.reviewer_id = "999";
+          retained.approval.expectedWorkflowId = "999";
+          retained.approval.fetchImpl = async () => { throw new Error("replacement provider ran"); };
+          retained.assertTarget = async () => { throw new Error("replacement target callback ran"); };
+          retained.maxAssetBytes = 1;
+        }
+        return await fakeFetch(request, init);
+      };
+      const captured = await prepareGitHubReleasePackage(retained);
+      expect(approvedReleasePackageMetadata(captured).approvalSha256).toBe(manifestDigest);
+      expect(changedOptions).toBe(true);
       await expect(prepareGitHubReleasePackage({ ...githubInput, requireSignedTag: true })).rejects.toThrow("GitHub release preparation unavailable.");
       await expect(prepareGitHubReleasePackage({ ...githubInput, sourceSnapshot: { ...snapshot } })).rejects.toThrow("GitHub release preparation unavailable.");
       await expect(prepareGitHubReleasePackage({ ...githubInput, latest: false })).rejects.toThrow("GitHub release preparation unavailable.");

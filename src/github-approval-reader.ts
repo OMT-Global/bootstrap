@@ -79,6 +79,7 @@ export async function readGitHubApproval(input: {
   repository: string; repositoryId: string; pullNumber: number; manifestPath: string; token: string; fetchImpl?: typeof fetch;
 }): Promise<Pick<ApprovalObservation, "manifestBytes" | "pull" | "reviews">> {
   try {
+    input = { ...input };
     if (!validTarget(input.repository, input.repositoryId, input.token) || !Number.isSafeInteger(input.pullNumber) || input.pullNumber < 1 ||
       !/^\.github\/release-approvals\/[A-Za-z0-9_-]+\.json$/.test(input.manifestPath)) throw new Error();
     const get = githubReader(input.repository, input.token, input.fetchImpl ?? fetch);
@@ -146,6 +147,7 @@ export async function readGitHubPreflightMetadata(input: {
   limitations: { reusable_workflow: "unverified"; artifact_attempt_binding: "unverified"; archive_bytes: "unverified"; target_source_bytes: "unverified" };
 }> {
   try {
+    input = { ...input };
     if (!validTarget(input.repository, input.repositoryId, input.token) ||
       ![input.runId, input.attempt, input.artifactId].every((value) => /^[1-9][0-9]{0,19}$/.test(value)) ||
       !/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(input.expectedWorkflowPath)) throw new Error();
@@ -202,6 +204,7 @@ export async function readGitHubPublicationApproval(input: {
   expectedWorkflowPath: string; expectedWorkflowCommit: string; token: string; fetchImpl?: typeof fetch;
 }): Promise<ApprovalReviewObservation> {
   try {
+    input = { ...input };
     if (!validTarget(input.repository, input.repositoryId, input.token) ||
         ![input.publicationRunId, input.publicationAttempt, input.expectedWorkflowId].every((value) => /^[1-9][0-9]{0,19}$/.test(value)) ||
         !/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(input.expectedWorkflowPath)) throw new Error();
@@ -242,6 +245,7 @@ export async function readGitHubExactTag(input: {
   requireSigned: boolean; token: string; fetchImpl?: typeof fetch;
 }): Promise<Readonly<{ repositoryId: string; tag: string; objectId: string; objectType: "tag" | "commit"; commit: string; githubSignature: "valid" | "not-required" }>> {
   try {
+    input = { ...input };
     if (!validTarget(input.repository, input.repositoryId, input.token) || typeof input.requireSigned !== "boolean" ||
         !/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:rc|beta)\.[0-9]+)?$/.test(input.tag) || input.tag.length > 240) throw new Error();
     const expectedCommit = gitSha(input.expectedCommit);

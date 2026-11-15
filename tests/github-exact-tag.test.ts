@@ -39,6 +39,14 @@ describe("exact GitHub tag observation", () => {
     expect(h.calls).toHaveLength(4);
     await expect(readGitHubExactTag(h.input)).rejects.toThrow();
   });
+  it("retains required signature verification when caller options change during a provider read", async () => {
+    const h = harness((kind) => {
+      if (kind === "repo") h.input.requireSigned = false;
+      return kind === "ref" ? { ...ref, object: { type: "commit", sha: commit } } : undefined;
+    });
+    await expect(readGitHubExactTag(h.input)).rejects.toThrow("Exact GitHub tag unavailable.");
+    expect(h.calls).toEqual(["/repos/Example/repo", "/repos/Example/repo/git/ref/tags/v1.2.3"]);
+  });
   it.each([
     ["private repository", (kind: string) => kind === "repo" ? { id: 100, full_name: "Example/repo", private: true } : undefined],
     ["repository ID", (kind: string) => kind === "repo" ? { id: 101, full_name: "Example/repo", private: false } : undefined],

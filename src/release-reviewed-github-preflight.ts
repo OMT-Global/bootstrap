@@ -14,6 +14,7 @@ export async function readReviewedGitHubPreflight(input: {
   expectedWorkflowPath: string; expectedWorkflowCommit: string; token: string; fetchImpl?: typeof fetch;
 }): Promise<Readonly<Metadata>> {
   try {
+    input = { ...input };
     const selected = reviewedReleaseSelectors(input.reviewed);
     if (selected.repository !== input.repository || selected.repositoryId !== input.repositoryId ||
         selected.workflowPath !== input.expectedWorkflowPath || selected.workflowCommit !== input.expectedWorkflowCommit) throw new Error();

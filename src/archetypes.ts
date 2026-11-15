@@ -1789,6 +1789,16 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
 }
 
 function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
+  const aliasInputs = manifest.release.approvedAliases ? `\n${indentBlock(dedent`
+    promote_release_aliases:
+      description: Promote explicitly authorized newest compatible Bootstrap aliases
+      required: false
+      default: false
+      type: boolean
+  `, 10)}` : "";
+  const aliasArguments = manifest.release.approvedAliases ? `\n${indentBlock(dedent`
+    promote_release_aliases: \${{ inputs.promote_release_aliases }}
+  `, 10)}` : "";
   const publicationInputs = manifest.release.approvedPublication ? `\n${indentBlock(dedent`
     publish_new_source_release:
       description: Create one approved Bootstrap source release (manual reconciliation on uncertainty)
@@ -1796,7 +1806,7 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
       default: false
       type: boolean
   `, 10)}` : "";
-  const retryInputs = manifest.release.approvedRetry || manifest.release.approvedPublication ? `\n${indentBlock(dedent`
+  const retryInputs = manifest.release.approvedRetry || manifest.release.approvedPublication || manifest.release.approvedAliases ? `\n${indentBlock(dedent`
     verify_existing_release:
       description: Read-only approved exact-release retry (Bootstrap profile)
       required: false
@@ -1810,7 +1820,7 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
   const publicationArguments = manifest.release.approvedPublication ? `\n${indentBlock(dedent`
     publish_new_source_release: \${{ inputs.publish_new_source_release }}
   `, 10)}` : "";
-  const retryArguments = manifest.release.approvedRetry || manifest.release.approvedPublication ? `\n${indentBlock(dedent`
+  const retryArguments = manifest.release.approvedRetry || manifest.release.approvedPublication || manifest.release.approvedAliases ? `\n${indentBlock(dedent`
     verify_existing_release: \${{ inputs.verify_existing_release }}
     approval_pull_number: \${{ inputs.approval_pull_number }}
   `, 10)}` : "";
@@ -1841,7 +1851,7 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
           release_issue:
             description: Release issue number
             required: false
-            type: string${retryInputs}${publicationInputs}
+            type: string${retryInputs}${publicationInputs}${aliasInputs}
 
     jobs:
       publish:
@@ -1857,7 +1867,7 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
           channel: \${{ inputs.channel }}
           preflight_run_id: \${{ inputs.preflight_run_id }}
           validation_run_id: \${{ inputs.validation_run_id }}
-          release_issue: \${{ inputs.release_issue }}${retryArguments}${publicationArguments}
+          release_issue: \${{ inputs.release_issue }}${retryArguments}${publicationArguments}${aliasArguments}
           publish_script: scripts/release/publish.sh
           postpublish_script: scripts/release/postpublish.sh
           artifact_dir: ${manifest.release.artifacts.directory}
@@ -2581,6 +2591,7 @@ function releasePublishReusableWorkflow(): string {
           require_postpublish_verification: { required: false, type: boolean, default: true }
           evidence_artifact_name: { required: false, type: string, default: release-evidence }
           publish_environment: { required: false, type: string, default: release-publish }
+          promote_release_aliases: { required: false, type: boolean, default: false }
           publish_new_source_release: { required: false, type: boolean, default: false }
           verify_existing_release: { required: false, type: boolean, default: false }
           approval_pull_number: { required: false, type: string, default: "" }
@@ -2601,7 +2612,7 @@ function releasePublishReusableWorkflow(): string {
             shell: bash
         steps:
           - name: Validate approved retry runtime selection
-            if: inputs.verify_existing_release || inputs.publish_new_source_release
+            if: inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases
             env:
               RELEASE_RUNTIME_COMMIT: \${{ vars.RELEASE_RUNTIME_COMMIT }}
             run: |
@@ -2611,10 +2622,10 @@ function releasePublishReusableWorkflow(): string {
             with:
               ref: \${{ inputs.tag }}
               fetch-depth: 0
-              path: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release) && 'release-target' || '.' }}
-              persist-credentials: \${{ !(inputs.verify_existing_release || inputs.publish_new_source_release) }}
+              path: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) && 'release-target' || '.' }}
+              persist-credentials: \${{ !(inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) }}
           - name: Checkout approved retry runtime
-            if: inputs.verify_existing_release || inputs.publish_new_source_release
+            if: inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases
             uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               repository: OMT-Global/bootstrap
@@ -2622,7 +2633,7 @@ function releasePublishReusableWorkflow(): string {
               path: .bootstrap-release-runtime
               persist-credentials: false
           - name: Build approved retry runtime before exposing App key
-            if: inputs.verify_existing_release || inputs.publish_new_source_release
+            if: inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases
             working-directory: .bootstrap-release-runtime
             env:
               RELEASE_RUNTIME_COMMIT: \${{ vars.RELEASE_RUNTIME_COMMIT }}
@@ -2650,18 +2661,23 @@ function releasePublishReusableWorkflow(): string {
               RELEASE_NOTES_FILE: \${{ inputs.release_notes_file }}
               PUBLISH_SCRIPT: \${{ inputs.publish_script }}
               POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
+              PROMOTE_RELEASE_ALIASES: \${{ inputs.promote_release_aliases }}
               PUBLISH_NEW_SOURCE_RELEASE: \${{ inputs.publish_new_source_release }}
               VERIFY_EXISTING_RELEASE: \${{ inputs.verify_existing_release }}
               APPROVAL_PULL_NUMBER: \${{ inputs.approval_pull_number }}
               RELEASE_RUNTIME_COMMIT: \${{ vars.RELEASE_RUNTIME_COMMIT }}
               RELEASE_RETRY_CONFIG: \${{ vars.RELEASE_RETRY_CONFIG }}
-              RELEASE_APP_PRIVATE_KEY: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release) && secrets.RELEASE_APP_PRIVATE_KEY || '' }}
+              RELEASE_APP_PRIVATE_KEY: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) && secrets.RELEASE_APP_PRIVATE_KEY || '' }}
               APPROVED_RUNTIME_ROOT: \${{ github.workspace }}/.bootstrap-release-runtime
             run: |
               set -euo pipefail
               [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
-              if [[ "\${VERIFY_EXISTING_RELEASE:-false}" == "true" || "\${PUBLISH_NEW_SOURCE_RELEASE:-false}" == "true" ]]; then
-                [[ "\${VERIFY_EXISTING_RELEASE:-false}" != "true" || "\${PUBLISH_NEW_SOURCE_RELEASE:-false}" != "true" ]] || { echo "Select one approved operation." >&2; exit 1; }
+              if [[ "\${VERIFY_EXISTING_RELEASE:-false}" == "true" || "\${PUBLISH_NEW_SOURCE_RELEASE:-false}" == "true" || "\${PROMOTE_RELEASE_ALIASES:-false}" == "true" ]]; then
+                selected_operations=0
+                for selected in "\${VERIFY_EXISTING_RELEASE:-false}" "\${PUBLISH_NEW_SOURCE_RELEASE:-false}" "\${PROMOTE_RELEASE_ALIASES:-false}"; do
+                  if [[ "$selected" == "true" ]]; then selected_operations=$((selected_operations + 1)); fi
+                done
+                [[ "$selected_operations" == 1 ]] || { echo "Select one approved operation." >&2; exit 1; }
                 [[ "$RELEASE_ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo "release_issue is required." >&2; exit 1; }
                 umask 077
                 node "$APPROVED_RUNTIME_ROOT/dist/release-existing-runtime.js" >"$RUNNER_TEMP/approved-retry-evidence.json"
@@ -2775,7 +2791,7 @@ function releasePublishReusableWorkflow(): string {
           - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: \${{ inputs.evidence_artifact_name }}-publish
-              path: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release) && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}
+              path: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}
   `;
 }
 

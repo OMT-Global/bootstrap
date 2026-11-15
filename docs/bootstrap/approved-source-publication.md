@@ -36,4 +36,4 @@ Every create/upload/publish call is attempted once. A timeout, unexpected status
 
 GitHub supports [draft creation and publication by release update](https://docs.github.com/en/rest/releases/releases). [Asset uploads](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset) send raw approved bytes; duplicate names and uncertain provider outcomes stop instead of invoking deletion/re-upload recovery. Targets requiring additional workflow permissions fail without broadening the dedicated App grant.
 
-Local fabricated provider and actual Git/archive/package tests do not qualify a real App, protected environment, Linux host, runtime/tool pin or publication. The hosted pilot and separately authorized alias consumer remain outstanding issue acceptance work.
+Local fabricated provider and actual Git/archive/package tests do not qualify a real App, protected environment, Linux host, runtime/tool pin or publication. The hosted pilot and separately authorized [alias operation](approved-release-aliases.md) remain outstanding issue acceptance work.

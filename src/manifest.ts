@@ -539,6 +539,7 @@ const manifestSchema = z.object({
       postpublishRequiresPreflight: z.boolean().optional(),
       approvedRetry: z.boolean().optional(),
       approvedPublication: z.boolean().optional(),
+      approvedAliases: z.boolean().optional(),
       changelog: releaseChangelogSchema.optional(),
       versions: z.array(releaseVersionSchema).optional(),
       artifacts: releaseArtifactSchema.optional(),
@@ -1050,6 +1051,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
         : {}),
       ...(parsed.release?.approvedRetry !== undefined ? { approvedRetry: parsed.release.approvedRetry } : {}),
       ...(parsed.release?.approvedPublication !== undefined ? { approvedPublication: parsed.release.approvedPublication } : {}),
+      ...(parsed.release?.approvedAliases !== undefined ? { approvedAliases: parsed.release.approvedAliases } : {}),
       changelog: {
         enabled: parsed.release?.changelog?.enabled ?? true,
         mode: parsed.release?.changelog?.mode ?? "github-generated-notes",

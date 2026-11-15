@@ -1,0 +1,11 @@
+# Public fleet policy observations
+
+This internal source component supports issue #62. It does not add a CLI command, execute target code, open a pull request or authorize a fleet upgrade.
+
+A caller supplies an actual complete public-discovery result and its original managed-repository record, an actual local generator capture, and the intended Flow policy ref and digest. The observer rechecks the target repository identity and head, verifies the discovered manifest against its Git objects, resolves the source and target policy at the fixed public Flow repository, and checks their canonical digests. It derives versions from policy contents, not tag names. It checks that the currently managed extended-validation workflow matches the captured generator projection, rechecks mutable observations, and retains exact target policy bytes privately for an in-process consumer. Copying a report does not recreate the owned observation.
+
+Both old locale-sensitive pins and explicit `sorted-utf16-v1` pins use their selected digest algorithm. A policy upgrade preserves the existing mode; switching modes requires the separately governed all-reader migration in ADR-0055.
+
+Reads use fixed HTTPS GitHub API endpoints, bounded responses and object traversal, and reject redirects. An optional capability supplied by trusted code is sent only for the selected target repository; public Flow objects are read anonymously unless Flow is itself that target. A capability string does not establish App identity, effective permissions, expiry or authority, and this component does not obtain, persist or configure credentials. An authenticated request failure does not fall back to anonymous. No real credential is used by the tests.
+
+A successful observation is a point-in-time source and workflow observation. It does not verify pilot results, CI job execution, private metadata, human approvals, execution isolation, installed dependency provenance, exceptions, delivery of notices, or permission to publish. The caller must establish freshness and every remaining gate before use. The captured generator's tracked source does not attest its installed runtime or dependencies. Unsupported or incomplete evidence must not be treated as eligibility.

@@ -23,6 +23,8 @@ on:
       require_postpublish_verification: { required: false, type: boolean, default: true }
       evidence_artifact_name: { required: false, type: string, default: release-evidence }
       publish_environment: { required: false, type: string, default: release-publish }
+      verify_existing_release: { required: false, type: boolean, default: false }
+      approval_pull_number: { required: false, type: string, default: "" }
 
 permissions:
   contents: write
@@ -39,10 +41,37 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Validate approved retry runtime selection
+        if: inputs.verify_existing_release
+        env:
+          RELEASE_RUNTIME_COMMIT: ${{ vars.RELEASE_RUNTIME_COMMIT }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "OMT-Global/bootstrap" && "$RELEASE_RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "A reviewed Bootstrap runtime commit is required." >&2; exit 1; }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
+          path: ${{ inputs.verify_existing_release && 'release-target' || '.' }}
+          persist-credentials: ${{ !inputs.verify_existing_release }}
+      - name: Checkout approved retry runtime
+        if: inputs.verify_existing_release
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: OMT-Global/bootstrap
+          ref: ${{ vars.RELEASE_RUNTIME_COMMIT }}
+          path: .bootstrap-release-runtime
+          persist-credentials: false
+      - name: Build approved retry runtime before exposing App key
+        if: inputs.verify_existing_release
+        working-directory: .bootstrap-release-runtime
+        env:
+          RELEASE_RUNTIME_COMMIT: ${{ vars.RELEASE_RUNTIME_COMMIT }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_RUNTIME_COMMIT" ]] || exit 1
+          npm ci --ignore-scripts
+          npm run build
       - name: Publish proven release artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,9 +91,21 @@ jobs:
           RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
           PUBLISH_SCRIPT: ${{ inputs.publish_script }}
           POSTPUBLISH_SCRIPT: ${{ inputs.postpublish_script }}
+          VERIFY_EXISTING_RELEASE: ${{ inputs.verify_existing_release }}
+          APPROVAL_PULL_NUMBER: ${{ inputs.approval_pull_number }}
+          RELEASE_RUNTIME_COMMIT: ${{ vars.RELEASE_RUNTIME_COMMIT }}
+          RELEASE_RETRY_CONFIG: ${{ vars.RELEASE_RETRY_CONFIG }}
+          RELEASE_APP_PRIVATE_KEY: ${{ inputs.verify_existing_release && secrets.RELEASE_APP_PRIVATE_KEY || '' }}
+          APPROVED_RUNTIME_ROOT: ${{ github.workspace }}/.bootstrap-release-runtime
         run: |
           set -euo pipefail
           [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
+          if [[ "${VERIFY_EXISTING_RELEASE:-false}" == "true" ]]; then
+            [[ "$RELEASE_ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo "release_issue is required." >&2; exit 1; }
+            umask 077
+            node "$APPROVED_RUNTIME_ROOT/dist/release-existing-runtime.js" >"$RUNNER_TEMP/approved-retry-evidence.json"
+            exit 0
+          fi
           if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" && ( ! -f "$POSTPUBLISH_SCRIPT" || ! -x "$POSTPUBLISH_SCRIPT" ) ]]; then
             echo "Postpublish verification script is required but missing or not executable." >&2
             exit 1
@@ -91,6 +132,20 @@ jobs:
           validation_repo="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.repo) process.exit(2); process.stdout.write(p.repo)' "$VALIDATION_ARTIFACT_DIR/validation-evidence.json")"
           [[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }
           gh run view "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion' | grep -qx success
+          if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | node -e '
+              let raw=""; process.stdin.on("data", c => { raw += c; if (raw.length > 4194304) process.exit(1); });
+              process.stdin.on("end", () => { try {
+                const pages=JSON.parse(raw); if (!Array.isArray(pages) || !pages.length || pages.length > 20) throw Error();
+                while (Array.isArray(pages.at(-1)) && pages.at(-1).length === 100) {
+                  if (pages.length >= 20) throw Error();
+                  const route="repos/"+process.env.GITHUB_REPOSITORY+"/releases?per_page=100&page="+(pages.length+1);
+                  pages.push(JSON.parse(require("node:child_process").execFileSync("gh", ["api", route], {encoding:"utf8", timeout:30000, maxBuffer:1048576}))); }
+                const ids=new Set(); for (const page of pages) { if (!Array.isArray(page) || page.length > 100) throw Error();
+                  for (const r of page) { if (!r || !Number.isSafeInteger(r.id) || r.id < 1 || ids.has(r.id) || typeof r.tag_name !== "string" || typeof r.draft !== "boolean") throw Error();
+                    ids.add(r.id); if (r.tag_name === process.argv[1]) throw Error(); } }
+              } catch { console.error("Existing or ambiguous release: use approved exact-match retry or reconcile manually."); process.exitCode=1; } });' "$TAG"
+          fi
           if [[ -x "$PUBLISH_SCRIPT" ]]; then
             "$PUBLISH_SCRIPT"
           fi
@@ -138,9 +193,9 @@ jobs:
               release_assets+=("$RELEASE_ASSET_DIR/$asset_name")
             done < "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS"
             [[ ${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }
-            release_args=()
+            release_args=("$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE")
             [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1                   && gh release upload "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber                   || gh release create "$TAG" "${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "${release_args[@]}"
+            gh release create "${release_args[@]}"
           fi
           if [[ -f "$POSTPUBLISH_SCRIPT" && -x "$POSTPUBLISH_SCRIPT" ]]; then
             "$POSTPUBLISH_SCRIPT" "$TAG"
@@ -159,4 +214,4 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ inputs.evidence_artifact_name }}-publish
-          path: ${{ inputs.artifact_dir }}/postpublish-evidence.json
+          path: ${{ inputs.verify_existing_release && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}

@@ -14,6 +14,8 @@ import { approvedReleasePackageMetadata } from "../src/release-approved-package.
 import { acquireReviewedArtifact, acquireReviewedPreflight } from "../src/release-artifact-acquisition.js";
 import { prepareReleaseForPublication } from "../src/release-prepare-publication.js";
 import { prepareGitHubReleasePackage } from "../src/release-github-package-preparation.js";
+import { verifyPreparedGitHubRelease } from "../src/release-existing-runtime.js";
+import { readGitHubExactTag } from "../src/github-approval-reader.js";
 import { reviewedPreflightEnvironment } from "../src/release-reviewed-preflight.js";
 import { packageFixture } from "./helpers/release-approved-package-fixture.js";
 
@@ -505,11 +507,18 @@ describe("immutable preflight verifier", () => {
       const publishRun = { id: 130, run_attempt: 3, workflow_id: 131, path: ".github/workflows/release-publish.yml", event: "workflow_dispatch", status: "in_progress", head_sha: "c".repeat(40), repository: { id: 42 }, head_repository: { id: 42 }, actor: { id: 113, type: "User" }, triggering_actor: { id: 115, type: "User" } };
       const preflightRun = { id: 101, run_attempt: 1, workflow_id: 122, path: ".github/workflows/preflight.yml", event: "workflow_dispatch", status: "completed", conclusion: "success", head_sha: "c".repeat(40), repository: { id: 42 }, head_repository: { id: 42 }, actor: { id: 112, type: "User" }, triggering_actor: { id: 114, type: "User" } };
       const requests: string[] = [];
+      let signedTag = false;
+      let revokedReview = false;
+      const observedRelease = { id: 600, tag_name: "v1.2.3", body: "independently approved A\n", draft: false, prerelease: false, author: { id: 999 } };
       const fakeFetch: typeof fetch = async (request) => {
         const url = new URL(String(request)); requests.push(url.pathname);
         let response: unknown;
-        if (url.pathname === "/repos/fake/repo") response = { id: 42, full_name: "fake/repo", private: false };
-        else if (url.pathname.endsWith("/git/ref/tags/v1.2.3")) response = { ref: "refs/tags/v1.2.3", object: { type: "commit", sha: sourceCommit } };
+        if (url.pathname === "/repos/fake/repo") response = { id: 42, full_name: "fake/repo", private: false, permissions: { push: true } };
+        else if (url.pathname.endsWith("/git/ref/tags/v1.2.3")) response = { ref: "refs/tags/v1.2.3", object: signedTag ? { type: "tag", sha: "9".repeat(40) } : { type: "commit", sha: sourceCommit } };
+        else if (url.pathname.includes("/git/tags/")) response = { sha: "9".repeat(40), tag: "v1.2.3", object: { type: "commit", sha: sourceCommit }, verification: { verified: true, reason: "valid", signature: "fabricated", payload: "fabricated" } };
+        else if (url.pathname.endsWith("/releases")) response = [observedRelease];
+        else if (url.pathname.endsWith("/releases/600") || url.pathname.endsWith("/releases/latest")) response = observedRelease;
+        else if (url.pathname.endsWith("/releases/600/assets")) response = source.observation.actual.assets.map((a, i) => ({ id: 700 + i, name: a.name, size: a.size, state: "uploaded", digest: `sha256:${a.sha256}` }));
         else if (url.pathname.endsWith("/actions/runs/130/attempts/3")) response = publishRun;
         else if (url.pathname.endsWith("/actions/runs/101/attempts/1")) response = preflightRun;
         else if (url.pathname.endsWith("/actions/workflows/122")) response = { id: 122, path: preflightRun.path };
@@ -517,10 +526,12 @@ describe("immutable preflight verifier", () => {
         else if (url.pathname.includes("/git/commits/")) response = { sha: sourceCommit, tree: { sha: sourceTree } };
         else if (url.pathname.endsWith("/pulls/4/files")) response = [{ filename: reviewPath, status: "added", sha: blobSha }];
         else if (url.pathname.includes("/git/blobs/")) response = { sha: blobSha, encoding: "base64", content: manifestBytes.toString("base64"), size: manifestBytes.length };
-        else if (url.pathname.endsWith("/pulls/4/reviews")) response = [{ id: 200, user: { id: 111 }, state: "APPROVED", commit_id: gitHead, submitted_at: source.observation.reviews[0]!.submitted_at, body: `APPROVE-RELEASE-SHA256 ${manifestDigest}` }];
+        else if (url.pathname.endsWith("/pulls/4/reviews")) response = [{ id: 200, user: { id: 111 }, state: revokedReview ? "DISMISSED" : "APPROVED", commit_id: gitHead, submitted_at: source.observation.reviews[0]!.submitted_at, body: `APPROVE-RELEASE-SHA256 ${manifestDigest}` }];
         else if (url.pathname.endsWith("/pulls/4")) response = { number: 4, state: "open", changed_files: 1, head: { sha: gitHead, repo: { id: 42 } }, base: { sha: "e".repeat(40), repo: { id: 42 } }, user: { id: 112 } };
         else throw new Error("unexpected fabricated endpoint");
-        return new Response(JSON.stringify(response), { status: 200 });
+        const result = new Response(JSON.stringify(response), { status: 200 });
+        Object.defineProperty(result, "url", { value: String(request) });
+        return result;
       };
       const targetChecks: string[] = [];
       const githubInput: Parameters<typeof prepareGitHubReleasePackage>[0] = { policy: source.policy,
@@ -554,6 +565,25 @@ describe("immutable preflight verifier", () => {
       expect(approvedReleasePackageMetadata(captured).approvalSha256).toBe(manifestDigest);
       expect(changedOptions).toBe(true);
       await expect(prepareGitHubReleasePackage({ ...githubInput, requireSignedTag: true })).rejects.toThrow("GitHub release preparation unavailable.");
+      signedTag = true;
+      let scopeChecks = 0;
+      const retry = { package: observed, policy: source.policy, approval: githubInput.approval, preflightRunId: "101", channel: "stable",
+        async assertScope() { scopeChecks++; },
+        async assertTarget(tag: string, commit: string) {
+          await readGitHubExactTag({ repository: "fake/repo", repositoryId: "42", tag, expectedCommit: commit, requireSigned: true, token: base.token, fetchImpl: fakeFetch });
+        } };
+      expect(await verifyPreparedGitHubRelease(retry)).toMatchObject({ kind: "verified-existing", releaseId: "600", commit: sourceCommit, approvalSha256: manifestDigest });
+      expect(scopeChecks).toBe(6);
+      revokedReview = true;
+      await expect(verifyPreparedGitHubRelease(retry)).rejects.toThrow();
+      revokedReview = false;
+      publishRun.triggering_actor.id = 111;
+      await expect(verifyPreparedGitHubRelease(retry)).rejects.toThrow();
+      publishRun.triggering_actor.id = 115;
+      await expect(verifyPreparedGitHubRelease({ ...retry, preflightRunId: "999" })).rejects.toThrow();
+      await expect(verifyPreparedGitHubRelease({ ...retry, assertScope: async () => { throw new Error("fabricated revoked token"); } })).rejects.toThrow();
+      signedTag = false;
+      await expect(verifyPreparedGitHubRelease(retry)).rejects.toThrow();
       await expect(prepareGitHubReleasePackage({ ...githubInput, sourceSnapshot: { ...snapshot } })).rejects.toThrow("GitHub release preparation unavailable.");
       await expect(prepareGitHubReleasePackage({ ...githubInput, latest: false })).rejects.toThrow("GitHub release preparation unavailable.");
       await expect(acquireReviewedArtifact({ ...base, reviewed: selected.fact, ghSha256: "0".repeat(64) })).rejects.toThrow("Reviewed artifact acquisition unavailable.");

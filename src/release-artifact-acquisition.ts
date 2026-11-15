@@ -23,7 +23,7 @@ async function pinnedExecutable(executable: string, expected: string): Promise<v
   } finally { await file.close(); }
 }
 
-async function invoke(python: string, ghDirectory: string, environment: Record<string, string>, token: string, scratch: string): Promise<string> {
+async function invoke(python: string, ghDirectory: string, environment: Record<string, string>, token: string, scratch: string, profile: "preflight" | "validation" = "preflight"): Promise<string> {
   return await new Promise((resolve, reject) => {
     const child = spawn(python, ["-I", "-S", "-"], { detached: true, stdio: ["pipe", "pipe", "pipe"],
       env: { ...environment, PATH: `${ghDirectory}:/usr/bin:/bin`, HOME: scratch, GH_CONFIG_DIR: scratch,
@@ -36,17 +36,17 @@ async function invoke(python: string, ghDirectory: string, environment: Record<s
     child.on("error", () => { clearTimeout(timeout); stop(); reject(new Error()); });
     child.stdin.on("error", () => {});
     child.on("close", (code, signal) => { clearTimeout(timeout); if (code !== 0 || signal || failed) { stop(); reject(new Error()); } else resolve(output); });
-    child.stdin.end(immutablePreflightVerifierScript());
+    child.stdin.end(immutablePreflightVerifierScript(profile));
   });
 }
 
 /**
- * Inactive acquisition prototype. The caller must run in a protected POSIX
+ * Acquisition used by the trusted retry runtime. The caller must run in a protected POSIX
  * environment, authenticate the read-only token and reviewed observation, pin
  * immutable trusted executables, independently verify the workflow and target,
  * and recheck approval before publication. Same-user filesystem/process races,
  * executable replacement, network isolation and provenance beyond the verifier
- * are not established by this adapter. No workflow invokes it.
+ * are not established by this adapter.
  */
 export async function acquireReviewedPreflight(input: {
   reviewed: ReviewedReleaseManifest; token: string; pythonPath: string; pythonSha256: string;
@@ -136,4 +136,30 @@ export async function acquireReviewedPreflight(input: {
 /** Compatibility helper; evidence-aware callers should use acquireReviewedPreflight. */
 export async function acquireReviewedArtifact(input: Parameters<typeof acquireReviewedPreflight>[0]): Promise<readonly { name: string; bytes: Uint8Array }[]> {
   return (await acquireReviewedPreflight(input)).assets;
+}
+
+/** Trusted provider-selected validation artifact; no target files are extracted outside
+ * the private bounded verifier tree. Workflow/run/artifact metadata is rechecked by its caller. */
+export async function acquireValidationEvidence(input: {
+  repository: string; repositoryId: string; runId: string; attempt: string; artifactId: string; archiveSha256: string; targetCommit: string;
+  token: string; pythonPath: string; pythonSha256: string; ghPath: string; ghSha256: string; runtimeDir: string;
+}): Promise<void> {
+  let scratch = "";
+  try {
+    input = { ...input };
+    if (process.platform === "win32" || !path.isAbsolute(input.runtimeDir) || path.basename(input.ghPath) !== "gh" ||
+        typeof input.token !== "string" || !/^[\x21-\x7e]{1,4096}$/.test(input.token)) throw new Error();
+    await pinnedExecutable(input.pythonPath, input.pythonSha256); await pinnedExecutable(input.ghPath, input.ghSha256);
+    scratch = await mkdtemp(path.join(await realpath(input.runtimeDir), "bootstrap-validation-acquisition-"));
+    const output = await invoke(input.pythonPath, path.dirname(input.ghPath), {
+      GITHUB_REPOSITORY: input.repository, GITHUB_REPOSITORY_ID: input.repositoryId, PREFLIGHT_RUN_ID: input.runId,
+      PREFLIGHT_APPROVED_ATTEMPT: input.attempt, PREFLIGHT_ARTIFACT_ID: input.artifactId, PREFLIGHT_ARTIFACT_SHA256: input.archiveSha256,
+      PREFLIGHT_TARGET_SHA: input.targetCommit, PREFLIGHT_MAX_ARCHIVE_BYTES: "1048576", PREFLIGHT_MAX_EXPANDED_BYTES: "65536", PREFLIGHT_MAX_MEMBERS: "1"
+    }, input.token, scratch, "validation");
+    if (!/^\/[^\n\r]+\n$/.test(output)) throw new Error();
+    const root = output.slice(0, -1); const relative = path.relative(scratch, root).split(path.sep);
+    if (relative.length !== 2 || !relative[0]?.startsWith("release-approved-") || relative[1] !== "files" || await realpath(root) !== root) throw new Error();
+    await pinnedExecutable(input.pythonPath, input.pythonSha256); await pinnedExecutable(input.ghPath, input.ghSha256);
+  } catch { throw new Error("Bounded full-validation evidence unavailable."); }
+  finally { if (scratch) await rm(scratch, { recursive: true, force: true }); }
 }

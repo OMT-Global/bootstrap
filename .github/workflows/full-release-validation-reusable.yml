@@ -47,7 +47,7 @@ jobs:
           fi
           target_sha="$(git rev-parse HEAD)"
           cat >"$ARTIFACT_DIR/validation-evidence.json" <<JSON
-          {"schema_version":1,"repo":"${GITHUB_REPOSITORY}","target_ref":"${TARGET_REF}","target_sha":"${target_sha}","validation_run_id":"${GITHUB_RUN_ID}","release_profile":"${RELEASE_PROFILE}","checks":{"validate_script":"${validate_status}","standard_checks":"${standard_status}"}}
+          {"schema_version":1,"repo":"${GITHUB_REPOSITORY}","target_ref":"${TARGET_REF}","target_sha":"${target_sha}","validation_run_id":"${GITHUB_RUN_ID}","run_attempt":"${GITHUB_RUN_ATTEMPT}","release_profile":"${RELEASE_PROFILE}","checks":{"validate_script":"${validate_status}","standard_checks":"${standard_status}"}}
           JSON
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -537,6 +537,7 @@ const manifestSchema = z.object({
       reusableWorkflowRepo: z.string().min(1).optional(),
       reusableWorkflowRef: z.string().min(1).optional(),
       postpublishRequiresPreflight: z.boolean().optional(),
+      approvedRetry: z.boolean().optional(),
       changelog: releaseChangelogSchema.optional(),
       versions: z.array(releaseVersionSchema).optional(),
       artifacts: releaseArtifactSchema.optional(),
@@ -1046,6 +1047,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       ...(parsed.release?.postpublishRequiresPreflight !== undefined
         ? { postpublishRequiresPreflight: parsed.release.postpublishRequiresPreflight }
         : {}),
+      ...(parsed.release?.approvedRetry !== undefined ? { approvedRetry: parsed.release.approvedRetry } : {}),
       changelog: {
         enabled: parsed.release?.changelog?.enabled ?? true,
         mode: parsed.release?.changelog?.mode ?? "github-generated-notes",

@@ -1,0 +1,23 @@
+# ADR-0037: public policy and managed CI observations
+
+Status: Accepted for this source component; production qualification and GitHub approval remain separate.
+
+Issue: #62.
+
+Implementation status: the current source stage implements the policy observation only. The managed-CI observer described below remains future work. The fixed transport also accepts an explicitly supplied target-repository read capability under ADR-0051; its issuer and scope remain trusted caller responsibilities. No App, credential, runtime rollout or write is configured by this stage.
+
+The fleet upgrader needs actual public policy and CI evidence. Operator-provided version strings, pilot outcomes, check names and green summary jobs cannot establish that evidence. This component produces observations from the existing genuine public-discovery and generator-capture identities. It enables no CLI, target writes or rollout.
+
+`observePublicPolicies` accepts only an actual complete discovery's managed record and an actual G01 generator capture. It rechecks public repository identity, default head and manifest, traverses bounded regular Git objects, verifies tree/blob identities and raw SHA256, and calls the existing policy resolver. The supported publisher is the fixed public OMT-Global/flow repository and standard-v1 policy path. Both source and target pins resolve to actual immutable objects and are rechecked before completion. Raw and canonical policy digests remain distinct. Policy versions come from bundle contents: release tag v1.0.1 may validly contain policy version1.0.0.
+
+The actual trusted renderer must reproduce the captured generator's committed extended-validation profile. Its selected output for the observed repository must then equal that repository's immutable workflow bytes. The source/lock audit does not establish that ignored installed JavaScript/dependencies are trusted; the loaded build and runtime remain qualification inputs.
+
+`observeManagedCi` supports the actual inline `.github/workflows/extended-validation.yml` profile. It derives the native workflow ID and verifies actual current-head runs, their current attempts, all expected jobs and required checkout/setup/validation steps, linked check identities, suite and GitHub Actions App. Skipped validation is pending; a green summary alone is insufficient. Complete bounded pagination, provider result-cap rejection and repeated head/run/job/check/workflow observations prevent accepting incomplete or changed evidence. Tied latest native update times cannot establish a current run and remain incomplete. Reusable or project-owned/excluded profiles remain explicitly unsupported until their real verification is implemented.
+
+The fixed transport makes GET requests only to api.github.com, rejects redirects, and bounds request count, per-response/aggregate bytes, parsing depth/nodes and monotonic operation/request time. Requests are anonymous unless trusted code explicitly supplies a target-repository read capability under ADR-0051. It aborts and initiates response-body cancellation on failure. It uses no authentication configuration, SSH agent, provider, model, target checkout execution or caller-supplied production adapter.
+
+Successful observations have private same-invocation registry identities and actual monotonic acquisition windows. Those windows describe snapshots and grant no freshness lease or authority to reuse old facts. Public JSON describes facts and cannot recreate the private identities. Equal or decreasing policy versions may be observed as invalid transitions; observation supplies no permission to execute them. The G06b governance and G07 executor are the named future consumers. Pilot selection/pass, failure remediation, human approvals, exceptions, notification delivery, isolated execution, final review, publication and current-state rechecks remain required separate producers. No source-only or fixture result closes #62.
+
+Meaningful tests use actual temporary Git objects, the actual G01/G06a/policy/render/CI producers and fabricated public HTTP responses. Darwin tests simulate only the existing Linux/prlimit eligibility for generator capture. Native API, installed runtime, provider isolation and complete executor qualification remain unproven.
+
+Native identity and pagination contracts follow GitHub's [workflow-run API](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow), [per-attempt job API](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt) and [check-run API](https://docs.github.com/en/rest/checks/runs#get-a-check-run). No GitHub product API was called to prepare or test this source.

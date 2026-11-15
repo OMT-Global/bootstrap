@@ -380,6 +380,7 @@ export interface BootstrapManifest {
       ref: string;
       sha256: string;
       bundlePath: string;
+      canonicalization?: "sorted-utf16-v1";
     };
   };
   exceptions: PolicyException[];

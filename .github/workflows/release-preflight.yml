@@ -28,7 +28,7 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@913b298fab0fb008796011d940ee7362a347659d
+    uses: OMT-Global/bootstrap/.github/workflows/release-preflight-reusable.yml@9b77eaaa3ed9ad2da35ec1af9fe13d1563c7cce4
     with:
       version: ${{ inputs.version }}
       channel: ${{ inputs.channel }}

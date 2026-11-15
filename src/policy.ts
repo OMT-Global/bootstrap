@@ -9,6 +9,7 @@ import type { BootstrapManifest } from "./types.js";
 export interface FlowPolicySource {
   ref: string;
   sha256: string;
+  canonicalization?: "sorted-utf16-v1";
 }
 
 export interface FlowPolicyBundle {
@@ -27,12 +28,12 @@ export interface ResolvedPolicyContract {
   unknownManifestSettings: string[];
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+function stableJson(value: unknown, canonicalization?: "sorted-utf16-v1"): string {
+  if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry, canonicalization)).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .sort(([left], [right]) => canonicalization === "sorted-utf16-v1" ? (left < right ? -1 : left > right ? 1 : 0) : left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry, canonicalization)}`)
       .join(",")}}`;
   }
   return JSON.stringify(value);
@@ -48,8 +49,9 @@ export function requireImmutableProductionWorkflowRef(ref: string, surface = "Pr
   }
 }
 
-export function flowPolicyDigest(bundle: unknown): string {
-  return createHash("sha256").update(stableJson(bundle)).digest("hex");
+export function flowPolicyDigest(bundle: unknown, canonicalization?: "sorted-utf16-v1"): string {
+  if (canonicalization !== undefined && canonicalization !== "sorted-utf16-v1") throw new Error("Unsupported Flow policy canonicalization.");
+  return createHash("sha256").update(stableJson(bundle, canonicalization)).digest("hex");
 }
 
 export function resolveFlowPolicy(
@@ -64,7 +66,7 @@ export function resolveFlowPolicy(
   if (!/^[0-9a-f]{64}$/i.test(source.sha256)) {
     throw new Error("Flow policy digest must be a SHA-256 hex digest.");
   }
-  if (flowPolicyDigest(bundle) !== source.sha256.toLowerCase()) {
+  if (flowPolicyDigest(bundle, source.canonicalization) !== source.sha256.toLowerCase()) {
     throw new Error("Flow policy digest does not match the verified local bundle.");
   }
   if (!bundle || typeof bundle !== "object") {

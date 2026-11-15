@@ -1901,7 +1901,8 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
 }
 
 export function immutablePreflightVerifierScript(): string {
-  return String.raw`import hashlib
+  return String.raw`import bisect
+import hashlib
 import json
 import os
 import re
@@ -1922,9 +1923,26 @@ def decimal(value):
     require(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value), "Invalid canonical identifier.")
     return value
 
+def unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "Duplicate provider JSON key.")
+        result[key] = value
+    return result
+
+def reject_constant(_value):
+    raise ValueError("Invalid provider JSON constant.")
+
 def api(route):
-    body = subprocess.run(["gh", "api", route], check=True, stdout=subprocess.PIPE).stdout
-    return json.loads(body)
+    with subprocess.Popen(["gh", "api", route], stdout=subprocess.PIPE) as process:
+        body = process.stdout.read(1024 * 1024 + 1)
+        if len(body) > 1024 * 1024:
+            process.kill()
+            process.stdout.close()
+            process.wait()
+            raise ValueError("Provider response exceeds bound.")
+        require(process.wait() == 0, "Provider request failed.")
+    return json.loads(body, object_pairs_hook=unique_pairs, parse_constant=reject_constant)
 
 def same_id(value, expected):
     return type(value) is int and str(value) == expected
@@ -1958,6 +1976,15 @@ require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "Invalid r
 repository_id = decimal(os.environ["GITHUB_REPOSITORY_ID"])
 run_id = decimal(os.environ["PREFLIGHT_RUN_ID"])
 artifact_id = decimal(os.environ["PREFLIGHT_ARTIFACT_ID"])
+approved_attempt = decimal(os.environ["PREFLIGHT_APPROVED_ATTEMPT"]) if "PREFLIGHT_APPROVED_ATTEMPT" in os.environ else None
+limit_names = ("PREFLIGHT_MAX_ARCHIVE_BYTES", "PREFLIGHT_MAX_EXPANDED_BYTES", "PREFLIGHT_MAX_MEMBERS")
+provided_limits = [name in os.environ for name in limit_names]
+require(not any(provided_limits) or all(provided_limits), "Incomplete resource limits.")
+limits = None
+if all(provided_limits):
+    values = [int(decimal(os.environ[name])) for name in limit_names]
+    require(values[0] <= 1024 ** 3 and values[1] <= 2 * 1024 ** 3 and values[2] <= 10000, "Resource limit exceeds supported ceiling.")
+    limits = values
 expected = os.environ["PREFLIGHT_ARTIFACT_SHA256"]
 require(re.fullmatch(r"[0-9a-f]{64}", expected), "Invalid independent ZIP SHA256.")
 target_sha = os.environ["PREFLIGHT_TARGET_SHA"]
@@ -1980,7 +2007,14 @@ try:
     require(stat.S_ISREG(os.fstat(raw_fd).st_mode), "ZIP storage must be regular.")
     with os.fdopen(raw_fd, "w+b") as raw:
         with subprocess.Popen(["gh", "api", f"repos/{repository}/actions/artifacts/{artifact_id}/zip"], stdout=subprocess.PIPE) as download:
+            downloaded = 0
             while chunk := download.stdout.read(65536):
+                downloaded += len(chunk)
+                if limits and downloaded > limits[0]:
+                    download.kill()
+                    download.stdout.close()
+                    download.wait()
+                    raise ValueError("ZIP download exceeds resource limit.")
                 raw.write(chunk)
             require(download.wait() == 0, "Exact artifact download failed.")
         raw.flush()
@@ -1992,12 +2026,15 @@ try:
         raw.seek(0)
         with zipfile.ZipFile(raw) as archive:
             require(isinstance(archive.start_dir, int), "Required ZIP directory boundary is unavailable.")
-            boundaries = sorted({item.header_offset for item in archive.infolist()} | {archive.start_dir})
+            archive_members = archive.infolist()
+            if limits:
+                require(len(archive_members) <= limits[2] and sum(item.file_size for item in archive_members) <= limits[1], "ZIP expansion exceeds resource limit.")
+            boundaries = sorted({item.header_offset for item in archive_members} | {archive.start_dir})
             central_offset = archive.start_dir
             nodes = {}
             explicit = set()
             members = []
-            for item in archive.infolist():
+            for item in archive_members:
                 raw.seek(central_offset)
                 central_header = raw.read(46)
                 require(len(central_header) == 46 and central_header[:4] == b"PK\x01\x02", "Invalid ZIP central header.")
@@ -2038,7 +2075,9 @@ try:
                 extras(item.extra, name, encoded)
                 local_fields = extras(local_extra, name, encoded)
                 start = item.header_offset + 30 + local[-2] + local[-1]
-                boundary = next(offset for offset in boundaries if offset > item.header_offset)
+                boundary_index = bisect.bisect_right(boundaries, item.header_offset)
+                require(boundary_index < len(boundaries), "Missing ZIP member boundary.")
+                boundary = boundaries[boundary_index]
                 require(start + item.compress_size <= boundary, "Overlapping ZIP member ranges.")
                 local_sizes = [local[8], local[7]]
                 zip64_data = local_fields.get(1, b"")
@@ -2079,6 +2118,7 @@ try:
                 handles.append(child_fd)
                 directories[parts] = child_fd
             member_hashes = {}
+            total_expanded = 0
             for item, parts, directory, start in members:
                 output = None
                 if not directory:
@@ -2101,6 +2141,8 @@ try:
                             block = decoder.decompress(pending, 65536) if decoder else pending
                             pending = decoder.unconsumed_tail if decoder else b""
                             expanded += len(block)
+                            total_expanded += len(block)
+                            require(not limits or total_expanded <= limits[1], "ZIP actual expansion exceeds resource limit.")
                             crc = zlib.crc32(block, crc)
                             member_digest.update(block)
                             require(expanded <= item.file_size, "ZIP actual expanded size exceeds its declared size.")
@@ -2122,6 +2164,7 @@ try:
             require(evidence.get("repo") == repository and evidence.get("preflight_run_id") == run_id, "Approved evidence repository/run mismatch.")
             require(evidence.get("target_sha") == target_sha, "Preflight evidence target SHA does not match tag SHA.")
             attempt = decimal(evidence.get("run_attempt"))
+            require(approved_attempt is None or attempt == approved_attempt, "Approved preflight attempt mismatch.")
             completed = api(f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}")
             completed_repository = completed.get("repository") or {}
             require(same_id(completed.get("id"), run_id) and same_id(completed.get("run_attempt"), attempt), "Exact attempt identity mismatch.")

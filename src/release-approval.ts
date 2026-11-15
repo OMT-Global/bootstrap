@@ -6,7 +6,7 @@ const sha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
 const asset = z.object({ name: z.string().min(1).max(255).regex(/^[^/\\\x00-\x1f\x7f]+$/), size: z.number().int().nonnegative().safe(), sha256: digest }).strict();
 const manifestSchema = z.object({
-  schema_version: z.literal(1),
+  schema_version: z.literal(2),
   approval_id: z.string().uuid(),
   expires_at: z.string().datetime(),
   action: z.literal("publish_new_release"),
@@ -14,6 +14,7 @@ const manifestSchema = z.object({
   tag: z.string().max(255).regex(/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:rc|beta)\.[0-9]+)?$/),
   version: z.string().max(255),
   channel: z.enum(["rc", "beta", "stable", "maintenance"]),
+  publication: z.object({ notes_asset: z.string().min(1).max(255), latest: z.boolean() }).strict(),
   target: z.object({ commit: sha, tree: sha }).strict(),
   preflight: z.object({ workflow_path: z.string().regex(/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/), workflow_id: id, workflow_commit: sha, run_id: id, attempt: id, artifact_id: id, archive_sha256: digest, requester_id: id, attempt_actor_id: id }).strict(),
   assets: z.array(asset).min(1).max(100)
@@ -37,6 +38,8 @@ export type ApprovalObservation = {
   publisher_attempt_actor_id: string;
 };
 
+export type ApprovalReviewObservation = Omit<ApprovalObservation, "actual">;
+
 export type ApprovalPolicy = { reviewer_id: string; manifest_path: string; max_validity_seconds: number };
 export class ReleaseApprovalError extends Error {
   constructor() { super("Release approval unavailable or invalid."); }
@@ -57,8 +60,14 @@ function timestamp(value: string): number {
   return parsed;
 }
 
-/** Compare authenticated, independently derived facts; never perform publication. */
-export function verifyReleaseApproval(observation: ApprovalObservation, policy: ApprovalPolicy, now: Date): { manifest_sha256: string; review_id: string; head: string } {
+type ReviewResult = { manifest_sha256: string; review_id: string; head: string };
+type ReviewedRecord = { manifest: ReleaseApprovalManifest; result: ReviewResult; expires: number };
+declare const reviewedBrand: unique symbol;
+export type ReviewedReleaseManifest = { readonly [reviewedBrand]: true };
+const reviewed = new WeakMap<object, ReviewedRecord>();
+
+/** Verify the review decision only. Caller-authenticated GitHub facts and actors are required. */
+function reviewManifest(observation: ApprovalReviewObservation, policy: ApprovalPolicy, now: Date): ReviewedRecord {
   try {
     if (!id.safeParse(policy.reviewer_id).success || !id.safeParse(observation.publisher_id).success || !id.safeParse(observation.publisher_attempt_actor_id).success ||
       !Number.isSafeInteger(policy.max_validity_seconds) || policy.max_validity_seconds < 1 || policy.max_validity_seconds > 86400 ||
@@ -71,9 +80,8 @@ export function verifyReleaseApproval(observation: ApprovalObservation, policy: 
     const prerelease = /-(?:rc|beta)\.[0-9]+$/.test(manifest.tag);
     if (manifest.version !== manifest.tag || prerelease !== (manifest.channel === "rc" || manifest.channel === "beta")) throw new Error();
     const names = manifest.assets.map((entry) => entry.name);
-    if (new Set(names).size !== names.length || names.some((name, index) => index > 0 && (names[index - 1] ?? "") >= name)) throw new Error();
-    const { approval_id: _approval, expires_at: _expiry, ...bound } = manifest;
-    if (canonical(bound) !== canonical(observation.actual)) throw new Error();
+    if (!names.includes(manifest.publication.notes_asset) || (prerelease && manifest.publication.latest) ||
+        new Set(names).size !== names.length || names.some((name, index) => index > 0 && (names[index - 1] ?? "") >= name)) throw new Error();
     const pull = observation.pull;
     if (pull.repository_id !== manifest.repository.id || pull.state !== "open" || !sha.safeParse(pull.head).success ||
       !id.safeParse(pull.author_id).success || pull.author_id === policy.reviewer_id ||
@@ -102,7 +110,48 @@ export function verifyReleaseApproval(observation: ApprovalObservation, policy: 
     if (!approved || approved.review.state !== "APPROVED" || approved.review.commit !== pull.head ||
       approved.review.body !== `APPROVE-RELEASE-SHA256 ${checksum}` || !Number.isFinite(current) ||
       approved.time > current || current >= expires || expires - approved.time > policy.max_validity_seconds * 1000) throw new Error();
-    return { manifest_sha256: checksum, review_id: approved.review.id, head: pull.head };
+    return { manifest, result: { manifest_sha256: checksum, review_id: approved.review.id, head: pull.head }, expires };
+  } catch {
+    throw new ReleaseApprovalError();
+  }
+}
+
+/**
+ * Authenticates a reviewed manifest before artifact acquisition. This fact is not
+ * an approved package or publication authority. All observations and actors must
+ * come from a trusted authenticated provider and be refreshed at use boundaries.
+ */
+export function reviewReleaseManifest(observation: ApprovalReviewObservation, policy: ApprovalPolicy, now: Date): ReviewedReleaseManifest {
+  const record = reviewManifest(observation, policy, now);
+  const fact = Object.freeze({}) as ReviewedReleaseManifest;
+  reviewed.set(fact, record);
+  return fact;
+}
+
+/** Return immutable acquisition selectors before expiry; this does not recheck a live review. */
+export function reviewedReleaseSelectors(value: ReviewedReleaseManifest): Readonly<{
+  repositoryId: string; repository: string; tag: string; version: string; channel: string; targetCommit: string; targetTree: string;
+  runId: string; attempt: string; artifactId: string; archiveSha256: string;
+  workflowId: string; workflowPath: string; workflowCommit: string; requesterId: string; attemptActorId: string;
+  notesAssetName: string; assets: readonly Readonly<{ name: string; size: number; sha256: string }>[]; manifestSha256: string;
+}> {
+  const record = reviewed.get(value);
+  if (!record || Date.now() >= record.expires) throw new ReleaseApprovalError();
+  const m = record.manifest;
+  return Object.freeze({ repositoryId: m.repository.id, repository: m.repository.full_name, tag: m.tag, version: m.version, channel: m.channel, targetCommit: m.target.commit,
+    targetTree: m.target.tree, runId: m.preflight.run_id, attempt: m.preflight.attempt, artifactId: m.preflight.artifact_id,
+    archiveSha256: m.preflight.archive_sha256, workflowId: m.preflight.workflow_id, workflowPath: m.preflight.workflow_path,
+    workflowCommit: m.preflight.workflow_commit, requesterId: m.preflight.requester_id, attemptActorId: m.preflight.attempt_actor_id,
+    notesAssetName: m.publication.notes_asset, assets: Object.freeze(m.assets.map((asset) => Object.freeze({ ...asset }))), manifestSha256: record.result.manifest_sha256 });
+}
+
+/** Compare a reviewed manifest with independently derived package facts; never publish. */
+export function verifyReleaseApproval(observation: ApprovalObservation, policy: ApprovalPolicy, now: Date): ReviewResult {
+  try {
+    const record = reviewManifest(observation, policy, now);
+    const { approval_id: _approval, expires_at: _expiry, ...bound } = record.manifest;
+    if (canonical(bound) !== canonical(observation.actual)) throw new Error();
+    return record.result;
   } catch {
     throw new ReleaseApprovalError();
   }

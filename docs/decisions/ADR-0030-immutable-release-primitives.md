@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Acceptance covers the root-adopted primitive source stage. Required code review, human PR approval, hosted validation and release-content approval remain separate.
+Acceptance covers the root-adopted primitive source stage and the bounded source-consumer decision recorded below. Required code review, human PR approval, hosted validation and release-content approval remain separate.
 
 Date: 2026-11-09
 
@@ -39,6 +39,16 @@ H follows the actual landed G2 main commit and adopts that capable immutable pin
 Future strong selection activates when its boolean is true or either new selector is supplied. Absent/false with empty selectors retains the existing legacy branch and executes no Python. Generic optional hooks, existing validation-run source/repository/run/current-success checks, permissions and the unchanged full-validation reusable remain separate contracts.
 
 ## Consequences and gates
+
+### Approved-package acquisition source decision — 2026-11-15
+
+The task coordinator adopts an inactive TypeScript consumer of the existing approval and immutable-artifact primitives. This implements the owner's selected GitHub review of an exact approval manifest, with JMCTE as approver, distinct from the requester and publisher. It does not establish that an actual approval or publication has occurred.
+
+Manifest version 2 binds the notes asset and latest-release designation in addition to the existing repository, target, actors, run, attempt, artifact and asset digests. The inactive comparison API rejects version 1 because those publication choices were not bound. No checked-in workflow or CLI currently consumes either manifest version. The approved-package object retains copied asset bytes and manifest-derived metadata, returns fresh asset copies and rejects access after expiry.
+
+The acquisition consumer derives selectors from the reviewed manifest, repeats authenticated metadata and approval observations, verifies the exact archive and source package, and captures attempt inputs before asynchronous work. It requires explicit archive, expansion and member limits within implementation ceilings; these ceilings do not select production operating values. It uses the verifier factory directly; the current renderer does not invoke the optional selection wrapper that embeds that factory. This source stage changes no managed output or running workflow. Future workflow integration requires explicit wiring and the local doctor/plan and reviewed generation gates below.
+
+The named next consumer is the release preparation/publication coordinator. Runtime isolation, actual Linux qualification, trusted tool pins, token authority, protected tags, source provenance and later approval checks remain prerequisites. This source decision does not adopt a retry or original-publication receipt policy, an expiry operating value, additional App permissions, deployment, keys, release contents or an actual release. Required code review and independent current-head GitHub approval remain separate from this coordinator decision.
 
 The existing 47 managed paths, three project-owned release hooks, README and governed legal boundary remain intact. P adds no provider, permission, manifest control mode, managed path, settings/home change or publication action. Following managed stages require their own genuine state, doctor/plan evidence and reviewed repository-only generation; a scratch projection or copied state is not apply authority.
 

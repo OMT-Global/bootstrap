@@ -789,14 +789,14 @@ github:
         - "@athena-omt"
   issueLabels:
     - name: area:frontend
-      color: 1f77b4
-      description: Frontend and user-interface work.
+      color: 0969da
+      description: Frontend, UX, UI, or client surface.
     - name: area:api
       color: 2ca02c
       description: API contracts, endpoints, and integrations.
     - name: area:data
-      color: 9467bd
-      description: Data models, persistence, migration, and analytics work.
+      color: 0a7f83
+      description: Data, schema, storage, privacy, or migration surface.
     - name: area:ledger
       color: 8c564b
       description: Ledger, accounting, transaction, or reconciliation work.
@@ -804,14 +804,14 @@ github:
       color: bcbd22
       description: Domain rules, policy logic, and decision engines.
     - name: area:ai
-      color: 17becf
-      description: AI, agents, prompts, and model integration work.
+      color: bf3989
+      description: AI/model/agent behavior surface.
     - name: area:infra
-      color: 7f7f7f
-      description: Infrastructure, CI, deployment, and operations work.
+      color: 6f42c1
+      description: Infrastructure, CI, release, governance, scripts, or repo setup.
     - name: area:security
-      color: d62728
-      description: Security-sensitive implementation or hardening work.
+      color: d1242f
+      description: Security, auth, secret, permission, or policy surface.
     - name: area:accessibility
       color: e377c2
       description: Accessibility and inclusive UX work.
@@ -819,20 +819,20 @@ github:
       color: ff7f0e
       description: Quality assurance, test coverage, and release validation.
     - name: risk:low
-      color: 0e8a16
-      description: Low implementation or operational risk.
+      color: 2da44e
+      description: Low-risk change.
     - name: risk:medium
-      color: fbca04
-      description: Moderate implementation or operational risk.
+      color: bf8700
+      description: Medium-risk change; normal care required.
     - name: risk:high
-      color: d93f0b
-      description: High implementation or operational risk.
+      color: d1242f
+      description: High-risk change; validation required.
     - name: risk:domain
       color: "5319e7"
       description: Domain correctness risk requiring subject-matter review.
     - name: risk:security
-      color: b60205
-      description: Security risk requiring explicit review.
+      color: a40e26
+      description: Security-sensitive change.
     - name: risk:prod
       color: "000000"
       description: Production impact or rollout risk.
@@ -840,14 +840,14 @@ github:
       color: cfd3d7
       description: Needs clearer scope, acceptance criteria, or constraints.
     - name: status:ready-for-agent
-      color: 0e8a16
-      description: Ready for assigned agent implementation.
+      color: "238636"
+      description: Issue is approved for worker-lane execution.
     - name: status:agent-building
       color: 1d76db
       description: Agent implementation is in progress.
     - name: status:needs-review
-      color: fbca04
-      description: Needs review before merge or closure.
+      color: 1f6feb
+      description: PR is ready for Athena review.
     - name: status:needs-human-approval
       color: d93f0b
       description: Needs explicit human approval before proceeding.
@@ -855,8 +855,8 @@ github:
       color: 0e8a16
       description: Ready to merge after required checks pass.
     - name: status:blocked
-      color: b60205
-      description: Blocked by a dependency, decision, credential, or access gate.
+      color: d1242f
+      description: Work is blocked pending external input or a guard.
     - name: review:product
       color: 0052cc
       description: Needs product review.

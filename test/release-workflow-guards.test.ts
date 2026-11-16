@@ -134,6 +134,35 @@ describe.each([['checked-in', false], ['generated generic', true]] as const)('%s
   });
 });
 
+it.each([['checked-in', false], ['generated', true]] as const)('%s preflight emits the native run attempt', (_name, rendered) => {
+  const workflowPath = '.github/workflows/release-preflight-reusable.yml';
+  const contents = rendered
+    ? renderManagedFiles(normalizeManifest({ project: { name: 'release-fixture', owner: 'acme' },
+      archetype: { kind: 'generic-empty' }, release: { enabled: true, maturity: 'governed' } }))
+      .find((file) => file.path === workflowPath)!.contents
+    : read(workflowPath);
+  const preflight = YAML.parse(contents).jobs.preflight.steps.find((step: any) => step.name === 'Preflight release candidate');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'preflight-attempt-'));
+  try {
+    writeFileSync(path.join(root, 'hook'), '#!/bin/bash\nexit 0\n', { mode: 0o700 });
+    const targetSha = 'a'.repeat(40);
+    const fixture = `git() { [[ "$*" == 'rev-parse HEAD' ]] || return 91; printf '%s\\n' '${targetSha}'; }\n`;
+    const result = spawnSync('/bin/bash', ['-c', fixture + preflight.run], {
+      cwd: root, encoding: 'utf8', timeout: 10_000,
+      env: { PATH: process.env.PATH, GITHUB_REPOSITORY: 'fixture/repo', GITHUB_RUN_ID: '101', GITHUB_RUN_ATTEMPT: '2',
+        VERSION: 'v1.2.3', CHANNEL: 'stable', TARGET_REF: targetSha, RELEASE_ISSUE: '27', TAG_PREFIX: 'v',
+        ARTIFACT_DIR: 'artifacts', RELEASE_NOTES_FILE: 'artifacts/RELEASE_NOTES.md',
+        PREP_SCRIPT: './hook', PREFLIGHT_SCRIPT: './hook', BUILD_SCRIPT: './hook' }
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(root, 'artifacts/release-evidence.json'), 'utf8'))).toMatchObject({
+      schema_version: 1, repo: 'fixture/repo', version: 'v1.2.3', channel: 'stable', target_sha: targetSha,
+      preflight_run_id: '101', run_attempt: '2', checks: { prep: 'passed', preflight: 'passed', build: 'passed' }
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 describe('governed release hook guards', () => {
   it('uses fail-closed branches for release hook execution', () => {
     const workflowPaths = [

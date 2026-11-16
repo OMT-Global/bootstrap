@@ -1064,3 +1064,11 @@ environments:
     preventSelfReview: true
     branches:
       - main
+  release-publish:
+    reviewers:
+      - jmcte
+      - athena-omt
+    requireApproval: true
+    preventSelfReview: true
+    branches:
+      - main

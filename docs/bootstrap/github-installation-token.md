@@ -2,7 +2,7 @@
 
 Governing issues: #27 (release) and #62 (fleet PR publication). This source helper
 implements part of the selected GitHub App credential design. The separately
-configured approved-retry runtime consumes it; fleet publication remains separate.
+configured approved release runtime consumes it; fleet publication remains separate.
 Local tests use fabricated responses and tokens. No deployed App is claimed.
 
 `withScopedInstallationToken` requires trusted App and installation IDs, an

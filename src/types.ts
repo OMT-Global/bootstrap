@@ -344,6 +344,7 @@ export interface BootstrapManifest {
     reusableWorkflowRef: string;
     postpublishRequiresPreflight?: boolean;
     approvedRetry?: boolean;
+    approvedPublication?: boolean;
     changelog: ReleaseChangelogConfig;
     versions: ReleaseVersionSurface[];
     artifacts: ReleaseArtifactConfig;

@@ -70,7 +70,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-publish-reusable.yml": {
-      "sha256": "4ea43cd39f6bd8b810e882efa97f3c49ba986d4caf282a6e9827a1b9578ac041",
+      "sha256": "86ea1a3f35b75b100187012d52cd86e496a2df12235f792f3409abbf16014c80",
       "source": "bootstrap"
     },
     ".github/workflows/release-publish.yml": {

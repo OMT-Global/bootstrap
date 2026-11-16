@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
-import { releaseAppJwt, runExistingReleaseRuntime } from "../src/release-existing-runtime.js";
+import { publishNewBootstrapSourceRelease, releaseAppJwt, runExistingReleaseRuntime } from "../src/release-existing-runtime.js";
 import { normalizeManifest } from "../src/manifest.js";
 import { renderManagedFiles } from "../src/archetypes.js";
 import * as preparation from "../src/release-github-package-preparation.js";
 import * as validation from "../src/release-validation-evidence.js";
 import { approvedReleasePackageMetadata, prepareApprovedReleasePackage } from "../src/release-approved-package.js";
+import { publicationQualificationFixture } from "./helpers/publication-qualification-fixture.js";
 import { packageFixture } from "./helpers/release-approved-package-fixture.js";
 
 describe("approved retry executable boundary", () => {
@@ -28,7 +29,7 @@ describe("approved retry executable boundary", () => {
       expect(provider).not.toHaveBeenCalled();
     } finally { provider.mockRestore(); }
   });
-  it("runs the App-token and workflow consumer with fabricated providers, and never publishes", async () => {
+  it.each([false, true])("runs the concrete App-token and workflow consumer; publication=%s", async (publish) => {
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "retry-runtime-")));
     await mkdir(path.join(root, "release-target"));
     const source = packageFixture();
@@ -43,8 +44,10 @@ describe("approved retry executable boundary", () => {
     const m = approvedReleasePackageMetadata(pkg);
     const blobSha = createHash("sha1").update(`blob ${source.observation.manifestBytes.length}\0`).update(source.observation.manifestBytes).digest("hex");
     const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const qualification = publicationQualificationFixture(m);
+    const { json, sha256, qualifierId } = qualification.qualification;
     const config = { appId: 10, installationId: 20, repositoryId: "100", runtimeCommit: "c".repeat(40), reviewerId: "111", manifestPath: source.policy.manifest_path,
-      maxValiditySeconds: 3600, publication: { id: "131", path: ".github/workflows/release-publish.yml", commit: "c".repeat(40) },
+      maxValiditySeconds: 3600, ...(publish ? { publicationQualification: { json, sha256, qualifierId } } : {}), publication: { id: "131", path: ".github/workflows/release-publish.yml", commit: "c".repeat(40) },
       preflight: { id: "122", path: ".github/workflows/preflight.yml", commit: "c".repeat(40) },
       validation: { id: "141", path: ".github/workflows/full-release-validation.yml", commit: "c".repeat(40) }, latest: true,
       pythonPath: "/fabricated/python", pythonSha256: "0".repeat(64), ghPath: "/fabricated/gh", ghSha256: "1".repeat(64),
@@ -53,6 +56,9 @@ describe("approved retry executable boundary", () => {
       GITHUB_REPOSITORY_ID: "100", RELEASE_RUNTIME_COMMIT: config.runtimeCommit, GITHUB_SHA: config.publication.commit, GITHUB_RUN_ID: "130",
       GITHUB_RUN_ATTEMPT: "3", PREFLIGHT_RUN_ID: "120", VALIDATION_RUN_ID: "140", APPROVAL_PULL_NUMBER: "4", RELEASE_ISSUE: "27",
       TAG: m.tag, CHANNEL: "stable", GITHUB_WORKSPACE: root, RUNNER_TEMP: root, CREATE_GITHUB_RELEASE: "true" };
+    const operation = publish ? publishNewBootstrapSourceRelease : runExistingReleaseRuntime;
+    Object.assign(environment, publish ? { PUBLISH_SCRIPT: "scripts/release/publish.sh" } : {});
+    let created = false; let published = false; const uploaded: any[] = [];
     const requests: { path: string; method: string }[] = [];
     const validationCheck = vi.fn(async () => {});
     const validationReader = vi.spyOn(validation, "verifyGitHubValidation").mockImplementation(async (input) => {
@@ -64,6 +70,7 @@ describe("approved retry executable boundary", () => {
     const producer = vi.spyOn(preparation, "prepareGitHubReleasePackageFromCheckout").mockImplementation(async (input) => {
       expect(input.sourceRoot).toBe(path.join(root, "release-target"));
       expect(input.requireSignedTag).toBe(true);
+      expect(input.publishScript).toBe(publish ? "scripts/release/publish.sh" : undefined);
       expect(input.ghSha256).toBe(config.ghSha256);
       expect(input.approval.token).toBe("fabricated-installation-token");
       await input.assertTarget(m.tag, m.commit);
@@ -73,8 +80,15 @@ describe("approved retry executable boundary", () => {
       const url = new URL(String(request)); const method = init?.method ?? "GET";
       requests.push({ path: url.pathname, method });
       let value: any; let status = 200;
-      const release = { id: 400, tag_name: m.tag, draft: false, body: m.notes, prerelease: false, author: { id: 999 } };
-      if (url.pathname === "/app") value = { id: 10 };
+      const release = { id: 400, tag_name: m.tag, draft: publish && !published, name: m.tag, upload_url: `https://uploads.github.com/repos/${m.repository}/releases/400/assets{?name,label}`, body: m.notes, prerelease: false, author: { id: 999 } };
+      if (url.pathname.endsWith("/rulesets/42")) value = qualification.record.projection;
+      else if (publish && url.pathname.endsWith("/releases") && method === "POST") { created = true; status = 201; value = release; }
+      else if (publish && url.pathname.endsWith("/releases/400") && method === "PATCH") { published = true; value = { ...release, draft: false }; }
+      else if (publish && url.pathname.endsWith("/releases/400/assets") && method === "POST") {
+        const item = m.assets.find((a) => a.name === url.searchParams.get("name"))!;
+        value = { id: 500 + uploaded.length, name: item.name, size: item.size, state: "uploaded", digest: `sha256:${item.sha256}` }; uploaded.push(value); status = 201;
+      }
+      else if (url.pathname === "/app") value = { id: 10 };
       else if (url.pathname === "/app/installations/20/access_tokens") {
         expect(method).toBe("POST");
         expect(JSON.parse(String(init?.body))).toEqual({ repository_ids: [100], permissions: { contents: "write", actions: "read", pull_requests: "read" } });
@@ -93,7 +107,7 @@ describe("approved retry executable boundary", () => {
       else if (url.pathname.endsWith("/pulls/4")) value = { number: 4, state: "open", changed_files: 1, head: { sha: source.observation.pull.head, repo: { id: 100 } }, base: { sha: "e".repeat(40), repo: { id: 100 } }, user: { id: 112 } };
       else if (url.pathname.endsWith(`/git/ref/tags/${m.tag}`)) value = { ref: `refs/tags/${m.tag}`, object: { type: "tag", sha: "9".repeat(40) } };
       else if (url.pathname.includes("/git/tags/")) value = { sha: "9".repeat(40), tag: m.tag, object: { type: "commit", sha: targetChanged ? "0".repeat(40) : m.commit }, verification: { verified: true, reason: "valid", signature: "fabricated", payload: "fabricated" } };
-      else if (url.pathname.endsWith("/releases")) value = [release];
+      else if (url.pathname.endsWith("/releases")) value = publish && !created ? [] : [release];
       else if (url.pathname.endsWith("/releases/400") || url.pathname.endsWith("/releases/latest")) value = release;
       else if (url.pathname.endsWith("/releases/400/assets")) value = m.assets.map((a, i) => ({ id: 500 + i, name: a.name, size: a.size, state: "uploaded", digest: `sha256:${a.sha256}` }));
       else if (url.pathname === "/repos/OMT-Global/bootstrap") value = { id: 100, full_name: m.repository, private: false, permissions: { push: true } };
@@ -103,14 +117,14 @@ describe("approved retry executable boundary", () => {
       return response;
     });
     try {
-      expect(await runExistingReleaseRuntime(environment)).toMatchObject({ kind: "verified-existing", releaseId: "400" });
+      expect(await operation(environment)).toMatchObject({ kind: publish ? "verified-created" : "verified-existing", releaseId: "400" });
       expect(producer).toHaveBeenCalledTimes(1);
-      expect(validationReader).toHaveBeenCalledTimes(1); expect(validationCheck).toHaveBeenCalledTimes(6);
+      expect(validationReader).toHaveBeenCalledTimes(1); expect(validationCheck.mock.calls.length).toBeGreaterThanOrEqual(6);
       revoked = true;
-      await expect(runExistingReleaseRuntime(environment)).rejects.toThrow();
+      await expect(operation(environment)).rejects.toThrow();
       revoked = false; targetChanged = true;
-      await expect(runExistingReleaseRuntime(environment)).rejects.toThrow();
-      expect(requests.filter((r) => r.method !== "GET").every((r) => r.method === "POST" && r.path === "/app/installations/20/access_tokens")).toBe(true);
+      await expect(operation(environment)).rejects.toThrow();
+      expect(requests.filter((r) => r.method !== "GET" && r.path !== "/app/installations/20/access_tokens")).toHaveLength(publish ? m.assets.length + 2 : 0);
     } finally { producer.mockRestore(); provider.mockRestore(); validationReader.mockRestore(); await rm(root, { recursive: true, force: true }); }
   });
   it("keeps old pinned callers compatible until the manifest selects the new input contract", () => {
@@ -121,6 +135,12 @@ describe("approved retry executable boundary", () => {
     const enabled = caller(true);
     expect(enabled.on.workflow_dispatch.inputs.verify_existing_release.default).toBe(false);
     expect(enabled.jobs.publish.with.verify_existing_release).toBe("${{ inputs.verify_existing_release }}");
+    const publication = normalizeManifest({ project: { name: "release-fixture", owner: "acme" }, archetype: { kind: "generic-empty" }, release: { enabled: true, maturity: "governed", approvedPublication: true } });
+    const publicationCaller = YAML.parse(renderManagedFiles(publication).find((f) => f.path === ".github/workflows/release-publish.yml")!.contents);
+    expect(caller().jobs.publish.with).not.toHaveProperty("publish_new_source_release");
+    expect(caller(true).jobs.publish.with).not.toHaveProperty("publish_new_source_release");
+    expect(publicationCaller.on.workflow_dispatch.inputs.publish_new_source_release.default).toBe(false);
+    expect(publicationCaller.jobs.publish.with.publish_new_source_release).toBe("${{ inputs.publish_new_source_release }}");
     const reusable = YAML.parse(renderManagedFiles(manifest()).find((f) => f.path === ".github/workflows/release-publish-reusable.yml")!.contents);
     const steps = reusable.jobs.publish.steps;
     expect(steps.find((s: any) => s.name === "Checkout approved retry runtime").with).toMatchObject({ repository: "OMT-Global/bootstrap", ref: "${{ vars.RELEASE_RUNTIME_COMMIT }}", "persist-credentials": false });

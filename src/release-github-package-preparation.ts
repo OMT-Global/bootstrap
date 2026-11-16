@@ -11,10 +11,9 @@ import type { VerifiedGitSnapshot } from "./upgrade-git.js";
 import type { ApprovedReleasePackage } from "./release-approved-package.js";
 
 /**
- * Inactive composition for a trusted, isolated runtime. Runtime identity,
- * configured policy and tool pins, authenticated token, tag protection,
- * source bytes, durable state and exclusive writer authority remain external
- * requirements. No workflow invokes this and it does not publish a release.
+ * Composition used by a trusted, isolated retry runtime. Runtime identity,
+ * configured policy/tool pins, authenticated token, target and source checks
+ * remain caller requirements. It does not publish or prove exclusive writers.
  */
 export async function prepareGitHubReleasePackage(input: {
   policy: ApprovalPolicy;

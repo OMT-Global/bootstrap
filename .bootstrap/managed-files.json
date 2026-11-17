@@ -62,7 +62,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-preflight-reusable.yml": {
-      "sha256": "77265bf0fe19d66aa991e7bd1474ba1dd1a66166e7b00ae484c87784aead2359",
+      "sha256": "b43821e4402c0cb9c771f642af077c1a4c64ef108fdd5a820a68829996d71e9b",
       "source": "bootstrap"
     },
     ".github/workflows/release-preflight.yml": {
@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "14c3a6af67c9b351130cfa10130542703327169feec1bf286d24d855ea434006",
+      "sha256": "72eb35a749bc77acbe8b9b363149cfa1f0c79d4a6e6df710e0ffbf0422dec6ce",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {

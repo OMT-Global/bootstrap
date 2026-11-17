@@ -1789,6 +1789,41 @@ function fullReleaseValidationCallerWorkflow(manifest: BootstrapManifest): strin
 }
 
 function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
+  const aliasInputs = manifest.release.approvedAliases ? `\n${indentBlock(dedent`
+    promote_release_aliases:
+      description: Promote explicitly authorized newest compatible Bootstrap aliases
+      required: false
+      default: false
+      type: boolean
+  `, 10)}` : "";
+  const aliasArguments = manifest.release.approvedAliases ? `\n${indentBlock(dedent`
+    promote_release_aliases: \${{ inputs.promote_release_aliases }}
+  `, 10)}` : "";
+  const publicationInputs = manifest.release.approvedPublication ? `\n${indentBlock(dedent`
+    publish_new_source_release:
+      description: Create one approved Bootstrap source release (manual reconciliation on uncertainty)
+      required: false
+      default: false
+      type: boolean
+  `, 10)}` : "";
+  const retryInputs = manifest.release.approvedRetry || manifest.release.approvedPublication || manifest.release.approvedAliases ? `\n${indentBlock(dedent`
+    verify_existing_release:
+      description: Read-only approved exact-release retry (Bootstrap profile)
+      required: false
+      default: false
+      type: boolean
+    approval_pull_number:
+      description: PR containing the approved exact package manifest
+      required: false
+      type: string
+  `, 10)}` : "";
+  const publicationArguments = manifest.release.approvedPublication ? `\n${indentBlock(dedent`
+    publish_new_source_release: \${{ inputs.publish_new_source_release }}
+  `, 10)}` : "";
+  const retryArguments = manifest.release.approvedRetry || manifest.release.approvedPublication || manifest.release.approvedAliases ? `\n${indentBlock(dedent`
+    verify_existing_release: \${{ inputs.verify_existing_release }}
+    approval_pull_number: \${{ inputs.approval_pull_number }}
+  `, 10)}` : "";
   return dedent`
     name: Release Publish
 
@@ -1816,7 +1851,7 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
           release_issue:
             description: Release issue number
             required: false
-            type: string
+            type: string${retryInputs}${publicationInputs}${aliasInputs}
 
     jobs:
       publish:
@@ -1832,7 +1867,7 @@ function releasePublishCallerWorkflow(manifest: BootstrapManifest): string {
           channel: \${{ inputs.channel }}
           preflight_run_id: \${{ inputs.preflight_run_id }}
           validation_run_id: \${{ inputs.validation_run_id }}
-          release_issue: \${{ inputs.release_issue }}
+          release_issue: \${{ inputs.release_issue }}${retryArguments}${publicationArguments}${aliasArguments}
           publish_script: scripts/release/publish.sh
           postpublish_script: scripts/release/postpublish.sh
           artifact_dir: ${manifest.release.artifacts.directory}
@@ -1900,8 +1935,9 @@ function releasePostpublishCallerWorkflow(manifest: BootstrapManifest): string {
   `;
 }
 
-export function immutablePreflightVerifierScript(): string {
-  return String.raw`import hashlib
+export function immutablePreflightVerifierScript(profile: "preflight" | "validation" = "preflight"): string {
+  return String.raw`import bisect
+import hashlib
 import json
 import os
 import re
@@ -1914,6 +1950,8 @@ import tempfile
 import zipfile
 import zlib
 
+validation_profile = ${profile === "validation" ? "True" : "False"}
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -1922,9 +1960,26 @@ def decimal(value):
     require(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value), "Invalid canonical identifier.")
     return value
 
+def unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "Duplicate provider JSON key.")
+        result[key] = value
+    return result
+
+def reject_constant(_value):
+    raise ValueError("Invalid provider JSON constant.")
+
 def api(route):
-    body = subprocess.run(["gh", "api", route], check=True, stdout=subprocess.PIPE).stdout
-    return json.loads(body)
+    with subprocess.Popen(["gh", "api", route], stdout=subprocess.PIPE) as process:
+        body = process.stdout.read(1024 * 1024 + 1)
+        if len(body) > 1024 * 1024:
+            process.kill()
+            process.stdout.close()
+            process.wait()
+            raise ValueError("Provider response exceeds bound.")
+        require(process.wait() == 0, "Provider request failed.")
+    return json.loads(body, object_pairs_hook=unique_pairs, parse_constant=reject_constant)
 
 def same_id(value, expected):
     return type(value) is int and str(value) == expected
@@ -1958,12 +2013,21 @@ require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository), "Invalid r
 repository_id = decimal(os.environ["GITHUB_REPOSITORY_ID"])
 run_id = decimal(os.environ["PREFLIGHT_RUN_ID"])
 artifact_id = decimal(os.environ["PREFLIGHT_ARTIFACT_ID"])
+approved_attempt = decimal(os.environ["PREFLIGHT_APPROVED_ATTEMPT"]) if "PREFLIGHT_APPROVED_ATTEMPT" in os.environ else None
+limit_names = ("PREFLIGHT_MAX_ARCHIVE_BYTES", "PREFLIGHT_MAX_EXPANDED_BYTES", "PREFLIGHT_MAX_MEMBERS")
+provided_limits = [name in os.environ for name in limit_names]
+require(not any(provided_limits) or all(provided_limits), "Incomplete resource limits.")
+limits = None
+if all(provided_limits):
+    values = [int(decimal(os.environ[name])) for name in limit_names]
+    require(values[0] <= 1024 ** 3 and values[1] <= 2 * 1024 ** 3 and values[2] <= 10000, "Resource limit exceeds supported ceiling.")
+    limits = values
 expected = os.environ["PREFLIGHT_ARTIFACT_SHA256"]
 require(re.fullmatch(r"[0-9a-f]{64}", expected), "Invalid independent ZIP SHA256.")
 target_sha = os.environ["PREFLIGHT_TARGET_SHA"]
 metadata = api(f"repos/{repository}/actions/artifacts/{artifact_id}")
 context = metadata.get("workflow_run") or {}
-require(same_id(metadata.get("id"), artifact_id) and metadata.get("name") == "release-package", "Artifact identity mismatch.")
+require(same_id(metadata.get("id"), artifact_id) and metadata.get("name") == ("release-evidence-validation" if validation_profile else "release-package"), "Artifact identity mismatch.")
 require(metadata.get("expired") is False and metadata.get("digest") == "sha256:" + expected, "Artifact expired or metadata digest mismatch.")
 require(same_id(context.get("id"), run_id) and same_id(context.get("repository_id"), repository_id), "Artifact run/repository mismatch.")
 require(isinstance(context.get("head_sha"), str) and context["head_sha"], "Missing artifact platform head.")
@@ -1980,7 +2044,14 @@ try:
     require(stat.S_ISREG(os.fstat(raw_fd).st_mode), "ZIP storage must be regular.")
     with os.fdopen(raw_fd, "w+b") as raw:
         with subprocess.Popen(["gh", "api", f"repos/{repository}/actions/artifacts/{artifact_id}/zip"], stdout=subprocess.PIPE) as download:
+            downloaded = 0
             while chunk := download.stdout.read(65536):
+                downloaded += len(chunk)
+                if limits and downloaded > limits[0]:
+                    download.kill()
+                    download.stdout.close()
+                    download.wait()
+                    raise ValueError("ZIP download exceeds resource limit.")
                 raw.write(chunk)
             require(download.wait() == 0, "Exact artifact download failed.")
         raw.flush()
@@ -1992,12 +2063,15 @@ try:
         raw.seek(0)
         with zipfile.ZipFile(raw) as archive:
             require(isinstance(archive.start_dir, int), "Required ZIP directory boundary is unavailable.")
-            boundaries = sorted({item.header_offset for item in archive.infolist()} | {archive.start_dir})
+            archive_members = archive.infolist()
+            if limits:
+                require(len(archive_members) <= limits[2] and sum(item.file_size for item in archive_members) <= limits[1], "ZIP expansion exceeds resource limit.")
+            boundaries = sorted({item.header_offset for item in archive_members} | {archive.start_dir})
             central_offset = archive.start_dir
             nodes = {}
             explicit = set()
             members = []
-            for item in archive.infolist():
+            for item in archive_members:
                 raw.seek(central_offset)
                 central_header = raw.read(46)
                 require(len(central_header) == 46 and central_header[:4] == b"PK\x01\x02", "Invalid ZIP central header.")
@@ -2038,7 +2112,9 @@ try:
                 extras(item.extra, name, encoded)
                 local_fields = extras(local_extra, name, encoded)
                 start = item.header_offset + 30 + local[-2] + local[-1]
-                boundary = next(offset for offset in boundaries if offset > item.header_offset)
+                boundary_index = bisect.bisect_right(boundaries, item.header_offset)
+                require(boundary_index < len(boundaries), "Missing ZIP member boundary.")
+                boundary = boundaries[boundary_index]
                 require(start + item.compress_size <= boundary, "Overlapping ZIP member ranges.")
                 local_sizes = [local[8], local[7]]
                 zip64_data = local_fields.get(1, b"")
@@ -2079,6 +2155,7 @@ try:
                 handles.append(child_fd)
                 directories[parts] = child_fd
             member_hashes = {}
+            total_expanded = 0
             for item, parts, directory, start in members:
                 output = None
                 if not directory:
@@ -2101,6 +2178,8 @@ try:
                             block = decoder.decompress(pending, 65536) if decoder else pending
                             pending = decoder.unconsumed_tail if decoder else b""
                             expanded += len(block)
+                            total_expanded += len(block)
+                            require(not limits or total_expanded <= limits[1], "ZIP actual expansion exceeds resource limit.")
                             crc = zlib.crc32(block, crc)
                             member_digest.update(block)
                             require(expanded <= item.file_size, "ZIP actual expanded size exceeds its declared size.")
@@ -2117,11 +2196,17 @@ try:
                 finally:
                     if output:
                         output.close()
-            with open(os.path.join(stage, "files", "release-evidence.json"), encoding="utf-8") as evidence_file:
-                evidence = json.load(evidence_file)
-            require(evidence.get("repo") == repository and evidence.get("preflight_run_id") == run_id, "Approved evidence repository/run mismatch.")
+            evidence_name = "validation-evidence.json" if validation_profile else "release-evidence.json"
+            require(not validation_profile or set(member_hashes) == {evidence_name}, "Unexpected validation artifact inventory.")
+            with open(os.path.join(stage, "files", evidence_name), encoding="utf-8") as evidence_file:
+                evidence = json.load(evidence_file, object_pairs_hook=unique_pairs, parse_constant=reject_constant)
+            require(evidence.get("repo") == repository and evidence.get("validation_run_id" if validation_profile else "preflight_run_id") == run_id, "Approved evidence repository/run mismatch.")
+            if validation_profile:
+                require(type(evidence.get("schema_version")) is int and evidence["schema_version"] == 1 and
+                    evidence.get("checks") == {"validate_script": "passed", "standard_checks": "passed"}, "Full validation did not pass.")
             require(evidence.get("target_sha") == target_sha, "Preflight evidence target SHA does not match tag SHA.")
             attempt = decimal(evidence.get("run_attempt"))
+            require(approved_attempt is None or attempt == approved_attempt, "Approved preflight attempt mismatch.")
             completed = api(f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}")
             completed_repository = completed.get("repository") or {}
             require(same_id(completed.get("id"), run_id) and same_id(completed.get("run_attempt"), attempt), "Exact attempt identity mismatch.")
@@ -2398,7 +2483,7 @@ function releasePreflightReusableWorkflow(): string {
               : >"$ARTIFACT_DIR/SHA256SUMS"
               find "$ARTIFACT_DIR" -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-evidence.json ! -name validation-evidence.json -print0 | sort -z | xargs -0 shasum -a 256 >>"$ARTIFACT_DIR/SHA256SUMS"
               cat >"$ARTIFACT_DIR/release-evidence.json" <<JSON
-              {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","version":"\${VERSION}","channel":"\${CHANNEL}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","release_issue":"\${RELEASE_ISSUE}","preflight_run_id":"\${GITHUB_RUN_ID}","checks":{"prep":"\${prep_status}","preflight":"\${preflight_status}","build":"\${build_status}"}}
+              {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","version":"\${VERSION}","channel":"\${CHANNEL}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","release_issue":"\${RELEASE_ISSUE}","preflight_run_id":"\${GITHUB_RUN_ID}","run_attempt":"\${GITHUB_RUN_ATTEMPT}","checks":{"prep":"\${prep_status}","preflight":"\${preflight_status}","build":"\${build_status}"}}
               JSON
 
           - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -2469,7 +2554,7 @@ function fullReleaseValidationReusableWorkflow(): string {
               fi
               target_sha="$(git rev-parse HEAD)"
               cat >"$ARTIFACT_DIR/validation-evidence.json" <<JSON
-              {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","validation_run_id":"\${GITHUB_RUN_ID}","release_profile":"\${RELEASE_PROFILE}","checks":{"validate_script":"\${validate_status}","standard_checks":"\${standard_status}"}}
+              {"schema_version":1,"repo":"\${GITHUB_REPOSITORY}","target_ref":"\${TARGET_REF}","target_sha":"\${target_sha}","validation_run_id":"\${GITHUB_RUN_ID}","run_attempt":"\${GITHUB_RUN_ATTEMPT}","release_profile":"\${RELEASE_PROFILE}","checks":{"validate_script":"\${validate_status}","standard_checks":"\${standard_status}"}}
               JSON
           - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
@@ -2506,6 +2591,10 @@ function releasePublishReusableWorkflow(): string {
           require_postpublish_verification: { required: false, type: boolean, default: true }
           evidence_artifact_name: { required: false, type: string, default: release-evidence }
           publish_environment: { required: false, type: string, default: release-publish }
+          promote_release_aliases: { required: false, type: boolean, default: false }
+          publish_new_source_release: { required: false, type: boolean, default: false }
+          verify_existing_release: { required: false, type: boolean, default: false }
+          approval_pull_number: { required: false, type: string, default: "" }
 
     permissions:
       contents: write
@@ -2522,10 +2611,37 @@ function releasePublishReusableWorkflow(): string {
           run:
             shell: bash
         steps:
+          - name: Validate approved retry runtime selection
+            if: inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases
+            env:
+              RELEASE_RUNTIME_COMMIT: \${{ vars.RELEASE_RUNTIME_COMMIT }}
+            run: |
+              set -euo pipefail
+              [[ "$GITHUB_REPOSITORY" == "OMT-Global/bootstrap" && "$RELEASE_RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "A reviewed Bootstrap runtime commit is required." >&2; exit 1; }
           - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
             with:
               ref: \${{ inputs.tag }}
               fetch-depth: 0
+              path: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) && 'release-target' || '.' }}
+              persist-credentials: \${{ !(inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) }}
+          - name: Checkout approved retry runtime
+            if: inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases
+            uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+            with:
+              repository: OMT-Global/bootstrap
+              ref: \${{ vars.RELEASE_RUNTIME_COMMIT }}
+              path: .bootstrap-release-runtime
+              persist-credentials: false
+          - name: Build approved retry runtime before exposing App key
+            if: inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases
+            working-directory: .bootstrap-release-runtime
+            env:
+              RELEASE_RUNTIME_COMMIT: \${{ vars.RELEASE_RUNTIME_COMMIT }}
+            run: |
+              set -euo pipefail
+              [[ "$(git rev-parse HEAD)" == "$RELEASE_RUNTIME_COMMIT" ]] || exit 1
+              npm ci --ignore-scripts
+              npm run build
           - name: Publish proven release artifact
             env:
               GH_TOKEN: \${{ github.token }}
@@ -2545,9 +2661,28 @@ function releasePublishReusableWorkflow(): string {
               RELEASE_NOTES_FILE: \${{ inputs.release_notes_file }}
               PUBLISH_SCRIPT: \${{ inputs.publish_script }}
               POSTPUBLISH_SCRIPT: \${{ inputs.postpublish_script }}
+              PROMOTE_RELEASE_ALIASES: \${{ inputs.promote_release_aliases }}
+              PUBLISH_NEW_SOURCE_RELEASE: \${{ inputs.publish_new_source_release }}
+              VERIFY_EXISTING_RELEASE: \${{ inputs.verify_existing_release }}
+              APPROVAL_PULL_NUMBER: \${{ inputs.approval_pull_number }}
+              RELEASE_RUNTIME_COMMIT: \${{ vars.RELEASE_RUNTIME_COMMIT }}
+              RELEASE_RETRY_CONFIG: \${{ vars.RELEASE_RETRY_CONFIG }}
+              RELEASE_APP_PRIVATE_KEY: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) && secrets.RELEASE_APP_PRIVATE_KEY || '' }}
+              APPROVED_RUNTIME_ROOT: \${{ github.workspace }}/.bootstrap-release-runtime
             run: |
               set -euo pipefail
               [[ "$REQUIRE_RELEASE_ISSUE" != "true" || -n "$RELEASE_ISSUE" ]] || { echo "release_issue is required." >&2; exit 1; }
+              if [[ "\${VERIFY_EXISTING_RELEASE:-false}" == "true" || "\${PUBLISH_NEW_SOURCE_RELEASE:-false}" == "true" || "\${PROMOTE_RELEASE_ALIASES:-false}" == "true" ]]; then
+                selected_operations=0
+                for selected in "\${VERIFY_EXISTING_RELEASE:-false}" "\${PUBLISH_NEW_SOURCE_RELEASE:-false}" "\${PROMOTE_RELEASE_ALIASES:-false}"; do
+                  if [[ "$selected" == "true" ]]; then selected_operations=$((selected_operations + 1)); fi
+                done
+                [[ "$selected_operations" == 1 ]] || { echo "Select one approved operation." >&2; exit 1; }
+                [[ "$RELEASE_ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo "release_issue is required." >&2; exit 1; }
+                umask 077
+                node "$APPROVED_RUNTIME_ROOT/dist/release-existing-runtime.js" >"$RUNNER_TEMP/approved-retry-evidence.json"
+                exit 0
+              fi
               if [[ "$REQUIRE_POSTPUBLISH_VERIFICATION" == "true" && ( ! -f "$POSTPUBLISH_SCRIPT" || ! -x "$POSTPUBLISH_SCRIPT" ) ]]; then
                 echo "Postpublish verification script is required but missing or not executable." >&2
                 exit 1
@@ -2574,6 +2709,20 @@ function releasePublishReusableWorkflow(): string {
               validation_repo="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (!p.repo) process.exit(2); process.stdout.write(p.repo)' "$VALIDATION_ARTIFACT_DIR/validation-evidence.json")"
               [[ "$validation_repo" == "$GITHUB_REPOSITORY" ]] || { echo "Validation evidence repo does not match the current repository." >&2; exit 1; }
               gh run view "$VALIDATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion' | grep -qx success
+              if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
+                gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | node -e '
+                  let raw=""; process.stdin.on("data", c => { raw += c; if (raw.length > 4194304) process.exit(1); });
+                  process.stdin.on("end", () => { try {
+                    const pages=JSON.parse(raw); if (!Array.isArray(pages) || !pages.length || pages.length > 20) throw Error();
+                    while (Array.isArray(pages.at(-1)) && pages.at(-1).length === 100) {
+                      if (pages.length >= 20) throw Error();
+                      const route="repos/"+process.env.GITHUB_REPOSITORY+"/releases?per_page=100&page="+(pages.length+1);
+                      pages.push(JSON.parse(require("node:child_process").execFileSync("gh", ["api", route], {encoding:"utf8", timeout:30000, maxBuffer:1048576}))); }
+                    const ids=new Set(); for (const page of pages) { if (!Array.isArray(page) || page.length > 100) throw Error();
+                      for (const r of page) { if (!r || !Number.isSafeInteger(r.id) || r.id < 1 || ids.has(r.id) || typeof r.tag_name !== "string" || typeof r.draft !== "boolean") throw Error();
+                        ids.add(r.id); if (r.tag_name === process.argv[1]) throw Error(); } }
+                  } catch { console.error("Existing or ambiguous release: use approved exact-match retry or reconcile manually."); process.exitCode=1; } });' "$TAG"
+              fi
               if [[ -x "$PUBLISH_SCRIPT" ]]; then
                 "$PUBLISH_SCRIPT"
               fi
@@ -2621,11 +2770,9 @@ function releasePublishReusableWorkflow(): string {
                   release_assets+=("$RELEASE_ASSET_DIR/$asset_name")
                 done < "$PREFLIGHT_ARTIFACT_DIR/SHA256SUMS"
                 [[ \${#release_assets[@]} -gt 0 ]] || { echo "No release assets were staged for upload." >&2; exit 1; }
-                release_args=()
+                release_args=("$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE")
                 [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* ]] && release_args+=(--prerelease --latest=false)
-                gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-                  && gh release upload "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber \
-                  || gh release create "$TAG" "\${release_assets[@]}" --repo "$GITHUB_REPOSITORY" --notes-file "$RELEASE_NOTES_FILE" "\${release_args[@]}"
+                gh release create "\${release_args[@]}"
               fi
               if [[ -f "$POSTPUBLISH_SCRIPT" && -x "$POSTPUBLISH_SCRIPT" ]]; then
                 "$POSTPUBLISH_SCRIPT" "$TAG"
@@ -2644,7 +2791,7 @@ function releasePublishReusableWorkflow(): string {
           - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
             with:
               name: \${{ inputs.evidence_artifact_name }}-publish
-              path: \${{ inputs.artifact_dir }}/postpublish-evidence.json
+              path: \${{ (inputs.verify_existing_release || inputs.publish_new_source_release || inputs.promote_release_aliases) && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}
   `;
 }
 

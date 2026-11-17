@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readGitHubPreflightMetadata } from "../src/github-approval-reader.js";
-import { verifyReleaseApproval } from "../src/release-approval.js";
+import { reviewReleaseManifest, verifyReleaseApproval } from "../src/release-approval.js";
+import { readReviewedGitHubPreflight } from "../src/release-reviewed-github-preflight.js";
+import { packageFixture } from "./helpers/release-approved-package-fixture.js";
 
 const workflowCommit = "a".repeat(40);
 const targetCommit = "b".repeat(40);
@@ -29,12 +31,62 @@ function harness(override?: (kind: string, count: number) => unknown) {
   return { calls, input: { repository: "example/project", repositoryId: "100", runId: "120", attempt: "2", artifactId: "121", expectedWorkflowPath: workflowPath, expectedWorkflowCommit: workflowCommit, targetCommit, token: "fabricated-token", fetchImpl: fake } };
 }
 
+function reviewedFixture(edit?: (manifest: any) => void) {
+  const source = packageFixture();
+  const manifest = JSON.parse(Buffer.from(source.observation.manifestBytes).toString("utf8"));
+  manifest.repository = { id: "100", full_name: "example/project" };
+  manifest.target = { commit: targetCommit, tree };
+  manifest.preflight = { ...manifest.preflight, workflow_path: workflowPath, workflow_id: "122", workflow_commit: workflowCommit,
+    run_id: "120", attempt: "2", artifact_id: "121", archive_sha256: digest, requester_id: "112", attempt_actor_id: "114" };
+  edit?.(manifest);
+  function sorted(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sorted(item)]));
+    return value;
+  }
+  source.observation.manifestBytes = Buffer.from(`${JSON.stringify(sorted(manifest))}\n`);
+  source.observation.reviews[0]!.body = `APPROVE-RELEASE-SHA256 ${createHash("sha256").update(source.observation.manifestBytes).digest("hex")}`;
+  const { actual: _actual, ...observation } = source.observation;
+  return reviewReleaseManifest(observation, source.policy, source.now);
+}
+function reviewedInput(reviewed: ReturnType<typeof reviewedFixture>, h = harness()) {
+  return { h, input: { reviewed, repository: "example/project", repositoryId: "100", expectedWorkflowPath: workflowPath,
+    expectedWorkflowCommit: workflowCommit, token: "fabricated-token", fetchImpl: h.input.fetchImpl } };
+}
+
+describe("reviewed GitHub preflight metadata", () => {
+  it("binds the reviewed selectors and trusted workflow policy to double-read provider facts", async () => {
+    const { h, input } = reviewedInput(reviewedFixture());
+    const facts = await readReviewedGitHubPreflight(input);
+    expect(facts).toMatchObject({ workflow_id: "122", run_id: "120", attempt: "2", artifact_id: "121", archive_sha256: digest,
+      requester_id: "112", attempt_actor_id: "114", target_tree: tree,
+      limitations: { archive_bytes: "unverified", artifact_attempt_binding: "unverified", reusable_workflow: "unverified", target_source_bytes: "unverified" } });
+    expect(Object.isFrozen(facts) && Object.isFrozen(facts.limitations)).toBe(true);
+    expect(h.calls).toHaveLength(8);
+  });
+  it.each([
+    ["workflow ID", (m: any) => { m.preflight.workflow_id = "123"; }],
+    ["archive digest", (m: any) => { m.preflight.archive_sha256 = "0".repeat(64); }],
+    ["target tree", (m: any) => { m.target.tree = "0".repeat(40); }],
+    ["requester", (m: any) => { m.preflight.requester_id = "113"; }],
+    ["attempt actor", (m: any) => { m.preflight.attempt_actor_id = "115"; }]
+  ])("rejects mismatch of %s", async (_name, edit) => {
+    await expect(readReviewedGitHubPreflight(reviewedInput(reviewedFixture(edit)).input)).rejects.toThrow("Reviewed GitHub preflight unavailable.");
+  });
+  it("rejects a workflow outside trusted policy before any provider call", async () => {
+    const { h, input } = reviewedInput(reviewedFixture());
+    await expect(readReviewedGitHubPreflight({ ...input, expectedWorkflowPath: ".github/workflows/other.yml" })).rejects.toThrow();
+    expect(h.calls).toHaveLength(0);
+  });
+});
+
 describe("GitHub preflight metadata", () => {
   it("binds the observed run identities and target tree to a digest-approved manifest", async () => {
     const metadata = await readGitHubPreflightMetadata(harness().input);
-    const actual = { schema_version: 1 as const, action: "publish_new_release" as const,
+    const actual = { schema_version: 2 as const, action: "publish_new_release" as const,
       repository: { id: metadata.repository_id, full_name: "example/project" }, tag: "v1.2.3", version: "v1.2.3", channel: "stable" as const,
-      target: { commit: metadata.target_commit, tree: metadata.target_tree },
+      publication: { notes_asset: "source.tar.gz", latest: true },
+  target: { commit: metadata.target_commit, tree: metadata.target_tree },
       preflight: { workflow_path: metadata.workflow_path, workflow_id: metadata.workflow_id, workflow_commit: metadata.workflow_commit, run_id: metadata.run_id, attempt: metadata.attempt,
         artifact_id: metadata.artifact_id, archive_sha256: metadata.archive_sha256, requester_id: metadata.requester_id, attempt_actor_id: metadata.attempt_actor_id },
       assets: [{ name: "source.tar.gz", size: 10, sha256: "e".repeat(64) }] };

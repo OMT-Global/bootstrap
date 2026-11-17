@@ -1,6 +1,6 @@
 # Private provenance identity foundation
 
-This inactive source component establishes an owned, config-read-only identity in a trusted GitHub Actions job. It does not activate a workflow, create a role, collect private evidence or grant payload/state/KMS operations. Importing it performs no credential lookup or provider request.
+The inactive `establishPrivateRoleIdentity` entrypoint establishes an owned, config-read-only identity in a trusted GitHub Actions job. It does not activate a workflow, create a role, collect private evidence or grant payload/state/KMS operations. Importing it performs no credential lookup or provider request.
 
 `establishPrivateRoleIdentity` accepts a genuine installed deployment handle from `private-provenance-deployment`. That module verifies the root-signed binding and separately installed account, role, workload purpose, subject, config location and root pins. Structural lookalikes fail. The runtime reads only explicit GitHub Actions token-acquisition variables, `GITHUB_TOKEN`, run ID and attempt; it never discovers AWS credentials from environment, files, profiles or instance metadata. Provider SDK dependencies contain their standard credential-provider packages, but this component supplies its own credentials to both clients and does not invoke that chain.
 
@@ -16,7 +16,7 @@ The returned STS subject, audience, assumed-role ARN and expiration must match. 
 
 The handle reveals only workload ID, role purpose and expiry. `refreshPrivateRoleIdentity` repeats native active-run/job checks and obtains another fresh config pointer; cached configuration cannot satisfy it. The handle expires no later than the original JWT, STS credential or deployment expiry. A cancelled caller, disposed handle or changed/expired pointer denies further use. `disposePrivateRoleIdentity` cancels in-flight checks, closes clients and removes local references. It does not revoke an issued AWS session, promise memory erasure or invalidate credentials copied by privileged process inspection. Administrative compromise and provider revocation races remain outside a local observation's guarantee.
 
-Future concrete adapters may add specific role operations under review. This foundation exports no raw credentials, SDK client, arbitrary request function, configurable transport or assertion callback. SDK/global-fetch mocking is confined to tests. No CLI or workflow currently invokes the entrypoint.
+The explicit [AWS payload operations](private-provenance-aws-payload.md) now compose this owned handle with separate exact-object sessions; default identity acquisition remains config-only. This foundation exports no raw credentials, SDK client, arbitrary request function, configurable transport or assertion callback. SDK/global-fetch mocking is confined to tests. No CLI or workflow currently invokes the entrypoint.
 
 Runtime dependencies are pinned to `@aws-sdk/client-sts` and `@aws-sdk/client-s3` 3.1169.0 and `jose` 6.2.17. The package's existing Node 20 minimum remains unchanged. Added direct and transitive dependency notices are managed through `project.bootstrap.yaml`; first-party LICENSE bytes are preserved.
 

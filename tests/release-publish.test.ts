@@ -33,7 +33,9 @@ async function runPublish(
   required = true,
   retry = false,
   runtimeFailure = false,
-  releaseIssue = "27"
+  releaseIssue = "27",
+  publication = false,
+  uploadExpression?: string
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-publish-"));
   try {
@@ -151,6 +153,7 @@ exit ${hook === "failed" ? 42 : 0}
         GITHUB_WORKSPACE: directory,
         APPROVED_RUNTIME_ROOT: path.join(directory, ".bootstrap-release-runtime"),
         VERIFY_EXISTING_RELEASE: String(retry),
+        PUBLISH_NEW_SOURCE_RELEASE: String(publication),
         RUNTIME_FAILURE: String(runtimeFailure),
         GITHUB_RUN_ID: "103",
         RELEASE_ISSUE: releaseIssue,
@@ -167,17 +170,23 @@ exit ${hook === "failed" ? 42 : 0}
       }
     });
     if (result.error) throw result.error;
-    return { status: result.status, stderr: result.stderr, events: (await readFile(events, "utf8")).split("\n").filter(Boolean),
+    const uploadPath = uploadExpression ? new Function("inputs", "runner", "format", `return (${uploadExpression.slice(3, -2)});`)(
+      { verify_existing_release: retry, publish_new_source_release: publication, artifact_dir: "dist/release" }, { temp: runnerTemp },
+      (template: string, value: string) => template.replace("{0}", value)) : undefined;
+    const uploadedEvidence = uploadPath ? await readFile(path.resolve(directory, uploadPath), "utf8").catch(() => null) : null;
+    return { uploadedEvidence, status: result.status, stderr: result.stderr, events: (await readFile(events, "utf8")).split("\n").filter(Boolean),
       retryEvidence: await readFile(path.join(runnerTemp, "approved-retry-evidence.json"), "utf8").catch(() => null) };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-for (const [source, shell] of [
-  ["checked-in", publishShell(readFileSync(".github/workflows/release-publish-reusable.yml", "utf8"))],
-  ["generated", publishShell(generated.contents)]
+for (const [source, contents] of [
+  ["checked-in", readFileSync(".github/workflows/release-publish-reusable.yml", "utf8")],
+  ["generated", generated.contents]
 ] as const) {
+  const shell = publishShell(contents);
+  const uploadExpression = YAML.parse(contents).jobs.publish.steps.find((s: any) => s.uses?.startsWith("actions/upload-artifact@")).with.path;
   describe(`${source} release publish recovery boundaries`, () => {
     it("does not overwrite or promote an existing release without authenticated exact-match evidence", async () => {
       // The fake gh only reports that a release exists. It supplies no authenticated
@@ -216,6 +225,20 @@ for (const [source, shell] of [
     it("rejects an invalid retry release issue before invoking the credential-bearing runtime", async () => {
       const result = await runPublish(shell, "passed", "existing-unverified", true, true, false, "invalid");
       expect(result.status).not.toBe(0); expect(result.events).toEqual([]);
+    });
+    it.each([false, true])("dispatches source publication before all legacy operations; failure=%s", async (failure) => {
+      const result = await runPublish(shell, "missing", "api-failed", true, false, failure, "27", true);
+      expect(result.status, result.stderr).toBe(failure ? 75 : 0);
+      expect(result.events).toEqual(["approved-retry-runtime"]);
+    });
+    it("rejects conflicting approved operation selectors before runtime", async () => {
+      const result = await runPublish(shell, "passed", "absent", true, true, false, "27", true);
+      expect(result.status).not.toBe(0); expect(result.events).toEqual([]);
+    });
+    it.each(["publication", "retry", "generic"])("uploads the actual shell-produced evidence for %s", async (mode) => {
+      const result = await runPublish(shell, "passed", "absent", true, mode === "retry", false, "27", mode === "publication", uploadExpression);
+      expect(result.status, result.stderr).toBe(0); expect(result.uploadedEvidence).not.toBeNull();
+      expect(JSON.parse(result.uploadedEvidence!)).toMatchObject(mode === "generic" ? { publish_run_id: "103" } : { kind: "verified-existing" });
     });
     it("accepts an absent tag after a full page and verified terminal continuation", async () => {
       const result = await runPublish(shell, "passed", "full-page");

@@ -142,20 +142,22 @@ describe("reusable workflows", () => {
     expect(publishStep.run).toContain("Validation evidence run ID does not match the requested validation run.");
     expect(publishStep.run).toContain("Validation evidence repo does not match the current repository.");
     expect((publish.on as any).workflow_call.inputs.verify_existing_release.default).toBe(false);
+    expect((publish.on as any).workflow_call.inputs.publish_new_source_release.default).toBe(false);
     expect(publishStep.env).toMatchObject({
       TAG: "${{ inputs.tag }}", PREFLIGHT_RUN_ID: "${{ inputs.preflight_run_id }}",
       VALIDATION_RUN_ID: "${{ inputs.validation_run_id }}", VERIFY_EXISTING_RELEASE: "${{ inputs.verify_existing_release }}",
+      PUBLISH_NEW_SOURCE_RELEASE: "${{ inputs.publish_new_source_release }}",
       APPROVAL_PULL_NUMBER: "${{ inputs.approval_pull_number }}", RELEASE_RUNTIME_COMMIT: "${{ vars.RELEASE_RUNTIME_COMMIT }}",
       APPROVED_RUNTIME_ROOT: "${{ github.workspace }}/.bootstrap-release-runtime",
-      RELEASE_APP_PRIVATE_KEY: "${{ inputs.verify_existing_release && secrets.RELEASE_APP_PRIVATE_KEY || '' }}"
+      RELEASE_APP_PRIVATE_KEY: "${{ (inputs.verify_existing_release || inputs.publish_new_source_release) && secrets.RELEASE_APP_PRIVATE_KEY || '' }}"
     });
     const targetCheckout = publishSteps.find((step: any) => step.with?.ref === "${{ inputs.tag }}");
-    expect(targetCheckout.with).toMatchObject({ path: "${{ inputs.verify_existing_release && 'release-target' || '.' }}",
-      "persist-credentials": "${{ !inputs.verify_existing_release }}" });
+    expect(targetCheckout.with).toMatchObject({ path: "${{ (inputs.verify_existing_release || inputs.publish_new_source_release) && 'release-target' || '.' }}",
+      "persist-credentials": "${{ !(inputs.verify_existing_release || inputs.publish_new_source_release) }}" });
     for (const name of ["Validate approved retry runtime selection", "Checkout approved retry runtime", "Build approved retry runtime before exposing App key"]) {
       const matches = publishSteps.filter((step: any) => step.name === name);
       expect(matches).toHaveLength(1);
-      expect(matches[0].if).toBe("inputs.verify_existing_release");
+      expect(matches[0].if).toBe("inputs.verify_existing_release || inputs.publish_new_source_release");
       expect(publishSteps.indexOf(matches[0])).toBeLessThan(publishSteps.indexOf(publishStep));
       expect(matches[0].env ?? {}).not.toHaveProperty("RELEASE_APP_PRIVATE_KEY");
     }
@@ -165,7 +167,7 @@ describe("reusable workflows", () => {
     expect(publishSteps.find((step: any) => step.name === "Build approved retry runtime before exposing App key").run)
       .toContain('[[ "$(git rev-parse HEAD)" == "$RELEASE_RUNTIME_COMMIT" ]] || exit 1');
     expect(publishSteps.find((step: any) => step.with?.name === "${{ inputs.evidence_artifact_name }}-publish").with.path)
-      .toBe("${{ inputs.verify_existing_release && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}");
+      .toBe("${{ (inputs.verify_existing_release || inputs.publish_new_source_release) && format('{0}/approved-retry-evidence.json', runner.temp) || format('{0}/postpublish-evidence.json', inputs.artifact_dir) }}");
     expect(postpublish.name).toBe("Reusable Release Postpublish");
     expect((postpublish.jobs as any).postpublish).toBeTruthy();
     expect(JSON.stringify(postpublish)).not.toContain("|| true");

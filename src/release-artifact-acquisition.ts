@@ -41,7 +41,7 @@ async function invoke(python: string, ghDirectory: string, environment: Record<s
 }
 
 /**
- * Acquisition used by the trusted retry runtime. The caller must run in a protected POSIX
+ * Acquisition used by the trusted release runtime. The caller must run in a protected POSIX
  * environment, authenticate the read-only token and reviewed observation, pin
  * immutable trusted executables, independently verify the workflow and target,
  * and recheck approval before publication. Same-user filesystem/process races,

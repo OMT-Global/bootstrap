@@ -345,6 +345,7 @@ export interface BootstrapManifest {
     postpublishRequiresPreflight?: boolean;
     approvedRetry?: boolean;
     approvedPublication?: boolean;
+    approvedAliases?: boolean;
     changelog: ReleaseChangelogConfig;
     versions: ReleaseVersionSurface[];
     artifacts: ReleaseArtifactConfig;

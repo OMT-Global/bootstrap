@@ -8,6 +8,7 @@ import { readGitHubExactTag, readGitHubPublicationApproval } from "./github-appr
 import { reviewReleaseManifest, reviewedReleaseSelectors } from "./release-approval.js";
 import { type ApprovedReleasePackage, approvedReleasePackageMetadata } from "./release-approved-package.js";
 import { prepareGitHubReleasePackageFromCheckout } from "./release-github-package-preparation.js";
+import { promoteApprovedReleaseAliases, type AliasAuthorization } from "./github-release-aliases.js";
 import type { PublicationQualification } from "./release-publication-protection.js";
 import { createApprovedSourceRelease } from "./github-create-source-release.js";
 import { verifyExistingGitHubRelease } from "./github-existing-release.js";
@@ -47,6 +48,11 @@ export async function publishPreparedSourceRelease(input: PreparedInput & { qual
     revalidate: preparedReleaseGate(input), ...(input.approval.fetchImpl ? { fetchImpl: input.approval.fetchImpl } : {}) });
 }
 
+export async function promotePreparedReleaseAliases(input: PreparedInput & { authorization: AliasAuthorization; major: boolean; minor: boolean }) {
+  return await promoteApprovedReleaseAliases({ package: input.package, token: input.approval.token, authorization: input.authorization,
+    major: input.major, minor: input.minor, revalidate: preparedReleaseGate(input), ...(input.approval.fetchImpl ? { fetchImpl: input.approval.fetchImpl } : {}) });
+}
+
 const id = z.string().regex(/^[1-9][0-9]{0,15}$/);
 const sha = z.string().regex(/^[0-9a-f]{40}$/);
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
@@ -56,6 +62,7 @@ const configSchema = z.object({
   runtimeCommit: sha, reviewerId: id, manifestPath: z.string().regex(/^\.github\/release-approvals\/[A-Za-z0-9_-]+\.json$/),
   maxValiditySeconds: z.number().int().min(1).max(86400), publication: workflow,
   preflight: workflow, validation: workflow, latest: z.boolean(), publicationQualification: z.object({ json: z.string().min(1).max(8192), sha256: digest, qualifierId: id }).strict().optional(),
+  aliasAuthorization: z.object({ json: z.string().min(1).max(8192), sha256: digest, authorizerId: id }).strict().optional(),
   pythonPath: z.string().min(1), pythonSha256: digest, ghPath: z.string().min(1), ghSha256: digest,
   maxAssetBytes: z.number().int().positive().safe(), maxArchiveBytes: z.number().int().positive().safe(),
   maxExpandedBytes: z.number().int().positive().safe(), maxMembers: z.number().int().positive().max(10000)
@@ -75,7 +82,8 @@ export function releaseAppJwt(privateKey: string, appId: number, now = Date.now(
 
 /** Guarded Bootstrap workflow consumer. Environment policy, trusted runtime and
  * tool pins require reviewed deployment. The target checkout is read as data. */
-async function runApprovedReleaseRuntime(environment: NodeJS.ProcessEnv, publish: boolean) {
+async function runApprovedReleaseRuntime(environment: NodeJS.ProcessEnv, operation: "verify" | "publish" | "aliases") {
+  const publish = operation === "publish", aliases = operation === "aliases";
   const env = { ...environment };
   try {
     const config = configSchema.parse(JSON.parse(env.RELEASE_RETRY_CONFIG ?? ""));
@@ -86,13 +94,15 @@ async function runApprovedReleaseRuntime(environment: NodeJS.ProcessEnv, publish
         !id.safeParse(env.APPROVAL_PULL_NUMBER).success || !id.safeParse(env.RELEASE_ISSUE).success ||
         !/^v\d+\.\d+\.\d+(?:-(?:rc|beta)\.\d+)?$/.test(env.TAG ?? "") || !env.RELEASE_APP_PRIVATE_KEY ||
         !env.GITHUB_WORKSPACE || !env.RUNNER_TEMP || env.CREATE_GITHUB_RELEASE !== "true") throw new Error();
-    if (publish && (!config.publicationQualification || env.PUBLISH_SCRIPT !== "scripts/release/publish.sh" || env.VERIFY_EXISTING_RELEASE === "true")) throw new Error();
+    if (publish && (!config.publicationQualification || env.PUBLISH_SCRIPT !== "scripts/release/publish.sh" || env.VERIFY_EXISTING_RELEASE === "true" || env.PROMOTE_RELEASE_ALIASES === "true")) throw new Error();
+    if (aliases && (!config.aliasAuthorization || env.VERIFY_EXISTING_RELEASE === "true" || env.PUBLISH_NEW_SOURCE_RELEASE === "true" ||
+        !["true", "false"].includes(env.UPDATE_MAJOR_TAG ?? "") || !["true", "false"].includes(env.UPDATE_MINOR_TAG ?? ""))) throw new Error();
     const sourceRoot = await realpath(path.join(env.GITHUB_WORKSPACE, "release-target"));
     if (sourceRoot !== path.join(await realpath(env.GITHUB_WORKSPACE), "release-target")) throw new Error();
     const runtimeDir = await realpath(env.RUNNER_TEMP);
     const key = env.RELEASE_APP_PRIVATE_KEY; delete env.RELEASE_APP_PRIVATE_KEY;
     const appJwt = releaseAppJwt(key, config.appId);
-    let result: Awaited<ReturnType<typeof verifyExistingGitHubRelease>> | Awaited<ReturnType<typeof createApprovedSourceRelease>> | undefined;
+    let result: Awaited<ReturnType<typeof verifyExistingGitHubRelease>> | Awaited<ReturnType<typeof createApprovedSourceRelease>> | Awaited<ReturnType<typeof promoteApprovedReleaseAliases>> | undefined;
     await withScopedInstallationToken({ appId: config.appId, installationId: config.installationId, repositoryId: Number(config.repositoryId),
       repository: "OMT-Global/bootstrap", appJwt, purpose: "release" }, async (token, _expires, assertScope) => {
       const headers = { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28" };
@@ -131,32 +141,41 @@ async function runApprovedReleaseRuntime(environment: NodeJS.ProcessEnv, publish
         maxExpandedBytes: config.maxExpandedBytes, maxMembers: config.maxMembers, assertTarget });
       const prepared: PreparedInput = { package: pkg, policy, approval, preflightRunId: env.PREFLIGHT_RUN_ID!, channel: env.CHANNEL!,
         assertScope: async () => { await assertScope(); await reviewerIdentity(); await validation(); }, assertTarget };
-      result = publish ? await publishPreparedSourceRelease({ ...prepared, qualification: { ...config.publicationQualification!, appId: config.appId, installationId: config.installationId,
+      result = aliases ? await promotePreparedReleaseAliases({ ...prepared, major: env.UPDATE_MAJOR_TAG === "true", minor: env.UPDATE_MINOR_TAG === "true",
+        authorization: { ...config.aliasAuthorization!, appId: config.appId, installationId: config.installationId, operationRunId: env.GITHUB_RUN_ID!,
+          operationAttempt: env.GITHUB_RUN_ATTEMPT!, operationWorkflowCommit: config.publication.commit } }) : publish ? await publishPreparedSourceRelease({ ...prepared, qualification: { ...config.publicationQualification!, appId: config.appId, installationId: config.installationId,
         publicationRunId: env.GITHUB_RUN_ID!, publicationAttempt: env.GITHUB_RUN_ATTEMPT!, publicationWorkflowCommit: config.publication.commit } }) : await verifyPreparedGitHubRelease(prepared);
     });
     if (!result) throw new Error();
     return result;
   } catch {
+    if (aliases) throw new Error("Approved alias promotion stopped; manually reconcile any uncertain ref transaction.");
     if (publish) throw new Error("Approved source publication stopped; manually reconcile any uncertain write before another operation.");
     throw new Error("Approved retry failed; no hook, release or alias write was attempted. Reconcile missing or mismatched evidence manually."); }
 }
 
 export async function runExistingReleaseRuntime(environment: NodeJS.ProcessEnv) {
-  const result = await runApprovedReleaseRuntime(environment, false);
+  const result = await runApprovedReleaseRuntime(environment, "verify");
   if (result.kind !== "verified-existing") throw new Error("Unexpected approved operation result.");
   return result;
 }
 export async function publishNewBootstrapSourceRelease(environment: NodeJS.ProcessEnv) {
-  const result = await runApprovedReleaseRuntime(environment, true);
+  const result = await runApprovedReleaseRuntime(environment, "publish");
   if (result.kind !== "verified-created") throw new Error("Unexpected approved operation result.");
+  return result;
+}
+
+export async function promoteApprovedBootstrapReleaseAliases(environment: NodeJS.ProcessEnv) {
+  const result = await runApprovedReleaseRuntime(environment, "aliases");
+  if (result.kind !== "promoted-aliases" && result.kind !== "verified-unchanged-aliases") throw new Error("Unexpected approved operation result.");
   return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const environment = { ...process.env };
   delete process.env.RELEASE_APP_PRIVATE_KEY;
-  const operation = environment.PUBLISH_NEW_SOURCE_RELEASE === "true" ? publishNewBootstrapSourceRelease : runExistingReleaseRuntime;
+  const operation = environment.PROMOTE_RELEASE_ALIASES === "true" ? promoteApprovedBootstrapReleaseAliases : environment.PUBLISH_NEW_SOURCE_RELEASE === "true" ? publishNewBootstrapSourceRelease : runExistingReleaseRuntime;
   operation(environment).then((result) => process.stdout.write(`${JSON.stringify(result)}\n`), () => {
-    process.stderr.write(environment.PUBLISH_NEW_SOURCE_RELEASE === "true" ? "Source publication stopped; manual reconciliation required.\n" : "Approved retry verification failed; publication was not attempted.\n"); process.exitCode = 1;
+    process.stderr.write(environment.PROMOTE_RELEASE_ALIASES === "true" ? "Alias promotion stopped; manual reconciliation required.\n" : environment.PUBLISH_NEW_SOURCE_RELEASE === "true" ? "Source publication stopped; manual reconciliation required.\n" : "Approved retry verification failed; publication was not attempted.\n"); process.exitCode = 1;
   });
 }

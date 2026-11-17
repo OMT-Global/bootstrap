@@ -25,6 +25,25 @@ on:
         description: Release issue number
         required: false
         type: string
+      verify_existing_release:
+        description: Read-only approved exact-release retry (Bootstrap profile)
+        required: false
+        default: false
+        type: boolean
+      approval_pull_number:
+        description: PR containing the approved exact package manifest
+        required: false
+        type: string
+      publish_new_source_release:
+        description: Create one approved Bootstrap source release (manual reconciliation on uncertainty)
+        required: false
+        default: false
+        type: boolean
+      promote_release_aliases:
+        description: Promote explicitly authorized newest compatible Bootstrap aliases
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   publish:
@@ -34,13 +53,17 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@9b77eaaa3ed9ad2da35ec1af9fe13d1563c7cce4
+    uses: OMT-Global/bootstrap/.github/workflows/release-publish-reusable.yml@4062ce00d678555fd6c711c0df9f0d28ec6627ab
     with:
       tag: ${{ inputs.tag }}
       channel: ${{ inputs.channel }}
       preflight_run_id: ${{ inputs.preflight_run_id }}
       validation_run_id: ${{ inputs.validation_run_id }}
       release_issue: ${{ inputs.release_issue }}
+      verify_existing_release: ${{ inputs.verify_existing_release }}
+      approval_pull_number: ${{ inputs.approval_pull_number }}
+      publish_new_source_release: ${{ inputs.publish_new_source_release }}
+      promote_release_aliases: ${{ inputs.promote_release_aliases }}
       publish_script: scripts/release/publish.sh
       postpublish_script: scripts/release/postpublish.sh
       artifact_dir: dist/release

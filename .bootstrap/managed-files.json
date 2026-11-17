@@ -42,7 +42,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/full-release-validation.yml": {
-      "sha256": "841bba7b30b4105dd5457983e6c5b4e24a39681f579a9a53ac8478c9e2ce7385",
+      "sha256": "a7eaf0b54cb19086be1c3d450e8a7b29975325d6439cc6bca8c08b02a8d6e559",
       "source": "bootstrap"
     },
     ".github/workflows/issue-hygiene.yml": {
@@ -58,7 +58,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-postpublish.yml": {
-      "sha256": "2cba0398697614b7ae56e2808d8390f03c5f8a8ca8a3b1283b007641c5e0087d",
+      "sha256": "9e01e5c3e5ae645f9e99fbaf74aac5a860a2572d27d632e9fb064cda4b65510a",
       "source": "bootstrap"
     },
     ".github/workflows/release-preflight-reusable.yml": {
@@ -66,7 +66,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-preflight.yml": {
-      "sha256": "a470960f3dfd69158164acaa16f249a41b6a8a1636bd81375827a9d2da8fac2f",
+      "sha256": "84671dca42ca0916100f81e2fd3e2836f63302ad7cb3733dbeae6f1a1b3380fb",
       "source": "bootstrap"
     },
     ".github/workflows/release-publish-reusable.yml": {
@@ -74,7 +74,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-publish.yml": {
-      "sha256": "081934351d284c25dca45b8b1ff03b2bd582a40215a2f3520496b5700247a403",
+      "sha256": "0a8a7d18d2a4d859d2f4bd67123dcf3b014a8b60c0a215e827c7da32005cc84a",
       "source": "bootstrap"
     },
     ".github/workflows/security.yml": {
@@ -114,7 +114,7 @@
       "source": "bootstrap"
     },
     "docs/bootstrap/release-train-contract.md": {
-      "sha256": "11e975c793774fbdc0250288b4dcc6e2ae629f7218a4e0ab92bdd581c59059d4",
+      "sha256": "ff9a852b17dedb9331b4e155fce779628a4fd2de77c8ed424c2c2711aae87fc8",
       "source": "bootstrap"
     },
     "docs/bootstrap/security.md": {
@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "72eb35a749bc77acbe8b9b363149cfa1f0c79d4a6e6df710e0ffbf0422dec6ce",
+      "sha256": "a2235655d8654f7946c10aaf2c0a4f613e4ff0835d45cea78dde33fc6379376f",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {

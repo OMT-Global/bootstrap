@@ -27,7 +27,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: OMT-Global/bootstrap/.github/workflows/release-postpublish-reusable.yml@9b77eaaa3ed9ad2da35ec1af9fe13d1563c7cce4
+    uses: OMT-Global/bootstrap/.github/workflows/release-postpublish-reusable.yml@4062ce00d678555fd6c711c0df9f0d28ec6627ab
     with:
       tag: ${{ inputs.tag }}
       channel: ${{ inputs.channel }}

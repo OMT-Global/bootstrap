@@ -15,9 +15,9 @@ trap 'rm -rf "$workdir"' EXIT
 fetch() {
   local url="$1"
   local destination="$2"
-  curl --fail --silent --show-error --location --retry 2 \
+  printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" | curl --fail --silent --show-error --location --retry 2 \
     --header "Accept: application/vnd.github+json" \
-    --header "Authorization: Bearer $GITHUB_TOKEN" \
+    --header @- \
     "$url" >"$destination"
 }
 

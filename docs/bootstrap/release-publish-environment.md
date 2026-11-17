@@ -1,6 +1,6 @@
 # Optional release-publish environment
 
-Bootstrap supports an optional `environments["release-publish"]` entry for the environment named by the generated publisher. It is absent by default, including in Bootstrap's own manifest. The existing `dev`, `stage` and `prod` settings retain their behavior.
+Bootstrap supports an optional `environments["release-publish"]` entry for the environment named by the generated publisher. The reusable default leaves it unset. Bootstrap's own manifest opts in explicitly. The existing `dev`, `stage` and `prod` settings retain their behavior.
 
 The entry requires one to six explicit user or team reviewers, `requireApproval: true`, `preventSelfReview: true`, and `branches` containing exactly the configured default branch. Global reviewer defaults are not inherited. User names and organization/team targets resolve to unique valid IDs before the GitHub writer makes changes; GitHub determines their eligibility. Only one listed reviewer needs to approve a deployment. [Environment API](https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment).
 

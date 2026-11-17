@@ -1,12 +1,23 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { verifyGitSnapshot } from "../src/upgrade-git.js";
 import { immutablePreflightVerifierScript } from "../src/archetypes.js";
+import { type ReviewedReleaseManifest, reviewReleaseManifest, reviewedReleaseSelectors } from "../src/release-approval.js";
+import { approvedReleasePackageMetadata } from "../src/release-approved-package.js";
+import { acquireReviewedArtifact, acquireReviewedPreflight } from "../src/release-artifact-acquisition.js";
+import { prepareReleaseForPublication } from "../src/release-prepare-publication.js";
+import { prepareGitHubReleasePackage } from "../src/release-github-package-preparation.js";
+import { verifyPreparedGitHubRelease } from "../src/release-existing-runtime.js";
+import { readGitHubExactTag } from "../src/github-approval-reader.js";
+import { reviewedPreflightEnvironment } from "../src/release-reviewed-preflight.js";
+import { packageFixture } from "./helpers/release-approved-package-fixture.js";
 
 const python = process.env.BOOTSTRAP_RELEASE_TEST_PYTHON || "python3";
 const targetSha = "a".repeat(40);
@@ -19,7 +30,7 @@ function verifierProgram(): string {
 // stdlib ZIP writers produce the ordinary formats; deliberate corruptions change
 // the original wire names/headers so the decoder, not a sanitized fixture, is tested.
 const zipFixtureProgram = String.raw`
-import binascii, io, json, stat, struct, sys, zipfile, zlib
+import base64, binascii, io, json, stat, struct, sys, zipfile, zlib
 
 spec = json.load(sys.stdin)
 class StreamingBuffer(io.BytesIO):
@@ -46,7 +57,7 @@ with zipfile.ZipFile(buffer, "w", allowZip64=True) as archive:
             info.external_attr = 0x10 if kind == "directory" else 0x20
         if entry.get("dosDirectory"):
             info.external_attr |= 0x10
-        payload = entry.get("data", "fixture payload").encode("utf-8")
+        payload = base64.b64decode(entry["dataBase64"], validate=True) if "dataBase64" in entry else entry.get("data", "fixture payload").encode("utf-8")
         with archive.open(info, "w", force_zip64=bool(spec.get("zip64"))) as member:
             member.write(payload)
 
@@ -175,6 +186,7 @@ open(sys.argv[1], "wb").write(data)
 type Entry = {
   name: string;
   data?: string;
+  dataBase64?: string;
   kind?: "file" | "directory" | "symlink" | "fifo" | "socket" | "character" | "block";
   system?: number;
   deflate?: boolean;
@@ -202,9 +214,16 @@ type FixtureOptions = {
   metadataFailure?: boolean;
   downloadFailure?: boolean;
   attemptFailure?: boolean;
-  metadataText?: string;
+  metadataText?: string | ((digest: string) => string);
   attemptText?: string;
   wrongDownloadedBytes?: boolean;
+  reviewEnvironment?: (digest: string) => Record<string, string>;
+  fixtureRepository?: string;
+  fixtureRepositoryId?: number;
+  archiveBytes?: Buffer;
+  sourceBytes?: Buffer;
+  sourceName?: string;
+  targetCommit?: string;
 };
 
 async function runVerifier(options: FixtureOptions = {}) {
@@ -213,25 +232,33 @@ async function runVerifier(options: FixtureOptions = {}) {
     const bin = path.join(directory, "bin");
     const runnerTemp = path.join(directory, "runner");
     await Promise.all([mkdir(bin), mkdir(runnerTemp)]);
+    const fixtureRepository = options.fixtureRepository || "fake/repo";
+    const fixtureRepositoryId = options.fixtureRepositoryId || 42;
+    const fixtureTarget = options.targetCommit || targetSha;
     const runId = options.runId || "101";
     const artifactId = options.artifactId || "202";
     const attemptRoute = options.attemptRoute || "1";
     const archive = path.join(directory, "approved-A.zip");
-    const evidence = { schema_version: 1, repo: "fake/repo", version: "v1.2.3", channel: "stable", target_ref: "independent-target", target_sha: targetSha, preflight_run_id: runId, run_attempt: "1", checks: { prep: "passed", preflight: "passed", build: "passed" }, ...options.evidence };
+    const evidence = { schema_version: 1, repo: fixtureRepository, version: "v1.2.3", channel: "stable", target_ref: "independent-target", target_sha: fixtureTarget, preflight_run_id: runId, run_attempt: "1", checks: { prep: "passed", preflight: "passed", build: "passed" }, ...options.evidence };
     const entries: Entry[] = [
       { name: "release-evidence.json", data: JSON.stringify(evidence) },
       { name: "RELEASE_NOTES.md", data: "independently approved A\n" },
-      { name: "source.tar.gz", data: "opaque source archive; never recursively unpacked" },
+      options.sourceBytes ? { name: options.sourceName || "source.tar.gz", dataBase64: options.sourceBytes.toString("base64") } :
+        { name: "source.tar.gz", data: "opaque source archive; never recursively unpacked" },
       ...(options.entries || [])
     ];
-    const fixture = spawnSync(python, ["-I", "-S", "-c", zipFixtureProgram, archive], {
-      input: JSON.stringify({ entries, mutation: options.mutation, descriptor: options.descriptor, zip64: options.zip64, descriptorVariant: options.descriptorVariant, unsignedDescriptor: options.unsignedDescriptor, descriptorMutation: options.descriptorMutation }),
-      encoding: "utf8",
-      timeout: 10_000
-    });
-    if (fixture.error) throw fixture.error;
-    if (fixture.status !== 0) throw new Error(`Cannot prepare ZIP fixture: ${fixture.stderr}`);
-    const formatProof = fixture.stdout.trim() ? JSON.parse(fixture.stdout) : undefined;
+    let formatProof: unknown;
+    if (options.archiveBytes) await writeFile(archive, options.archiveBytes);
+    else {
+      const fixture = spawnSync(python, ["-I", "-S", "-c", zipFixtureProgram, archive], {
+        input: JSON.stringify({ entries, mutation: options.mutation, descriptor: options.descriptor, zip64: options.zip64, descriptorVariant: options.descriptorVariant, unsignedDescriptor: options.unsignedDescriptor, descriptorMutation: options.descriptorMutation }),
+        encoding: "utf8",
+        timeout: 10_000
+      });
+      if (fixture.error) throw fixture.error;
+      if (fixture.status !== 0) throw new Error(`Cannot prepare ZIP fixture: ${fixture.stderr}`);
+      formatProof = fixture.stdout.trim() ? JSON.parse(fixture.stdout) : undefined;
+    }
     const approvedBytes = await readFile(archive);
     const digest = createHash("sha256").update(approvedBytes).digest("hex");
     const downloaded = path.join(directory, "downloaded.zip");
@@ -241,12 +268,12 @@ async function runVerifier(options: FixtureOptions = {}) {
     await writeFile(path.join(directory, "alias-B.zip"), "unapproved B");
     const metadata = {
       id: "__ARTIFACT_ID__", name: "release-package", expired: false, digest: `sha256:${digest}`,
-      workflow_run: { id: "__RUN_ID__", repository_id: 42, head_repository_id: 42, head_sha: platformHeadSha },
+      workflow_run: { id: "__RUN_ID__", repository_id: fixtureRepositoryId, head_repository_id: fixtureRepositoryId, head_sha: platformHeadSha },
       ...options.metadata
     };
     const attempt = {
       id: "__RUN_ID__", run_attempt: "__ATTEMPT__", status: "completed", conclusion: "success", head_sha: platformHeadSha,
-      repository: { id: 42, full_name: "fake/repo" }, head_repository: { id: 42, full_name: "fake/repo" },
+      repository: { id: fixtureRepositoryId, full_name: fixtureRepository }, head_repository: { id: fixtureRepositoryId, full_name: fixtureRepository },
       ...options.attempt
     };
     function platformJson(value: unknown) {
@@ -259,7 +286,7 @@ async function runVerifier(options: FixtureOptions = {}) {
     const attemptFile = path.join(directory, "attempt.json");
     const callsFile = path.join(directory, "calls");
     await Promise.all([
-      writeFile(metadataFile, options.metadataText ?? platformJson(metadata)),
+      writeFile(metadataFile, typeof options.metadataText === "function" ? options.metadataText(digest) : options.metadataText ?? platformJson(metadata)),
       writeFile(attemptFile, options.attemptText ?? platformJson(attempt)),
       writeFile(callsFile, "")
     ]);
@@ -273,13 +300,13 @@ for argument in "$@"; do
   case "$argument" in repos/*) endpoint="$argument" ;; esac
 done
 case "$endpoint" in
-  "repos/fake/repo/actions/artifacts/$FIXTURE_ARTIFACT_ID")
+  "repos/$FIXTURE_REPOSITORY/actions/artifacts/$FIXTURE_ARTIFACT_ID")
     [[ "$FIXTURE_METADATA_FAILURE" == false ]] || exit 44
     /bin/cat "$FIXTURE_METADATA" ;;
-  "repos/fake/repo/actions/artifacts/$FIXTURE_ARTIFACT_ID/zip")
+  "repos/$FIXTURE_REPOSITORY/actions/artifacts/$FIXTURE_ARTIFACT_ID/zip")
     [[ "$FIXTURE_DOWNLOAD_FAILURE" == false ]] || exit 45
     /bin/cat "$FIXTURE_DOWNLOAD" ;;
-  "repos/fake/repo/actions/runs/$FIXTURE_RUN_ID/attempts/$FIXTURE_ATTEMPT")
+  "repos/$FIXTURE_REPOSITORY/actions/runs/$FIXTURE_RUN_ID/attempts/$FIXTURE_ATTEMPT")
     [[ "$FIXTURE_ATTEMPT_FAILURE" == false ]] || exit 46
     /bin/cat "$FIXTURE_ATTEMPT_JSON" ;;
   *) printf 'Unexpected service endpoint: %s\\n' "$endpoint" >&2; exit 90 ;;
@@ -293,14 +320,15 @@ esac
       timeout: 10_000,
       env: {
         PATH: `${bin}:${process.env.PATH || "/usr/bin:/bin"}`,
-        GITHUB_REPOSITORY: "fake/repo", GITHUB_REPOSITORY_ID: "42",
+        GITHUB_REPOSITORY: fixtureRepository, GITHUB_REPOSITORY_ID: String(fixtureRepositoryId),
         PREFLIGHT_RUN_ID: runId, PREFLIGHT_ARTIFACT_ID: artifactId, PREFLIGHT_ARTIFACT_SHA256: digest,
-        PREFLIGHT_TARGET_SHA: targetSha, GITHUB_SHA: "c".repeat(40), RUNNER_TEMP: runnerTemp,
+        PREFLIGHT_TARGET_SHA: fixtureTarget, GITHUB_SHA: "c".repeat(40), RUNNER_TEMP: runnerTemp,
         FIXTURE_CALLS: callsFile, FIXTURE_METADATA: metadataFile, FIXTURE_ATTEMPT_JSON: attemptFile,
         FIXTURE_DOWNLOAD: downloaded, FIXTURE_RUN_ID: runId, FIXTURE_ARTIFACT_ID: artifactId,
-        FIXTURE_ATTEMPT: attemptRoute, FIXTURE_METADATA_FAILURE: String(!!options.metadataFailure),
+        FIXTURE_ATTEMPT: attemptRoute, FIXTURE_REPOSITORY: fixtureRepository, FIXTURE_METADATA_FAILURE: String(!!options.metadataFailure),
         FIXTURE_DOWNLOAD_FAILURE: String(!!options.downloadFailure), FIXTURE_ATTEMPT_FAILURE: String(!!options.attemptFailure),
-        ...options.env
+        ...options.env,
+        ...(options.reviewEnvironment?.(digest) ?? {})
       }
     });
     if (result.error) throw result.error;
@@ -380,6 +408,286 @@ describe("immutable preflight verifier", () => {
     } else if (result.status === 0) {
       for (const entry of options.entries || []) expect(result.files[entry.name]).toBe(entry.data);
     }
+  });
+
+  it("runs reviewed acquisition with pinned fake tools and rejects changed or ambiguous assets", async () => {
+    const location = await mkdtemp(path.join(os.tmpdir(), "release-acquisition-test-"));
+    try {
+      const gitRoot = path.join(location, "git-fixture");
+      await mkdir(gitRoot);
+      await mkdir(path.join(gitRoot, "empty"));
+      const gitEnv = { PATH: "/usr/bin:/bin", HOME: gitRoot, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_AUTHOR_DATE: "@1767225600 +0000", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid", GIT_COMMITTER_DATE: "@1767225600 +0000" };
+      const git = (args: string[], input?: Uint8Array | string) => execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null", ...args], { cwd: gitRoot, env: gitEnv, ...(input === undefined ? {} : { input }) });
+      git(["init", "-q", "--initial-branch=main", `--template=${path.join(gitRoot, "empty")}`]);
+      const contents = Buffer.from("fabricated approved source\n");
+      const oid = git(["hash-object", "--stdin", "--no-filters", "-w"], contents).toString().trim();
+      const sourceNotes = Buffer.from("independently approved A\n");
+      const notesOid = git(["hash-object", "--stdin", "--no-filters", "-w"], sourceNotes).toString().trim();
+      git(["update-index", "-z", "--index-info"], Buffer.from(`100644 ${oid}\tREADME.md\0` + `100644 ${notesOid}\trelease-notes/v1.2.3.md\0`));
+      const sourceTree = git(["write-tree"]).toString().trim();
+      const sourceCommit = git(["commit-tree", sourceTree], "synthetic fixture\n").toString().trim();
+      const snapshot = verifyGitSnapshot({ baseCommit: sourceCommit, commitBytes: git(["cat-file", "commit", sourceCommit]),
+        files: [{ path: "README.md", mode: "100644", bytes: contents }, { path: "release-notes/v1.2.3.md", mode: "100644", bytes: sourceNotes }] });
+      const sourceArchive = gzipSync(git(["archive", "--format=tar", "--prefix=bootstrap-v1.2.3/", sourceCommit]));
+      const sourceName = "bootstrap-v1.2.3-source.tar.gz";
+      const sourceHash = createHash("sha256").update(sourceArchive).digest("hex");
+      const checksum = Buffer.from(`${sourceHash}  ${sourceName}\n`);
+      const assetDigest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+      const sourceManifest = Buffer.from(JSON.stringify({ schema_version: 1, repository: "fake/repo", version: "v1.2.3", channel: "stable", distribution: "repository-source-control-plane", source_commit: sourceCommit, source_tree: sourceTree,
+        assets: [{ name: sourceName, bytes: sourceArchive.length, sha256: assetDigest(sourceArchive) }, { name: `${sourceName}.sha256`, bytes: checksum.length, sha256: assetDigest(checksum) }, { name: "RELEASE_NOTES.md", bytes: sourceNotes.length, sha256: assetDigest(sourceNotes) }] }));
+      const resolved = spawnSync("which", [python], { encoding: "utf8" });
+      if (resolved.status !== 0) throw new Error("python unavailable");
+      const pythonPath = await realpath(resolved.stdout.trim());
+      const pythonSha256 = createHash("sha256").update(await readFile(pythonPath)).digest("hex");
+      const gh = path.join(await realpath(location), "gh");
+      const archivePath = path.join(await realpath(location), "artifact.zip");
+      const metadataPath = path.join(await realpath(location), "metadata.json");
+      const attemptPath = path.join(await realpath(location), "attempt.json");
+      const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+      await writeFile(gh, `#!/bin/sh\nset -eu\n[ "$1" = api ]\ncase "$2" in\nrepos/fake/repo/actions/artifacts/202) /bin/cat ${quote(metadataPath)} ;;\nrepos/fake/repo/actions/artifacts/202/zip) /bin/cat ${quote(archivePath)} ;;\nrepos/fake/repo/actions/runs/101/attempts/1) /bin/cat ${quote(attemptPath)} ;;\n*) exit 1 ;;\nesac\n`);
+      await chmod(gh, 0o700);
+      const ghSha256 = createHash("sha256").update(await readFile(gh)).digest("hex");
+      const attempt = { id: 101, run_attempt: 1, status: "completed", conclusion: "success", head_sha: "c".repeat(40), repository: { id: 42, full_name: "fake/repo" } };
+      await writeFile(attemptPath, JSON.stringify(attempt));
+      async function reviewed(extra: Entry[] = [], wrongAsset = false, evidence?: Record<string, unknown>) {
+        const archive = await runVerifier({ entries: [{ name: `${sourceName}.sha256`, data: checksum.toString("utf8") },
+          { name: "artifact-manifest.json", data: sourceManifest.toString("utf8") }, ...extra], evidence, sourceBytes: sourceArchive, sourceName, targetCommit: sourceCommit });
+        expect(archive.status, archive.stderr).toBe(0);
+        const digest = createHash("sha256").update(archive.approvedBytes).digest("hex");
+        await writeFile(archivePath, archive.approvedBytes);
+        await writeFile(metadataPath, JSON.stringify({ id: 202, name: "release-package", expired: false, digest: `sha256:${digest}`,
+          workflow_run: { id: 101, repository_id: 42, head_repository_id: 42, head_sha: "c".repeat(40) } }));
+        const source = packageFixture();
+        const value = JSON.parse(Buffer.from(source.observation.manifestBytes).toString("utf8"));
+        const notes = Buffer.from("independently approved A\n");
+        const asset = sourceArchive;
+        value.target = { commit: sourceCommit, tree: sourceTree };
+        value.repository = { id: "42", full_name: "fake/repo" };
+        value.preflight.run_id = "101"; value.preflight.artifact_id = "202"; value.preflight.archive_sha256 = digest;
+        value.assets = [{ name: "RELEASE_NOTES.md", size: notes.length, sha256: assetDigest(notes) },
+          { name: "artifact-manifest.json", size: sourceManifest.length, sha256: assetDigest(sourceManifest) },
+          { name: sourceName, size: asset.length, sha256: wrongAsset ? "0".repeat(64) : assetDigest(asset) },
+          { name: `${sourceName}.sha256`, size: checksum.length, sha256: assetDigest(checksum) }];
+        function sort(input: unknown): unknown {
+          if (Array.isArray(input)) return input.map(sort);
+          if (input && typeof input === "object") return Object.fromEntries(Object.entries(input).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sort(item)]));
+          return input;
+        }
+        source.observation.manifestBytes = Buffer.from(`${JSON.stringify(sort(value))}\n`);
+        const { approval_id: _id, expires_at: _expires, ...actual } = value;
+        source.observation.actual = actual;
+        source.observation.pull.repository_id = "42";
+        source.observation.reviews[0]!.body = `APPROVE-RELEASE-SHA256 ${createHash("sha256").update(source.observation.manifestBytes).digest("hex")}`;
+        const { actual: _actual, ...review } = source.observation;
+        return { fact: reviewReleaseManifest(review, source.policy, source.now), source };
+      }
+      const base = { token: "fabricated-read-token", pythonPath, pythonSha256, ghPath: gh, ghSha256, runtimeDir: location, maxAssetBytes: 1024 * 1024, maxArchiveBytes: 2 * 1024 * 1024, maxExpandedBytes: 2 * 1024 * 1024, maxMembers: 100 };
+      const selected = await reviewed();
+      const assets = await acquireReviewedArtifact({ ...base, reviewed: selected.fact });
+      expect(assets.map((asset) => asset.name)).toEqual(["RELEASE_NOTES.md", "artifact-manifest.json", sourceName, `${sourceName}.sha256`]);
+      expect(Buffer.from(assets[0]!.bytes).toString()).toBe("independently approved A\n");
+      const acquired = await acquireReviewedPreflight({ ...base, reviewed: selected.fact });
+      expect(acquired.evidence).toEqual({ version: "v1.2.3", channel: "stable", targetCommit: sourceCommit, runId: "101", attempt: "1" });
+      expect(Object.isFrozen(acquired.evidence)).toBe(true);
+      const prepared = await prepareReleaseForPublication({ policy: selected.source.policy,
+        async readApproval() { const { actual: _actual, ...review } = structuredClone(selected.source.observation); return review; },
+        async acquire(env, review) {
+          expect(env.PREFLIGHT_ARTIFACT_SHA256).toBe(reviewedReleaseSelectors(review).archiveSha256);
+          return { actual: selected.source.observation.actual, assets: await acquireReviewedArtifact({ ...base, reviewed: review }) };
+        }
+      });
+      expect(approvedReleasePackageMetadata(prepared).notes).toBe("independently approved A\n");
+      const source = selected.source;
+      const manifestBytes = Buffer.from(source.observation.manifestBytes);
+      const blobSha = createHash("sha1").update(`blob ${manifestBytes.length}\0`).update(manifestBytes).digest("hex");
+      const manifestDigest = createHash("sha256").update(manifestBytes).digest("hex");
+      const gitHead = source.observation.pull.head;
+      const reviewPath = source.policy.manifest_path;
+      const selectedDigest = reviewedReleaseSelectors(selected.fact).archiveSha256;
+      const publishRun = { id: 130, run_attempt: 3, workflow_id: 131, path: ".github/workflows/release-publish.yml", event: "workflow_dispatch", status: "in_progress", head_sha: "c".repeat(40), repository: { id: 42 }, head_repository: { id: 42 }, actor: { id: 113, type: "User" }, triggering_actor: { id: 115, type: "User" } };
+      const preflightRun = { id: 101, run_attempt: 1, workflow_id: 122, path: ".github/workflows/preflight.yml", event: "workflow_dispatch", status: "completed", conclusion: "success", head_sha: "c".repeat(40), repository: { id: 42 }, head_repository: { id: 42 }, actor: { id: 112, type: "User" }, triggering_actor: { id: 114, type: "User" } };
+      const requests: string[] = [];
+      let signedTag = false;
+      let revokedReview = false;
+      const observedRelease = { id: 600, tag_name: "v1.2.3", body: "independently approved A\n", draft: false, prerelease: false, author: { id: 999 } };
+      const fakeFetch: typeof fetch = async (request) => {
+        const url = new URL(String(request)); requests.push(url.pathname);
+        let response: unknown;
+        if (url.pathname === "/repos/fake/repo") response = { id: 42, full_name: "fake/repo", private: false, permissions: { push: true } };
+        else if (url.pathname.endsWith("/git/ref/tags/v1.2.3")) response = { ref: "refs/tags/v1.2.3", object: signedTag ? { type: "tag", sha: "9".repeat(40) } : { type: "commit", sha: sourceCommit } };
+        else if (url.pathname.includes("/git/tags/")) response = { sha: "9".repeat(40), tag: "v1.2.3", object: { type: "commit", sha: sourceCommit }, verification: { verified: true, reason: "valid", signature: "fabricated", payload: "fabricated" } };
+        else if (url.pathname.endsWith("/releases")) response = [observedRelease];
+        else if (url.pathname.endsWith("/releases/600") || url.pathname.endsWith("/releases/latest")) response = observedRelease;
+        else if (url.pathname.endsWith("/releases/600/assets")) response = source.observation.actual.assets.map((a, i) => ({ id: 700 + i, name: a.name, size: a.size, state: "uploaded", digest: `sha256:${a.sha256}` }));
+        else if (url.pathname.endsWith("/actions/runs/130/attempts/3")) response = publishRun;
+        else if (url.pathname.endsWith("/actions/runs/101/attempts/1")) response = preflightRun;
+        else if (url.pathname.endsWith("/actions/workflows/122")) response = { id: 122, path: preflightRun.path };
+        else if (url.pathname.endsWith("/actions/artifacts/202")) response = { id: 202, name: "release-package", expired: false, digest: `sha256:${selectedDigest}`, workflow_run: { id: 101, repository_id: 42, head_repository_id: 42, head_sha: "c".repeat(40) } };
+        else if (url.pathname.includes("/git/commits/")) response = { sha: sourceCommit, tree: { sha: sourceTree } };
+        else if (url.pathname.endsWith("/pulls/4/files")) response = [{ filename: reviewPath, status: "added", sha: blobSha }];
+        else if (url.pathname.includes("/git/blobs/")) response = { sha: blobSha, encoding: "base64", content: manifestBytes.toString("base64"), size: manifestBytes.length };
+        else if (url.pathname.endsWith("/pulls/4/reviews")) response = [{ id: 200, user: { id: 111 }, state: revokedReview ? "DISMISSED" : "APPROVED", commit_id: gitHead, submitted_at: source.observation.reviews[0]!.submitted_at, body: `APPROVE-RELEASE-SHA256 ${manifestDigest}` }];
+        else if (url.pathname.endsWith("/pulls/4")) response = { number: 4, state: "open", changed_files: 1, head: { sha: gitHead, repo: { id: 42 } }, base: { sha: "e".repeat(40), repo: { id: 42 } }, user: { id: 112 } };
+        else throw new Error("unexpected fabricated endpoint");
+        const result = new Response(JSON.stringify(response), { status: 200 });
+        Object.defineProperty(result, "url", { value: String(request) });
+        return result;
+      };
+      const targetChecks: string[] = [];
+      const githubInput: Parameters<typeof prepareGitHubReleasePackage>[0] = { policy: source.policy,
+        approval: { repository: "fake/repo", repositoryId: "42", pullNumber: 4, manifestPath: reviewPath,
+          publicationRunId: "130", publicationAttempt: "3", expectedWorkflowId: "131", expectedWorkflowPath: publishRun.path,
+          expectedWorkflowCommit: publishRun.head_sha, token: base.token, fetchImpl: fakeFetch },
+        preflightWorkflowPath: preflightRun.path, preflightWorkflowCommit: preflightRun.head_sha,
+        tag: "v1.2.3", notesAssetName: "RELEASE_NOTES.md", latest: true, requireSignedTag: false,
+        pythonPath, pythonSha256, ghPath: gh, ghSha256, runtimeDir: location, maxAssetBytes: base.maxAssetBytes, maxArchiveBytes: base.maxArchiveBytes, maxExpandedBytes: base.maxExpandedBytes, maxMembers: base.maxMembers, sourceSnapshot: snapshot,
+        async assertTarget(tag, commit) { targetChecks.push(`${tag}:${commit}`); }
+      };
+      const observed = await prepareGitHubReleasePackage(githubInput);
+      expect(approvedReleasePackageMetadata(observed).approvalSha256).toBe(manifestDigest);
+      expect(targetChecks).toEqual([`v1.2.3:${sourceCommit}`, `v1.2.3:${sourceCommit}`, `v1.2.3:${sourceCommit}`]);
+      expect(requests.filter((request) => request.endsWith("/actions/runs/130/attempts/3"))).toHaveLength(4);
+      expect(requests.filter((request) => request.endsWith("/git/ref/tags/v1.2.3"))).toHaveLength(6);
+      const retained = { ...githubInput, policy: { ...githubInput.policy }, approval: { ...githubInput.approval } };
+      let changedOptions = false;
+      retained.approval.fetchImpl = async (request, init) => {
+        if (!changedOptions) {
+          changedOptions = true;
+          retained.policy.reviewer_id = "999";
+          retained.approval.expectedWorkflowId = "999";
+          retained.approval.fetchImpl = async () => { throw new Error("replacement provider ran"); };
+          retained.assertTarget = async () => { throw new Error("replacement target callback ran"); };
+          retained.maxAssetBytes = 1;
+        }
+        return await fakeFetch(request, init);
+      };
+      const captured = await prepareGitHubReleasePackage(retained);
+      expect(approvedReleasePackageMetadata(captured).approvalSha256).toBe(manifestDigest);
+      expect(changedOptions).toBe(true);
+      await expect(prepareGitHubReleasePackage({ ...githubInput, requireSignedTag: true })).rejects.toThrow("GitHub release preparation unavailable.");
+      signedTag = true;
+      let scopeChecks = 0;
+      const retry = { package: observed, policy: source.policy, approval: githubInput.approval, preflightRunId: "101", channel: "stable",
+        async assertScope() { scopeChecks++; },
+        async assertTarget(tag: string, commit: string) {
+          await readGitHubExactTag({ repository: "fake/repo", repositoryId: "42", tag, expectedCommit: commit, requireSigned: true, token: base.token, fetchImpl: fakeFetch });
+        } };
+      expect(await verifyPreparedGitHubRelease(retry)).toMatchObject({ kind: "verified-existing", releaseId: "600", commit: sourceCommit, approvalSha256: manifestDigest });
+      expect(scopeChecks).toBe(6);
+      revokedReview = true;
+      await expect(verifyPreparedGitHubRelease(retry)).rejects.toThrow();
+      revokedReview = false;
+      publishRun.triggering_actor.id = 111;
+      await expect(verifyPreparedGitHubRelease(retry)).rejects.toThrow();
+      publishRun.triggering_actor.id = 115;
+      await expect(verifyPreparedGitHubRelease({ ...retry, preflightRunId: "999" })).rejects.toThrow();
+      await expect(verifyPreparedGitHubRelease({ ...retry, assertScope: async () => { throw new Error("fabricated revoked token"); } })).rejects.toThrow();
+      signedTag = false;
+      await expect(verifyPreparedGitHubRelease(retry)).rejects.toThrow();
+      await expect(prepareGitHubReleasePackage({ ...githubInput, sourceSnapshot: { ...snapshot } })).rejects.toThrow("GitHub release preparation unavailable.");
+      await expect(prepareGitHubReleasePackage({ ...githubInput, latest: false })).rejects.toThrow("GitHub release preparation unavailable.");
+      await expect(acquireReviewedArtifact({ ...base, reviewed: selected.fact, ghSha256: "0".repeat(64) })).rejects.toThrow("Reviewed artifact acquisition unavailable.");
+      for (const limits of [{ maxArchiveBytes: 0 }, { maxExpandedBytes: -1 }, { maxMembers: 10001 }]) {
+        await expect(acquireReviewedPreflight({ ...base, ...limits, reviewed: selected.fact })).rejects.toThrow();
+      }
+      await expect(acquireReviewedArtifact({ ...base, reviewed: (await reviewed([], true)).fact })).rejects.toThrow();
+      await expect(acquireReviewedArtifact({ ...base, reviewed: (await reviewed([{ name: "nested/RELEASE_NOTES.md", data: "different" }])).fact })).rejects.toThrow();
+      for (const evidence of [{ version: "v9.0.0" }, { channel: "beta" }, { checks: { prep: "skipped", preflight: "passed", build: "passed" } }]) {
+        await expect(acquireReviewedPreflight({ ...base, reviewed: (await reviewed([], false, evidence)).fact })).rejects.toThrow();
+      }
+      expect((await readdir(location)).filter((name) => name.startsWith("bootstrap-approved-acquisition-"))).toEqual([]);
+    } finally { await rm(location, { recursive: true, force: true }); }
+  });
+
+  it("uses every reviewed selector to acquire the exact archive and rejects a changed approved attempt", async () => {
+    function environment(digest: string, approvedAttempt: string) {
+      const source = packageFixture();
+      const value = JSON.parse(Buffer.from(source.observation.manifestBytes).toString("utf8"));
+      value.repository = { id: "42", full_name: "fake/repo" };
+      value.preflight.run_id = "101";
+      value.preflight.artifact_id = "202";
+      value.preflight.archive_sha256 = digest;
+      value.preflight.attempt = approvedAttempt;
+      function sorted(input: unknown): unknown {
+        if (Array.isArray(input)) return input.map(sorted);
+        if (input && typeof input === "object") return Object.fromEntries(Object.entries(input).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sorted(item)]));
+        return input;
+      }
+      source.observation.manifestBytes = Buffer.from(`${JSON.stringify(sorted(value))}\n`);
+      source.observation.pull.repository_id = "42";
+      source.observation.reviews[0]!.body = `APPROVE-RELEASE-SHA256 ${createHash("sha256").update(source.observation.manifestBytes).digest("hex")}`;
+      const { actual: _actual, ...review } = source.observation;
+      const env = reviewedPreflightEnvironment(reviewReleaseManifest(review, source.policy, source.now));
+      expect(Object.isFrozen(env)).toBe(true);
+      return env;
+    }
+    const matching = await runVerifier({ reviewEnvironment: (digest) => environment(digest, "1") });
+    expect(matching.status, matching.stderr).toBe(0);
+    const wrongArchive = await runVerifier({ reviewEnvironment: () => environment("0".repeat(64), "1") });
+    expectRejected(wrongArchive);
+    expect(wrongArchive.calls).toHaveLength(1);
+    const changed = await runVerifier({ reviewEnvironment: (digest) => environment(digest, "2") });
+    expectRejected(changed);
+    expect(changed.calls.some((call) => call.includes("/attempts/"))).toBe(false);
+  });
+
+  it("feeds a reviewed attempt into archive verification and rejects a different successful stamp", async () => {
+    const source = packageFixture();
+    const { actual: _actual, ...review } = source.observation;
+    const selectors = reviewedReleaseSelectors(reviewReleaseManifest(review, source.policy, source.now));
+    const matching = await runVerifier({ env: { PREFLIGHT_APPROVED_ATTEMPT: selectors.attempt } });
+    expect(matching.status, matching.stderr).toBe(0);
+    const changed = await runVerifier({ evidence: { run_attempt: "2" }, attemptRoute: "2", env: { PREFLIGHT_APPROVED_ATTEMPT: selectors.attempt } });
+    expectRejected(changed);
+    expect(changed.calls.some((call) => call.includes("/attempts/"))).toBe(false);
+  });
+
+  it.each([
+    ["archive", { PREFLIGHT_MAX_ARCHIVE_BYTES: "1", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: "100" }],
+    ["expanded", { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "1", PREFLIGHT_MAX_MEMBERS: "100" }],
+    ["members", { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: "2" }],
+    ["incomplete limits", { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000" }]
+  ])("rejects an exceeded or invalid %s resource bound", async (_name, env) => {
+    expectRejected(await runVerifier({ env }));
+  });
+
+  it("rejects an oversized provider metadata response before downloading the archive", async () => {
+    const result = await runVerifier({ metadataText: " ".repeat(1024 * 1024 + 1) });
+    expectRejected(result);
+    expect(result.stderr).toContain("Provider response exceeds bound.");
+    expect(result.calls).toHaveLength(1);
+  });
+
+  it("rejects duplicate keys in provider artifact metadata", async () => {
+    const result = await runVerifier({ metadataText: (digest) => `{"id":202,"id":202,"name":"release-package","expired":false,"digest":"sha256:${digest}","workflow_run":{"id":101,"repository_id":42,"head_repository_id":42,"head_sha":"${platformHeadSha}"}}` });
+    expectRejected(result);
+    expect(result.calls).toHaveLength(1);
+  });
+
+  it("accepts a package at the exact member-count bound", async () => {
+    const result = await runVerifier({ env: { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: "3" } });
+    expect(result.status, result.stderr).toBe(0);
+  });
+  it.each(["0", "01", "-1", "1e3", "10001"])("rejects invalid member limit %j before provider access", async (value) => {
+    const result = await runVerifier({ env: { PREFLIGHT_MAX_ARCHIVE_BYTES: "100000", PREFLIGHT_MAX_EXPANDED_BYTES: "100000", PREFLIGHT_MAX_MEMBERS: value } });
+    expectRejected(result);
+    expect(result.calls).toEqual([]);
+  });
+
+  it("accepts the independently approved attempt matching the archive stamp", async () => {
+    const result = await runVerifier({ env: { PREFLIGHT_APPROVED_ATTEMPT: "1" } });
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it.each(["", "0", "01", "+1", "1.0", " 1"])("rejects malformed approved attempt %j before provider access", async (value) => {
+    const result = await runVerifier({ env: { PREFLIGHT_APPROVED_ATTEMPT: value } });
+    expectRejected(result);
+    expect(result.calls).toEqual([]);
+  });
+
+  it("rejects an archive whose stamped attempt differs from the independently approved attempt", async () => {
+    const result = await runVerifier({ env: { PREFLIGHT_APPROVED_ATTEMPT: "2" } });
+    expectRejected(result);
   });
 
   it.each(["", "0", "01", "+1", "-1", "1.0", "1e2", " 1", "1\n"])("rejects noncanonical run selector %j before querying the service", async (value) => {

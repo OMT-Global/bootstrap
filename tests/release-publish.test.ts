@@ -26,7 +26,18 @@ const manifest = normalizeManifest({
 const generated = renderManagedFiles(manifest).find((file) => file.path === ".github/workflows/release-publish-reusable.yml");
 if (!generated) throw new Error("Generated publish reusable is missing");
 
-async function runPublish(shell: string, hook: "missing" | "not-executable" | "directory" | "failed" | "passed", required = true) {
+async function runPublish(
+  shell: string,
+  hook: "missing" | "not-executable" | "directory" | "failed" | "passed",
+  releaseScenario: "absent" | "existing-unverified" | "api-failed" | "create-failed" | "full-page" | "continuation-failed",
+  required = true,
+  retry = false,
+  runtimeFailure = false,
+  releaseIssue = "27",
+  publication = false,
+  uploadExpression?: string,
+  aliases = false
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bootstrap-publish-"));
   try {
     const bin = path.join(directory, "bin");
@@ -34,6 +45,7 @@ async function runPublish(shell: string, hook: "missing" | "not-executable" | "d
     const validationFixture = path.join(directory, "validation");
     const runnerTemp = path.join(directory, "runner");
     await Promise.all([bin, packageFixture, validationFixture, runnerTemp].map((entry) => mkdir(entry)));
+    await mkdir(path.join(directory, "release-target"));
     const events = path.join(directory, "events");
     await writeFile(events, "");
     const sha = "a".repeat(40);
@@ -46,6 +58,7 @@ async function runPublish(shell: string, hook: "missing" | "not-executable" | "d
     const git = path.join(bin, "git");
     await writeFile(git, `#!/bin/bash
 set -euo pipefail
+[[ "\${VERIFY_EXISTING_RELEASE:-false}" != true ]] || printf 'target-git\\n' >> "$EVENT_LOG"
 case "$1" in
   rev-parse) printf '%s\\n' "$FIXTURE_SHA" ;;
   config) ;;
@@ -58,7 +71,21 @@ esac
     await writeFile(gh, `#!/bin/bash
 set -euo pipefail
 case "$1 $2" in
+  "api --paginate")
+    case "$RELEASE_SCENARIO" in
+      absent|create-failed) printf '[[]]\\n' ;;
+      existing-unverified) printf '[[{"id":42,"tag_name":"v1.2.3","draft":false}]]\\n' ;;
+      api-failed) exit 73 ;;
+      full-page|continuation-failed) "${process.execPath}" -e 'console.log(JSON.stringify([Array.from({length:100},(_,i)=>({id:i+1,tag_name:"v0.0."+i,draft:false}))]))' ;;
+    esac
+    ;;
+  "api repos/"*)
+    [[ "$RELEASE_SCENARIO" != "continuation-failed" ]] || exit 76
+    [[ "$RELEASE_SCENARIO" == "full-page" ]] || exit 90
+    printf '[]\\n'
+    ;;
   "run download")
+    [[ "\${VERIFY_EXISTING_RELEASE:-false}" != true ]] || printf 'legacy-download\\n' >> "$EVENT_LOG"
     source="$PACKAGE_FIXTURE"
     [[ "$3" != "102" ]] || source="$VALIDATION_FIXTURE"
     destination=""
@@ -70,11 +97,27 @@ case "$1 $2" in
     cp "$source"/* "$destination"/
     ;;
   "run view") printf 'success\\n' ;;
-  "release view") exit 0 ;;
-  "release create") printf 'release-create\\n' >> "$EVENT_LOG" ;;
+  "release view")
+    case "$RELEASE_SCENARIO" in
+      absent) exit 1 ;;
+      existing-unverified) exit 0 ;;
+      *) echo "Unexpected release scenario" >&2; exit 90 ;;
+    esac
+    ;;
+  "release create") printf 'release-create\\n' >> "$EVENT_LOG"; [[ "$RELEASE_SCENARIO" != "create-failed" ]] || exit 74 ;;
   "release upload") printf 'release-upload\\n' >> "$EVENT_LOG" ;;
   *) echo "Unexpected gh command" >&2; exit 90 ;;
 esac
+`);
+    const node = path.join(bin, "node");
+    await writeFile(node, `#!/bin/bash
+if [[ "$1" == */dist/release-existing-runtime.js ]]; then
+  printf 'approved-retry-runtime\\n' >> "$EVENT_LOG"
+  [[ "\${RUNTIME_FAILURE:-false}" != true ]] || exit 75
+  printf '{"kind":"verified-existing"}\\n'
+else
+  exec "${process.execPath}" "$@"
+fi
 `);
     const publishHook = path.join(directory, "publish.sh");
     await writeFile(publishHook, '#!/bin/bash\nprintf "publish-hook\\n" >> "$EVENT_LOG"\n');
@@ -89,7 +132,7 @@ exit ${hook === "failed" ? 42 : 0}
 `);
       if (hook !== "not-executable") await chmod(postpublishHook, 0o755);
     }
-    await Promise.all([git, gh, publishHook].map((entry) => chmod(entry, 0o755)));
+    await Promise.all([git, gh, node, publishHook].map((entry) => chmod(entry, 0o755)));
     const result = spawnSync("/bin/bash", ["-c", shell], {
       cwd: directory,
       encoding: "utf8",
@@ -97,6 +140,7 @@ exit ${hook === "failed" ? 42 : 0}
       env: {
         PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
         FIXTURE_SHA: sha,
+        RELEASE_SCENARIO: releaseScenario,
         EVENT_LOG: events,
         PACKAGE_FIXTURE: packageFixture,
         VALIDATION_FIXTURE: validationFixture,
@@ -107,8 +151,14 @@ exit ${hook === "failed" ? 42 : 0}
         PREFLIGHT_RUN_ID: "101",
         VALIDATION_RUN_ID: "102",
         GITHUB_REPOSITORY: "acme/release-fixture",
+        GITHUB_WORKSPACE: directory,
+        APPROVED_RUNTIME_ROOT: path.join(directory, ".bootstrap-release-runtime"),
+        VERIFY_EXISTING_RELEASE: String(retry),
+        PUBLISH_NEW_SOURCE_RELEASE: String(publication),
+        PROMOTE_RELEASE_ALIASES: String(aliases),
+        RUNTIME_FAILURE: String(runtimeFailure),
         GITHUB_RUN_ID: "103",
-        RELEASE_ISSUE: "27",
+        RELEASE_ISSUE: releaseIssue,
         REQUIRE_RELEASE_ISSUE: "true",
         REQUIRE_SIGNED_TAG: "false",
         REQUIRE_POSTPUBLISH_VERIFICATION: String(required),
@@ -122,44 +172,122 @@ exit ${hook === "failed" ? 42 : 0}
       }
     });
     if (result.error) throw result.error;
-    return { status: result.status, stderr: result.stderr, events: (await readFile(events, "utf8")).split("\n").filter(Boolean) };
+    const uploadPath = uploadExpression ? new Function("inputs", "runner", "format", `return (${uploadExpression.slice(3, -2)});`)(
+      { verify_existing_release: retry, publish_new_source_release: publication, promote_release_aliases: aliases, artifact_dir: "dist/release" }, { temp: runnerTemp },
+      (template: string, value: string) => template.replace("{0}", value)) : undefined;
+    const uploadedEvidence = uploadPath ? await readFile(path.resolve(directory, uploadPath), "utf8").catch(() => null) : null;
+    return { uploadedEvidence, status: result.status, stderr: result.stderr, events: (await readFile(events, "utf8")).split("\n").filter(Boolean),
+      retryEvidence: await readFile(path.join(runnerTemp, "approved-retry-evidence.json"), "utf8").catch(() => null) };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-for (const [source, shell] of [
-  ["checked-in", publishShell(readFileSync(".github/workflows/release-publish-reusable.yml", "utf8"))],
-  ["generated", publishShell(generated.contents)]
+for (const [source, contents] of [
+  ["checked-in", readFileSync(".github/workflows/release-publish-reusable.yml", "utf8")],
+  ["generated", generated.contents]
 ] as const) {
+  const shell = publishShell(contents);
+  const uploadExpression = YAML.parse(contents).jobs.publish.steps.find((s: any) => s.uses?.startsWith("actions/upload-artifact@")).with.path;
   describe(`${source} release publish recovery boundaries`, () => {
+    it("does not overwrite or promote an existing release without authenticated exact-match evidence", async () => {
+      // The fake gh only reports that a release exists. It supplies no authenticated
+      // release identity, approved asset digests, notes, tag target or latest state.
+      const result = await runPublish(shell, "passed", "existing-unverified");
+      expect(result.events).not.toContain("publish-hook");
+      expect(result.events).not.toContain("release-upload");
+      expect(result.events).not.toContain("release-create");
+      expect(result.events.filter((event) => event.startsWith("postpublish:") || event.startsWith("tag:") || event.startsWith("push:"))).toEqual([]);
+      expect(result.status).not.toBe(0);
+    });
+
+    it("stops before hooks if release inventory is unavailable", async () => {
+      const result = await runPublish(shell, "passed", "api-failed");
+      expect(result.status).not.toBe(0);
+      expect(result.events).toEqual([]);
+    });
+
+    it("stops after an uncertain create without upload fallback or alias promotion", async () => {
+      const result = await runPublish(shell, "passed", "create-failed");
+      expect(result.status).toBe(74);
+      expect(result.events).toEqual(["publish-hook", "release-create"]);
+    });
+
+    it("returns from the approved retry consumer before every hook and publication write", async () => {
+      const result = await runPublish(shell, "passed", "existing-unverified", true, true);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.events).toEqual(["approved-retry-runtime"]);
+      expect(JSON.parse(result.retryEvidence!)).toEqual({ kind: "verified-existing" });
+    });
+    it("keeps failed approved runtime attempts clear of legacy downloads and target operations", async () => {
+      const result = await runPublish(shell, "passed", "existing-unverified", true, true, true);
+      expect(result.status).toBe(75);
+      expect(result.events).toEqual(["approved-retry-runtime"]);
+    });
+    it("rejects an invalid retry release issue before invoking the credential-bearing runtime", async () => {
+      const result = await runPublish(shell, "passed", "existing-unverified", true, true, false, "invalid");
+      expect(result.status).not.toBe(0); expect(result.events).toEqual([]);
+    });
+    it.each([false, true])("dispatches source publication before all legacy operations; failure=%s", async (failure) => {
+      const result = await runPublish(shell, "missing", "api-failed", true, false, failure, "27", true);
+      expect(result.status, result.stderr).toBe(failure ? 75 : 0);
+      expect(result.events).toEqual(["approved-retry-runtime"]);
+    });
+    it("rejects conflicting approved operation selectors before runtime", async () => {
+      const result = await runPublish(shell, "passed", "absent", true, true, false, "27", true);
+      expect(result.status).not.toBe(0); expect(result.events).toEqual([]);
+    });
+    it.each(["publication", "retry", "aliases", "generic"])("uploads the actual shell-produced evidence for %s", async (mode) => {
+      const result = await runPublish(shell, "passed", "absent", true, mode === "retry", false, "27", mode === "publication", uploadExpression, mode === "aliases");
+      expect(result.status, result.stderr).toBe(0); expect(result.uploadedEvidence).not.toBeNull();
+      expect(JSON.parse(result.uploadedEvidence!)).toMatchObject(mode === "generic" ? { publish_run_id: "103" } : { kind: "verified-existing" });
+    });
+    it.each([false,true])("isolates alias runtime before legacy operations; failure=%s",async(failure)=>{
+      const result=await runPublish(shell,"missing","api-failed",true,false,failure,"27",false,undefined,true);
+      expect(result.status,result.stderr).toBe(failure?75:0);expect(result.events).toEqual(["approved-retry-runtime"]);
+    });
+    it("rejects conflicting alias and publication selectors before runtime",async()=>{
+      const result=await runPublish(shell,"passed","absent",true,false,false,"27",true,undefined,true);
+      expect(result.status).not.toBe(0);expect(result.events).toEqual([]);
+    });
+    it("accepts an absent tag after a full page and verified terminal continuation", async () => {
+      const result = await runPublish(shell, "passed", "full-page");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.events.filter((event) => event.startsWith("release-"))).toEqual(["release-create"]);
+    });
+    it("blocks before hooks when a full-page continuation fails", async () => {
+      const result = await runPublish(shell, "passed", "continuation-failed");
+      expect(result.status).not.toBe(0);
+      expect(result.events).toEqual([]);
+    });
+
     it.each(["missing", "not-executable", "directory"] as const)("rejects a %s required postpublish hook before any publication mutation", async (hook) => {
-      const result = await runPublish(shell, hook);
+      const result = await runPublish(shell, hook, "absent");
       expect(result.status).not.toBe(0);
       expect(result.events).toEqual([]);
       expect(result.stderr).toContain("Postpublish verification script is required but missing or not executable.");
     });
 
     it("leaves floating aliases untouched when the postpublish hook fails", async () => {
-      const result = await runPublish(shell, "failed");
-      expect(result.status).toBe(42);
-      expect(result.events).toEqual(["publish-hook", "release-upload", "postpublish:v1.2.3"]);
+      const result = await runPublish(shell, "failed", "absent");
+      expect(result.status, result.stderr).toBe(42);
+      expect(result.events).toEqual(["publish-hook", "release-create", "postpublish:v1.2.3"]);
     });
 
     it("verifies the published release before promoting both floating aliases", async () => {
-      const result = await runPublish(shell, "passed");
-      expect(result.status).toBe(0);
+      const result = await runPublish(shell, "passed", "absent");
+      expect(result.status, result.stderr).toBe(0);
       expect(result.events).toEqual([
-        "publish-hook", "release-upload", "postpublish:v1.2.3",
+        "publish-hook", "release-create", "postpublish:v1.2.3",
         "tag:v1.2", "push:refs/tags/v1.2", "tag:v1", "push:refs/tags/v1"
       ]);
     });
 
     it.each(["missing", "directory"] as const)("continues to allow a %s optional postpublish hook", async (hook) => {
-      const result = await runPublish(shell, hook, false);
-      expect(result.status).toBe(0);
+      const result = await runPublish(shell, hook, "absent", false);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.events).toEqual([
-        "publish-hook", "release-upload",
+        "publish-hook", "release-create",
         "tag:v1.2", "push:refs/tags/v1.2", "tag:v1", "push:refs/tags/v1"
       ]);
     });

@@ -65,6 +65,9 @@ vi.mock("../src/upgrade-host.js", async (original) => {
   };
 });
 
+import { captureReviewedReleaseSource } from "../src/release-reviewed-source.js";
+import { reviewReleaseManifest } from "../src/release-approval.js";
+import { packageFixture } from "./helpers/release-approved-package-fixture.js";
 import { capturePublicGenerator, generatorSnapshot } from "../src/upgrade-generator.js";
 import { copySnapshotFiles } from "../src/upgrade-git.js";
 import { neutralEnvironment, readRegular } from "../src/upgrade-host.js";
@@ -156,6 +159,29 @@ describe("agent-free public generator source capture (real Git; simulated Linux 
     expect(scaffold.calls.every((call) => call.cwd !== data.root && !call.env.SSH_AUTH_SOCK)).toBe(true);
     expect(scaffold.calls.some((call) => call.args.some((arg) => /ssh-keygen|commit-tree|signingkey/.test(arg)))).toBe(false);
     for (const directory of scaffold.directories) await expect(lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("binds a reviewed release to the captured real Git commit and tree", async () => {
+    const data = await fixture();
+    const source = packageFixture();
+    const value = JSON.parse(Buffer.from(source.observation.manifestBytes).toString("utf8"));
+    function fact(tree: string) {
+      value.target = { commit: data.base, tree };
+      function sorted(input: unknown): unknown {
+        if (Array.isArray(input)) return input.map(sorted);
+        if (input && typeof input === "object") return Object.fromEntries(Object.entries(input).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sorted(item)]));
+        return input;
+      }
+      source.observation.manifestBytes = Buffer.from(`${JSON.stringify(sorted(value))}\n`);
+      source.observation.reviews[0]!.body = `APPROVE-RELEASE-SHA256 ${createHash("sha256").update(source.observation.manifestBytes).digest("hex")}`;
+      const { actual: _actual, ...review } = source.observation;
+      return reviewReleaseManifest(review, source.policy, source.now);
+    }
+    const snapshot = await captureReviewedReleaseSource(fact(data.tree), data.root);
+    expect(snapshot.baseCommit).toBe(data.base);
+    expect(snapshot.tree).toBe(data.tree);
+    expect(copySnapshotFiles(snapshot).map((file) => file.path).sort()).toEqual(data.files.map((file) => file.path).sort());
+    await expect(captureReviewedReleaseSource(fact("0".repeat(40)), data.root)).rejects.toThrow("Reviewed release source unavailable.");
   });
 
   it("does not execute original hooks, filters, fsmonitor or ignored build content", async () => {

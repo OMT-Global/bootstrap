@@ -570,6 +570,42 @@ describe("normalizeManifest", () => {
     ]);
   });
 
+  it("preserves explicit label spelling and metadata over a case-variant Flow default", () => {
+    const manifest = normalizeManifest({
+      project: { name: "labeled-repo", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      github: { flowGovernance: true, issueLabels: [
+        { name: "priority:P1", color: "d1242f", description: "Requires independent validation." }
+      ] }
+    });
+    expect(manifest.github.issueLabels.filter((label) => label.name.toLowerCase() === "priority:p1"))
+      .toEqual([{ name: "priority:P1", color: "d1242f", description: "Requires independent validation." }]);
+    expect(manifest.github.issueLabels.some((label) => label.name === "lane:pheidon")).toBe(true);
+  });
+
+  it("rejects explicit labels whose names differ only by case", () => {
+    expect(() => normalizeManifest({
+      project: { name: "labeled-repo", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      github: { issueLabels: [
+        { name: "Risk:High", color: "d1242f", description: "First definition." },
+        { name: "risk:high", color: "111111", description: "Second definition." }
+      ] }
+    })).toThrow("Issue label names must not differ only by case.");
+  });
+
+  it("retains first-entry behavior for exactly duplicated names", () => {
+    const manifest = normalizeManifest({
+      project: { name: "labeled-repo", owner: "acme" },
+      archetype: { kind: "generic-empty" },
+      github: { issueLabels: [
+        { name: "risk:high", color: "d1242f", description: "First definition." },
+        { name: "risk:high", color: "111111", description: "Second definition." }
+      ] }
+    });
+    expect(manifest.github.issueLabels).toEqual([{ name: "risk:high", color: "d1242f", description: "First definition." }]);
+  });
+
   it("normalizes declared repo-specific workflow lanes", () => {
     const manifest = normalizeManifest({
       project: {

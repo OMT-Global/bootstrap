@@ -477,6 +477,21 @@ describe("GitHub provisioning", () => {
     expect(security?.description).toContain("private vulnerability reporting");
   });
 
+  it("plans a single label read for an explicit case-variant Flow override", async () => {
+    const endpoints: string[] = [];
+    const client = publicPlanClient((endpoint) => { endpoints.push(endpoint); return undefined; });
+    const manifest = normalizeManifest({
+      project: { name: "example", owner: "acme", visibility: "public" },
+      archetype: { kind: "node-ts-service" },
+      github: { flowGovernance: true, issueLabels: [
+        { name: "priority:P1", color: "d1242f", description: "Requires independent validation." }
+      ] }
+    });
+    await planGitHub(manifest, client as never);
+    expect(endpoints.filter((endpoint) => endpoint.toLowerCase().endsWith("/labels/priority%3ap1")))
+      .toEqual([`${PUBLIC_REPO_ENDPOINT}/labels/priority%3AP1`]);
+  });
+
   it("reports synchronized public security state from dedicated endpoints", async () => {
     let fixesPaused = false;
     const client = publicPlanClient(

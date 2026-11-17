@@ -7,12 +7,13 @@ const otherHead = "b".repeat(40);
 const now = new Date("2026-11-12T12:00:00.000Z");
 const policy: ApprovalPolicy = { reviewer_id: "111", manifest_path: ".github/release-approvals/pilot.json", max_validity_seconds: 3600 };
 const manifest: ReleaseApprovalManifest = {
-  schema_version: 1,
+  schema_version: 2,
   approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617",
   expires_at: "2026-11-12T12:30:00.000Z",
   action: "publish_new_release",
   repository: { id: "100", full_name: "example/project" },
   tag: "v1.2.3", version: "v1.2.3", channel: "stable",
+  publication: { notes_asset: "notes.md", latest: true },
   target: { commit: "c".repeat(40), tree: "d".repeat(40) },
   preflight: { workflow_path: ".github/workflows/preflight.yml", workflow_id: "122", workflow_commit: "e".repeat(40), run_id: "120", attempt: "1", artifact_id: "121", archive_sha256: "f".repeat(64), requester_id: "112", attempt_actor_id: "114" },
   assets: [{ name: "archive.tar.gz", size: 19, sha256: "1".repeat(64) }, { name: "notes.md", size: 10, sha256: "2".repeat(64) }]
@@ -54,7 +55,7 @@ describe("release approval fact comparison", () => {
     ["rc", "v1.2.3-rc.1"], ["beta", "v1.2.3-beta.1"], ["rc", "v1.2.3-beta.1"], ["beta", "v1.2.3-rc.1"], ["rc", "v1.2.3-rc.01"]
   ] as const)("accepts coherent %s channel and %s version", (channel, tag) => {
     const observation = fixture();
-    const edited = { ...manifest, channel, tag, version: tag };
+    const edited = { ...manifest, channel, tag, version: tag, publication: { ...manifest.publication, latest: channel === "stable" || channel === "maintenance" } };
     observation.manifestBytes = bytes(edited);
     const { approval_id: _approval, expires_at: _expiry, ...actual } = edited;
     observation.actual = actual;
@@ -66,7 +67,7 @@ describe("release approval fact comparison", () => {
     ["rc", "v1.2.3"], ["beta", "v1.2.3"], ["stable", "v01.2.3"], ["stable", "v1.2.3-rc.01"]
   ] as const)("rejects incompatible %s channel and %s version even when approved", (channel, tag) => {
     const observation = fixture();
-    const edited = { ...manifest, channel, tag, version: tag };
+    const edited = { ...manifest, channel, tag, version: tag, publication: { ...manifest.publication, latest: channel === "stable" || channel === "maintenance" } };
     observation.manifestBytes = bytes(edited);
     const { approval_id: _approval, expires_at: _expiry, ...actual } = edited;
     observation.actual = actual;
@@ -74,6 +75,9 @@ describe("release approval fact comparison", () => {
     expect(() => verifyReleaseApproval(observation, policy, now)).toThrow();
   });
   it.each([
+    ["notes selection differs", (o: ApprovalObservation) => { o.actual.publication.notes_asset = "archive.tar.gz"; }],
+    ["latest designation differs", (o: ApprovalObservation) => { o.actual.publication.latest = false; }],
+    ["old manifest version", (o: ApprovalObservation) => { o.manifestBytes = bytes({ ...manifest, schema_version: 1 }); o.reviews[0].body = approvalBody(o.manifestBytes); }],
     ["package digest differs", (o: ApprovalObservation) => { o.actual.preflight.archive_sha256 = "0".repeat(64); }],
     ["asset bytes differ", (o: ApprovalObservation) => { o.actual.assets[0].sha256 = "0".repeat(64); }],
     ["asset missing", (o: ApprovalObservation) => { o.actual.assets.pop(); }],
@@ -104,6 +108,17 @@ describe("release approval fact comparison", () => {
     const observation = fixture();
     mutate(observation);
     expect(() => verifyReleaseApproval(observation, policy, now)).toThrow("Release approval unavailable or invalid.");
+  });
+  it.each([
+    { ...manifest, publication: { notes_asset: "unknown", latest: true } },
+    { ...manifest, channel: "rc" as const, tag: "v1.2.3-rc.1", version: "v1.2.3-rc.1", publication: { notes_asset: "notes.md", latest: true } }
+  ])("rejects invalid approved publication metadata", (edited) => {
+    const observation = fixture();
+    observation.manifestBytes = bytes(edited);
+    const { approval_id: _approval, expires_at: _expiry, ...actual } = edited;
+    observation.actual = actual;
+    observation.reviews[0].body = approvalBody(observation.manifestBytes);
+    expect(() => verifyReleaseApproval(observation, policy, now)).toThrow();
   });
   it("rejects expiry and excessive approval duration", () => {
     const observation = fixture();

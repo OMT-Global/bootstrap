@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { readGitHubApproval } from "../src/github-approval-reader.js";
-import { type ReleaseApprovalManifest, verifyReleaseApproval } from "../src/release-approval.js";
+import { readGitHubApproval, readGitHubPublicationApproval } from "../src/github-approval-reader.js";
+import { type ReleaseApprovalManifest, reviewReleaseManifest, verifyReleaseApproval } from "../src/release-approval.js";
+import { packageFixture } from "./helpers/release-approved-package-fixture.js";
+import { prepareReleaseForPublication } from "../src/release-prepare-publication.js";
+import { approvedReleasePackageMetadata } from "../src/release-approved-package.js";
 
 const head = "a".repeat(40);
 const base = "b".repeat(40);
@@ -13,6 +16,9 @@ const files = [{ filename: path, status: "added", sha: blobSha }];
 const blob = { sha: blobSha, encoding: "base64", content: content.toString("base64"), size: content.length };
 const review = { id: 200, user: { id: 111 }, state: "APPROVED", commit_id: head, submitted_at: "2026-11-12T11:45:00Z", body: "fake approval" };
 
+const publicationRun = { id: 130, run_attempt: 3, workflow_id: 131, path: ".github/workflows/release-publish.yml", event: "workflow_dispatch", status: "in_progress", head_sha: "c".repeat(40), repository: { id: 100 }, head_repository: { id: 100 }, actor: { id: 113, type: "User" }, triggering_actor: { id: 115, type: "User" } };
+const publication = { publicationRunId: "130", publicationAttempt: "3", expectedWorkflowId: "131", expectedWorkflowPath: publicationRun.path, expectedWorkflowCommit: publicationRun.head_sha };
+
 type RequestFn = typeof fetch;
 function harness(overrides?: (kind: string, count: number, url: URL) => unknown) {
   const calls: { url: string; method: string; authorization: string; redirect: string }[] = [];
@@ -21,22 +27,83 @@ function harness(overrides?: (kind: string, count: number, url: URL) => unknown)
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
     calls.push({ url: url.href, method: String(init?.method), authorization: headers.get("authorization") ?? "", redirect: String(init?.redirect) });
-    const kind = url.pathname.endsWith("/files") ? "files" : url.pathname.includes("/git/blobs/") ? "blob" : url.pathname.endsWith("/reviews") ? "reviews" : "pull";
+    const kind = url.pathname.includes("/actions/runs/") ? "run" : url.pathname.endsWith("/files") ? "files" : url.pathname.includes("/git/blobs/") ? "blob" : url.pathname.endsWith("/reviews") ? "reviews" : "pull";
     const count = (counts.get(kind) ?? 0) + 1;
     counts.set(kind, count);
-    const selected = overrides?.(kind, count, url) ?? ({ pull, files, blob, reviews: [review] } as Record<string, unknown>)[kind];
+    const selected = overrides?.(kind, count, url) ?? ({ pull, files, blob, reviews: [review], run: publicationRun } as Record<string, unknown>)[kind];
     if (selected instanceof Response) return selected;
     return new Response(JSON.stringify(selected), { status: 200, headers: { "content-type": "application/json" } });
   };
   return { calls, input: { repository: "example/project", repositoryId: "100", pullNumber: 4, manifestPath: path, token: "fabricated-token", fetchImpl: fake } };
 }
 
+describe("publication attempt approval observations", () => {
+  it("reads the publication actors before and after the exact approval PR", async () => {
+    const h = harness();
+    const result = await readGitHubPublicationApproval({ ...h.input, ...publication });
+    expect(result.publisher_id).toBe("113");
+    expect(result.publisher_attempt_actor_id).toBe("115");
+    expect(result.pull.head).toBe(head);
+    const runs = h.calls.filter((item) => item.url.includes("/actions/runs/"));
+    expect(runs).toHaveLength(2);
+    expect(h.calls[0]!.url).toContain("/actions/runs/130/attempts/3");
+    expect(h.calls.at(-1)!.url).toContain("/actions/runs/130/attempts/3");
+  });
+  it.each([
+    ["run", { id: 999 }], ["attempt", { run_attempt: 4 }], ["workflow ID", { workflow_id: 132 }],
+    ["workflow path", { path: ".github/workflows/other.yml" }], ["workflow source", { head_sha: "e".repeat(40) }],
+    ["event", { event: "push" }], ["run status", { status: "completed" }], ["repository", { repository: { id: 999 } }],
+    ["head repository", { head_repository: { id: 999 } }], ["actor", { actor: { id: 113, type: "Unknown" } }],
+    ["triggering actor", { triggering_actor: null }]
+  ])("rejects wrong publication %s", async (_name, patch) => {
+    const h = harness((kind) => kind === "run" ? { ...publicationRun, ...patch } : undefined);
+    await expect(readGitHubPublicationApproval({ ...h.input, ...publication })).rejects.toThrow("Release approval unavailable or invalid.");
+  });
+  it("rejects changed publication actors during approval observation", async () => {
+    const h = harness((kind, count) => kind === "run" && count === 2 ? { ...publicationRun, triggering_actor: { id: 116, type: "User" } } : undefined);
+    await expect(readGitHubPublicationApproval({ ...h.input, ...publication })).rejects.toThrow();
+  });
+  it("validates run selectors before a provider request", async () => {
+    const h = harness();
+    await expect(readGitHubPublicationApproval({ ...h.input, ...publication, publicationAttempt: "01" })).rejects.toThrow();
+    expect(h.calls).toHaveLength(0);
+  });
+  it("rejects the approver as publication triggering actor even with a valid approval", async () => {
+    const source = packageFixture();
+    const manifest = JSON.parse(Buffer.from(source.observation.manifestBytes).toString("utf8"));
+    manifest.repository.full_name = "example/project";
+    function sorted(value: unknown): unknown {
+      if (Array.isArray(value)) return value.map(sorted);
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sorted(item)]));
+      return value;
+    }
+    const bytes = Buffer.from(`${JSON.stringify(sorted(manifest))}\n`);
+    const sha = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const body = `APPROVE-RELEASE-SHA256 ${createHash("sha256").update(bytes).digest("hex")}`;
+    const h = harness((kind) => kind === "files" ? [{ ...files[0], sha }] : kind === "blob" ? { sha, encoding: "base64", content: bytes.toString("base64"), size: bytes.length } :
+      kind === "reviews" ? [{ ...review, submitted_at: source.observation.reviews[0]!.submitted_at, body }] :
+      kind === "run" ? { ...publicationRun, triggering_actor: { id: 111, type: "User" } } : undefined);
+    const observation = await readGitHubPublicationApproval({ ...h.input, ...publication });
+    expect(() => reviewReleaseManifest(observation, source.policy, source.now)).toThrow();
+    const authorized = harness((kind) => kind === "files" ? [{ ...files[0], sha }] : kind === "blob" ? { sha, encoding: "base64", content: bytes.toString("base64"), size: bytes.length } :
+      kind === "reviews" ? [{ ...review, submitted_at: source.observation.reviews[0]!.submitted_at, body }] : undefined);
+    source.observation.actual.repository.full_name = "example/project";
+    const result = await prepareReleaseForPublication({ policy: source.policy,
+      async readApproval() { return readGitHubPublicationApproval({ ...authorized.input, ...publication }); },
+      async acquire() { return { actual: source.observation.actual, assets: source.assets }; }
+    });
+    expect(approvedReleasePackageMetadata(result).repository).toBe("example/project");
+    expect(authorized.calls.filter((item) => item.url.includes("/actions/runs/"))).toHaveLength(4);
+  });
+});
+
 describe("read-only GitHub approval observations", () => {
   it("feeds an exact digest-bound GitHub approval into the comparator", async () => {
     const manifest: ReleaseApprovalManifest = {
-      schema_version: 1, approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617", expires_at: "2026-11-12T12:30:00.000Z", action: "publish_new_release",
+      schema_version: 2, approval_id: "e665169c-1234-4a62-a1f1-67bd80af3617", expires_at: "2026-11-12T12:30:00.000Z", action: "publish_new_release",
       repository: { id: "100", full_name: "example/project" }, tag: "v1.2.3", version: "v1.2.3", channel: "stable",
-      target: { commit: "c".repeat(40), tree: "d".repeat(40) },
+      publication: { notes_asset: "archive.tar.gz", latest: true },
+  target: { commit: "c".repeat(40), tree: "d".repeat(40) },
       preflight: { workflow_path: ".github/workflows/preflight.yml", workflow_id: "122", workflow_commit: "e".repeat(40), run_id: "120", attempt: "1", artifact_id: "121", archive_sha256: "f".repeat(64), requester_id: "112", attempt_actor_id: "114" },
       assets: [{ name: "archive.tar.gz", size: 19, sha256: "1".repeat(64) }]
     };

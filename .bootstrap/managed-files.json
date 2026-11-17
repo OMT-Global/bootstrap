@@ -38,7 +38,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/full-release-validation-reusable.yml": {
-      "sha256": "0956cb21aa158a4bc955c7694307355335b3e4669fe16d113da91e573c4033e1",
+      "sha256": "5d15ed8da206ed6eeacbc32c3ea18312650b51c1a68a34dc9f065f338675b873",
       "source": "bootstrap"
     },
     ".github/workflows/full-release-validation.yml": {
@@ -50,7 +50,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/pr-fast-ci.yml": {
-      "sha256": "e787165a22218228dd2d6ac1799b64227701f97fc6379031c5dd801026e202f1",
+      "sha256": "6d14e466a2004a7bdd5f62b479719428123ce70d4d14bbaee0de02cb81e4c1f4",
       "source": "bootstrap"
     },
     ".github/workflows/release-postpublish-reusable.yml": {
@@ -62,7 +62,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-preflight-reusable.yml": {
-      "sha256": "77265bf0fe19d66aa991e7bd1474ba1dd1a66166e7b00ae484c87784aead2359",
+      "sha256": "b43821e4402c0cb9c771f642af077c1a4c64ef108fdd5a820a68829996d71e9b",
       "source": "bootstrap"
     },
     ".github/workflows/release-preflight.yml": {
@@ -70,7 +70,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/release-publish-reusable.yml": {
-      "sha256": "7b596dbdee12c8afa48e199763b2c02a2cebb3765826542b402f6b75536f18a0",
+      "sha256": "f5677ba4ad06b12a16a0a049b1936f8d47006ad58ea161ffc41ec94a438d939b",
       "source": "bootstrap"
     },
     ".github/workflows/release-publish.yml": {
@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "3d4a1d1195dca1d737c501e3cedc7ae1af062b4a7bbf93ecf622227596d05235",
+      "sha256": "72eb35a749bc77acbe8b9b363149cfa1f0c79d4a6e6df710e0ffbf0422dec6ce",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {
@@ -146,7 +146,7 @@
       "source": "bootstrap"
     },
     "scripts/ci/check-pr-governance.sh": {
-      "sha256": "296a576f96a19af3785a31a472640bf5e342113f64a366f7ca3292883c46f17c",
+      "sha256": "b483ae0fdd93dffba12d204389d2f428fb4579b6d2a0884e748e63a5b92f8edb",
       "source": "bootstrap"
     },
     "scripts/ci/report-issue-hygiene.mjs": {

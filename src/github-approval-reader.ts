@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ApprovalObservation } from "./release-approval.js";
+import type { ApprovalObservation, ApprovalReviewObservation } from "./release-approval.js";
 import { ReleaseApprovalError } from "./release-approval.js";
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -79,6 +79,7 @@ export async function readGitHubApproval(input: {
   repository: string; repositoryId: string; pullNumber: number; manifestPath: string; token: string; fetchImpl?: typeof fetch;
 }): Promise<Pick<ApprovalObservation, "manifestBytes" | "pull" | "reviews">> {
   try {
+    input = { ...input };
     if (!validTarget(input.repository, input.repositoryId, input.token) || !Number.isSafeInteger(input.pullNumber) || input.pullNumber < 1 ||
       !/^\.github\/release-approvals\/[A-Za-z0-9_-]+\.json$/.test(input.manifestPath)) throw new Error();
     const get = githubReader(input.repository, input.token, input.fetchImpl ?? fetch);
@@ -146,6 +147,7 @@ export async function readGitHubPreflightMetadata(input: {
   limitations: { reusable_workflow: "unverified"; artifact_attempt_binding: "unverified"; archive_bytes: "unverified"; target_source_bytes: "unverified" };
 }> {
   try {
+    input = { ...input };
     if (!validTarget(input.repository, input.repositoryId, input.token) ||
       ![input.runId, input.attempt, input.artifactId].every((value) => /^[1-9][0-9]{0,19}$/.test(value)) ||
       !/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(input.expectedWorkflowPath)) throw new Error();
@@ -187,5 +189,98 @@ export async function readGitHubPreflightMetadata(input: {
     return first;
   } catch {
     throw new ReleaseApprovalError();
+  }
+}
+
+/**
+ * Read approval and the original/triggering actors for one publication attempt.
+ * The repository, workflow, invocation identifiers, token and fetch adapter must
+ * come from trusted policy/runtime. This is a point-in-time authenticated API
+ * observation, not a token-scope, runner-isolation, source, or write authority.
+ */
+export async function readGitHubPublicationApproval(input: {
+  repository: string; repositoryId: string; pullNumber: number; manifestPath: string;
+  publicationRunId: string; publicationAttempt: string; expectedWorkflowId: string;
+  expectedWorkflowPath: string; expectedWorkflowCommit: string; token: string; fetchImpl?: typeof fetch;
+}): Promise<ApprovalReviewObservation> {
+  try {
+    input = { ...input };
+    if (!validTarget(input.repository, input.repositoryId, input.token) ||
+        ![input.publicationRunId, input.publicationAttempt, input.expectedWorkflowId].every((value) => /^[1-9][0-9]{0,19}$/.test(value)) ||
+        !/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(input.expectedWorkflowPath)) throw new Error();
+    const workflowCommit = gitSha(input.expectedWorkflowCommit);
+    const get = githubReader(input.repository, input.token, input.fetchImpl ?? fetch);
+    async function actors(): Promise<{ publisher_id: string; publisher_attempt_actor_id: string }> {
+      const response = await get(`/actions/runs/${input.publicationRunId}/attempts/${input.publicationAttempt}`);
+      if (response.hasNext) throw new Error();
+      const run = object(response.value);
+      if (integerId(run.id) !== input.publicationRunId || integerId(run.run_attempt) !== input.publicationAttempt ||
+          integerId(run.workflow_id) !== input.expectedWorkflowId || run.path !== input.expectedWorkflowPath ||
+          run.event !== "workflow_dispatch" || run.status !== "in_progress" || gitSha(run.head_sha) !== workflowCommit ||
+          integerId(object(run.repository).id) !== input.repositoryId || integerId(object(run.head_repository).id) !== input.repositoryId) throw new Error();
+      const actor = object(run.actor);
+      const trigger = object(run.triggering_actor);
+      if (!["User", "Bot"].includes(String(actor.type)) || !["User", "Bot"].includes(String(trigger.type))) throw new Error();
+      return { publisher_id: integerId(actor.id), publisher_attempt_actor_id: integerId(trigger.id) };
+    }
+    const before = await actors();
+    const approval = await readGitHubApproval({ repository: input.repository, repositoryId: input.repositoryId,
+      pullNumber: input.pullNumber, manifestPath: input.manifestPath, token: input.token,
+      ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
+    const after = await actors();
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error();
+    return { ...approval, ...after };
+  } catch {
+    throw new ReleaseApprovalError();
+  }
+}
+
+/**
+ * Observe an exact tag twice. The token, provider and signing policy are trusted.
+ * This does not establish tag protection, an authorized signer, immutability,
+ * or publication authority. GitHub's signature status is provider-reported.
+ */
+export async function readGitHubExactTag(input: {
+  repository: string; repositoryId: string; tag: string; expectedCommit: string;
+  requireSigned: boolean; token: string; fetchImpl?: typeof fetch;
+}): Promise<Readonly<{ repositoryId: string; tag: string; objectId: string; objectType: "tag" | "commit"; commit: string; githubSignature: "valid" | "not-required" }>> {
+  try {
+    input = { ...input };
+    if (!validTarget(input.repository, input.repositoryId, input.token) || typeof input.requireSigned !== "boolean" ||
+        !/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:rc|beta)\.[0-9]+)?$/.test(input.tag) || input.tag.length > 240) throw new Error();
+    const expectedCommit = gitSha(input.expectedCommit);
+    const get = githubReader(input.repository, input.token, input.fetchImpl ?? fetch);
+    async function one(path: string): Promise<ObjectValue> {
+      const result = await get(path);
+      if (result.hasNext) throw new Error();
+      return object(result.value);
+    }
+    async function observe() {
+      const repo = await one("");
+      if (integerId(repo.id) !== input.repositoryId || repo.full_name !== input.repository || repo.private !== false) throw new Error();
+      const ref = await one(`/git/ref/tags/${input.tag}`);
+      const target = object(ref.object);
+      if (ref.ref !== `refs/tags/${input.tag}` || !["commit", "tag"].includes(String(target.type))) throw new Error();
+      const objectId = gitSha(target.sha);
+      const objectType = target.type as "commit" | "tag";
+      let commit = objectId;
+      let githubSignature: "valid" | "not-required" = "not-required";
+      if (objectType === "tag") {
+        const tagObject = await one(`/git/tags/${objectId}`);
+        const nested = object(tagObject.object);
+        if (gitSha(tagObject.sha) !== objectId || tagObject.tag !== input.tag || nested.type !== "commit") throw new Error();
+        commit = gitSha(nested.sha);
+        const verification = object(tagObject.verification);
+        if (verification.verified === true && verification.reason === "valid" && typeof verification.signature === "string" && verification.signature.length > 0 &&
+            typeof verification.payload === "string" && verification.payload.length > 0) githubSignature = "valid";
+      }
+      if (commit !== expectedCommit || (input.requireSigned && githubSignature !== "valid")) throw new Error();
+      return { repositoryId: input.repositoryId, tag: input.tag, objectId, objectType, commit, githubSignature };
+    }
+    const first = await observe();
+    if (JSON.stringify(first) !== JSON.stringify(await observe())) throw new Error();
+    return Object.freeze(first);
+  } catch {
+    throw new Error("Exact GitHub tag unavailable.");
   }
 }

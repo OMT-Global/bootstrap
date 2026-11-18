@@ -73,7 +73,7 @@ jobs:
           : >"$ARTIFACT_DIR/SHA256SUMS"
           find "$ARTIFACT_DIR" -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-evidence.json ! -name validation-evidence.json -print0 | sort -z | xargs -0 shasum -a 256 >>"$ARTIFACT_DIR/SHA256SUMS"
           cat >"$ARTIFACT_DIR/release-evidence.json" <<JSON
-          {"schema_version":1,"repo":"${GITHUB_REPOSITORY}","version":"${VERSION}","channel":"${CHANNEL}","target_ref":"${TARGET_REF}","target_sha":"${target_sha}","release_issue":"${RELEASE_ISSUE}","preflight_run_id":"${GITHUB_RUN_ID}","checks":{"prep":"${prep_status}","preflight":"${preflight_status}","build":"${build_status}"}}
+          {"schema_version":1,"repo":"${GITHUB_REPOSITORY}","version":"${VERSION}","channel":"${CHANNEL}","target_ref":"${TARGET_REF}","target_sha":"${target_sha}","release_issue":"${RELEASE_ISSUE}","preflight_run_id":"${GITHUB_RUN_ID}","run_attempt":"${GITHUB_RUN_ATTEMPT}","checks":{"prep":"${prep_status}","preflight":"${preflight_status}","build":"${build_status}"}}
           JSON
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

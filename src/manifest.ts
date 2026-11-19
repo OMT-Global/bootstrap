@@ -537,6 +537,9 @@ const manifestSchema = z.object({
       reusableWorkflowRepo: z.string().min(1).optional(),
       reusableWorkflowRef: z.string().min(1).optional(),
       postpublishRequiresPreflight: z.boolean().optional(),
+      approvedRetry: z.boolean().optional(),
+      approvedPublication: z.boolean().optional(),
+      approvedAliases: z.boolean().optional(),
       changelog: releaseChangelogSchema.optional(),
       versions: z.array(releaseVersionSchema).optional(),
       artifacts: releaseArtifactSchema.optional(),
@@ -635,12 +638,22 @@ function normalizeIssueLabels(
   labels: z.input<typeof issueLabelSchema>[] | undefined,
   flowGovernance: boolean
 ): IssueLabelConfig[] {
+  const explicitNames = new Map<string, string>();
+  for (const label of labels ?? []) {
+    const name = label.name.trim();
+    const key = name.toLowerCase();
+    const existing = explicitNames.get(key);
+    if (existing !== undefined && existing !== name) {
+      throw new Error("Issue label names must not differ only by case.");
+    }
+    explicitNames.set(key, name);
+  }
   const base = labels ?? DEFAULT_ISSUE_LABELS;
   const merged = flowGovernance ? [...base, ...DEFAULT_FLOW_LABELS] : base;
   const seen = new Set<string>();
   return merged
     .filter((label) => {
-      const name = label.name.trim();
+      const name = label.name.trim().toLowerCase();
       if (seen.has(name)) return false;
       seen.add(name);
       return true;
@@ -1046,6 +1059,9 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
       ...(parsed.release?.postpublishRequiresPreflight !== undefined
         ? { postpublishRequiresPreflight: parsed.release.postpublishRequiresPreflight }
         : {}),
+      ...(parsed.release?.approvedRetry !== undefined ? { approvedRetry: parsed.release.approvedRetry } : {}),
+      ...(parsed.release?.approvedPublication !== undefined ? { approvedPublication: parsed.release.approvedPublication } : {}),
+      ...(parsed.release?.approvedAliases !== undefined ? { approvedAliases: parsed.release.approvedAliases } : {}),
       changelog: {
         enabled: parsed.release?.changelog?.enabled ?? true,
         mode: parsed.release?.changelog?.mode ?? "github-generated-notes",

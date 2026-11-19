@@ -103,6 +103,6 @@ describe("standalone postpublish preflight contract", () => {
     expect(verify.env.PREFLIGHT_RUN_ID).toBe("${{ inputs.preflight_run_id }}");
     expect(spawnSync("bash", ["-n"], { input: verify.run }).status).toBe(0);
     const publish = YAML.parse(files.get(".github/workflows/release-publish-reusable.yml")!);
-    expect(publish.jobs.publish.steps[1].env.PREFLIGHT_RUN_ID).toBe("${{ inputs.preflight_run_id }}");
+    expect(publish.jobs.publish.steps.find((step: { name?: string }) => step.name === "Publish proven release artifact").env.PREFLIGHT_RUN_ID).toBe("${{ inputs.preflight_run_id }}");
   });
 });

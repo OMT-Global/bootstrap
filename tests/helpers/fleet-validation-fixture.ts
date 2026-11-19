@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { expect, vi } from "vitest";
 
 import { normalizeManifest, stringifyManifest } from "../../src/manifest.js";
@@ -70,7 +71,7 @@ class PublicFixture {
   }
 }
 export async function fixture(operator: { home: string; fixture: string }, options: { projectManifest?: boolean; drift?: boolean; modeDrift?: boolean; version?: string; canonicalization?: "sorted-utf16-v1"; state?: boolean } = {}) {
-  const directory = await mkdtemp(path.join(await realpath(process.cwd()), ".git/info/validation-test-")); roots.push(directory); operator.fixture = directory;
+  const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "bootstrap-validation-test-")); roots.push(directory); operator.fixture = directory;
   const [home, sourceRoot, publisherRoot, empty] = ["home", "source", "publisher", "empty"].map((name) => path.join(directory, name));
   await Promise.all([home, sourceRoot, publisherRoot, empty].map((root) => mkdir(root!))); operator.home = home!;
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_") || key === "EMAIL" || key === "XDG_CONFIG_HOME") vi.stubEnv(key, undefined);

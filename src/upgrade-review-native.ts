@@ -85,6 +85,8 @@ export async function runOwnedNativeReview(input: NativeReviewRequest, policy: R
   const withdraw = () => { failed = true; if (!cancelled) { cancelled = true; try { write({ v: 1, type: "cancel" }); } catch { /* No completion is issued. */ }
     clearTimeout(timer); timer = setTimeout(() => { child.kill("SIGKILL"); }, 30_000); } };
   const frame = (line: Buffer) => {
+    // Keep the cancellation watchdog in force while the owner exits.
+    if (cancelled) return;
     const value = JSON.parse(decode(line)) as Record<string, unknown>;
     demand(Buffer.from(JSON.stringify(value)).equals(line) && value.v === 1);
     if (value.type === "started") { demand(!helperPid && Object.keys(value).join(",") === "v,type,helper" && Number.isSafeInteger(value.helper) && Number(value.helper) > 0);

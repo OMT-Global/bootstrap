@@ -158,6 +158,31 @@ describe("fixed native completion with fabricated child/report boundaries", () =
     await expect(begin(request)).rejects.toThrow(); controller.abort(); expect(child.control.writes.at(-1)).toEqual({ v: 1, type: "cancel" });
     child.close(1); await expect(result).rejects.toThrow();
   });
+  it.each(["started", "drained"])("keeps the cancellation deadline after a late %s frame", async (type) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const controller = new AbortController();
+      const result = begin({ ...source(), signal: controller.signal });
+      await flush();
+      const child = children[0]!;
+      const started = { v: 1, type: "started", helper: 456 };
+      if (type === "drained") send(child, started);
+
+      controller.abort();
+      vi.advanceTimersByTime(1);
+      send(child, type === "started" ? started : { v: 1, type: "drained", exit: 0 });
+      vi.advanceTimersByTime(29_998);
+      expect(child.kill).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+      expect(child.control.writes.slice(1)).toEqual([{ v: 1, type: "cancel" }]);
+      child.close(1);
+      await expect(result).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("rejects changed helper inputs, changed reports and revoked runtime after completion", async () => {
     const result = begin(); await flush(); finish(children[0]!); const completed = await result;
     const reportBytes = files.get(`${root}/output/review.json`)!; files.set(`${root}/output/review.json`, Buffer.from("{}"));

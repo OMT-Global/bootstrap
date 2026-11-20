@@ -27,7 +27,7 @@ async function fixture(): Promise<string> {
 }
 
 describe("Bootstrap MIT adoption and factual dependency notices", () => {
-  it("projects the existing license byte-identically with ten factual source notices and no writes", async () => {
+  it("projects the existing license byte-identically with the expected notices and no writes", async () => {
     const manifest = await loadManifest("project.bootstrap.yaml");
     expect(manifest.license).toBeDefined();
     const directory = await fixture();
@@ -41,9 +41,25 @@ describe("Bootstrap MIT adoption and factual dependency notices", () => {
     expect(Buffer.from(license!.contents)).toEqual(original);
     expect(sha256(license!.contents)).toBe(licenseHash);
     expect(sha256(await readFile("legal/mit-license.txt"))).toBe(templateHash);
-    expect(manifest.license!.thirdPartyNotices).toHaveLength(10);
+    const expectedNotices = [
+      "AWS SDK and Smithy runtime dependencies",
+      "Flow Public Repository Standard policy snapshot",
+      "Flow dogfood manifest fixture",
+      "bowser@2.15.0",
+      "commander@14.0.3",
+      "commonmark@0.31.2",
+      "entities@3.0.1",
+      "jose@6.2.17",
+      "mdurl@1.0.1",
+      "minimist@1.2.8",
+      "spdx-license-list@6.12.0",
+      "tslib@2.9.1",
+      "yaml@2.9.1",
+      "zod@4.6.7"
+    ];
+    expect(manifest.license!.thirdPartyNotices.map((entry) => entry.name).sort()).toEqual(expectedNotices);
     expect(manifest.license!.transition?.approvedBy).toContain("jmcte");
-    expect(notices!.contents.match(/^## /gm)).toHaveLength(10);
+    expect(notices!.contents.match(/^## .+$/gm)).toEqual(expectedNotices.map((name) => `## ${name}`));
     for (const entry of manifest.license!.thirdPartyNotices) {
       expect(notices!.contents).toContain(entry.name);
       expect(notices!.contents).toContain(entry.notice);

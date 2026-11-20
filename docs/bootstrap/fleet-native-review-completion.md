@@ -1,0 +1,21 @@
+# Fleet native review completion
+
+This source component implements the fixed native completion producer selected by ADR-0062. Its consumer is `reviewCheckedCandidate`: that consumer owns the signed candidate and workspace, audits both before and after review, and awaits workspace deletion before accepting completion. A `NativeReviewCompletion` alone conveys no candidate or publication authority.
+
+The production profile `fleet-native-sol-high-v1` runs a fresh `gpt-6.1-sol` reviewer with high reasoning, no fallback, and the helper's default tools and web behavior. Its priority threshold is **P3** so any reported finding blocks completion. This is the fleet runtime profile; required source autoreviews elsewhere using P0 remain separate. Author session comes from the trusted controller policy. The owner creates a distinct execution UUID and records the actual helper child PID. The configured reviewer principal is a policy label, not authenticated model-provider or GitHub account identity. Model-family independence remains unproved and the result does not issue GitHub approval.
+
+## Exact compatibility contract
+
+The installed autoreview helper must have SHA-256 `fa51b49fb8e835f314a3dc8a94f01c143222386daee9fd10c6609a4fe5d282f3`. The owner script is separately pinned in the TypeScript source. The producer checks both before launch and before accepting completion; a changed installation blocks. Updating either pin requires source review and compatibility tests, not an automatic fallback.
+
+The package must retain `src/native/upgrade-review-owner.py` beside its normal `src` and `dist` directories. Both source and compiled TypeScript resolve that same script. Shipping `dist` alone is unsupported. The fixed Linux x64, non-root host contract requires trusted `/usr/bin/python3`, the existing delegated cgroup-v2 owner path `/bootstrap-g04-v1/u<uid>`, permitted control/run subtrees, and the owner script's mount, UID, capability, descriptor and resource checks. Unsupported hosts fail closed.
+
+The child receives fixed environment values plus the existing `CODEX_HOME`, `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` metadata required by the approved native profile. API-key and proxy environment configurations are rejected. No signing or App key/token, SSH agent or target-defined executable is passed. This source does not install credentials, configure cgroups or qualify an existing credential broker.
+
+## Result and lifecycle
+
+The owner accepts only the ordered version-1 control exchange and verified child exit after complete descendant/cgroup settlement. It discards human/log streams. Report and status files are bounded to 131,072 bytes each, strict UTF-8 JSON, at most 8,192 nodes and depth 16. The pinned helper's branch mode may split large prompts into multiple review passes. Both its single-pass report and multi-pass aggregate are supported: every pass must have a strict clean provider report, an ordered `chunk i/N` label and no findings. The aggregate must match the minimum pass confidence and terminal clean status. Panel, allocation and mixed-source modes are not selected by this profile. Duplicate keys, unknown fields, partial/nonterminal statuses, inconsistent usage, missing files, nonempty findings or any schema mismatch fail. Rejected findings are not imported as trusted evidence. The supported clean-report contract has no findings; it does not supply a suppression list or accept exit zero alone.
+
+The opaque result binds base/candidate commits, owner-selected helper/model/session facts and exact report/status hashes. Report text cannot assert its own identity. `verifyNativeReviewCompletion` rechecks the files, pins, policy, cancellation and original cleanup deadline. After the concrete candidate consumer successfully deletes its owned workspace, `settleNativeReviewCompletion` checks that deadline and policy again and consumes the result once. Cancellation or uncertain cleanup never yields a reviewed candidate.
+
+Tests exercise fabricated child/control/file responses and pure owner-protocol functions, including owned test processes. They do not run a real reviewer, existing credentials, Docker or a delegated cgroup. A successful test run proves source behavior under those fixtures; live native host, broker, model and containment qualification remains required before an authorized operation.

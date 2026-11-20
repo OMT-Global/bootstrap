@@ -18,7 +18,7 @@ release:
   enabled: true
   maturity: governed
   reusableWorkflowRepo: OMT-Global/bootstrap
-  reusableWorkflowRef: 9b77eaaa3ed9ad2da35ec1af9fe13d1563c7cce4
+  reusableWorkflowRef: 4062ce00d678555fd6c711c0df9f0d28ec6627ab
 ```
 
 Governed repos receive thin caller workflows for preflight, validation, publish, and postpublish verification. Package-specific behavior belongs in hook scripts under `scripts/release/`.

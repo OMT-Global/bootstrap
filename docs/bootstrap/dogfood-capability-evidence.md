@@ -2,6 +2,26 @@
 
 Governing issue: [#63](https://github.com/OMT-Global/bootstrap/issues/63).
 
+## Verified dogfood outcomes on 2026-11-17
+
+The comparison used published Bootstrap `4062ce0` and Flow `a7d8292` with read-only GitHub observations. Both manifests resolved their pinned Flow policy bundle at the immutable Flow `v1.0.1` release. Conformance passed the action and reusable-workflow pin checks on those trees. [Bootstrap source](https://github.com/OMT-Global/bootstrap/tree/4062ce00d678555fd6c711c0df9f0d28ec6627ab), [Flow source](https://github.com/OMT-Global/flow/tree/a7d82922dceee4bd356237a21b189f94ce9edfb4), [immutable Flow release](https://github.com/OMT-Global/flow/releases/tag/v1.0.1)
+
+| Check | Bootstrap | Flow |
+| --- | --- | --- |
+| Conformance | 17 passed, one warning, zero blockers | 18 passed, one warning, zero blockers |
+| Managed outputs in the repository plan | 50 unchanged | 5 unchanged |
+| Manifest-declared label names, colors, and descriptions | 30 matched | 65 matched |
+| Compared repository, branch, and environment settings | 36 matched | 31 matched |
+| Dependency graph packages and dependency review activation | 121 packages, enabled | 7 packages, enabled |
+
+The settings comparison covered repository features and merge methods, the required status check and approval settings, linear history, and environment reviewer and branch rules. The initial comparison found Bootstrap's missing `release-publish` environment. After authorized configuration, GitHub confirmed the two eligible reviewers, prevention of self-review, the protected-branch restriction, and disabled administrator bypass. The approved stage and production protections also matched both manifests. [Bootstrap branch protection](https://api.github.com/repos/OMT-Global/bootstrap/branches/main/protection), [Flow branch protection](https://api.github.com/repos/OMT-Global/flow/branches/main/protection), [Bootstrap environments](https://api.github.com/repos/OMT-Global/bootstrap/environments), [Flow environments](https://api.github.com/repos/OMT-Global/flow/environments)
+
+All seven observed public security controls passed conformance in both repositories. Hosted CodeQL succeeded for the configured languages at the inspected commits, and the dependency-review action succeeded in a recorded pull-request run in each repository. The one warning in each conformance report concerned GitHub license recognition. The license API identified MIT and returned the same LICENSE blob for both repositories. [Bootstrap CodeQL and SBOM](https://github.com/OMT-Global/bootstrap/actions/runs/44180346884), [Flow CodeQL](https://github.com/OMT-Global/flow/actions/runs/43779104432), [Bootstrap dependency review](https://github.com/OMT-Global/bootstrap/actions/runs/43779318324), [Flow dependency review](https://github.com/OMT-Global/flow/actions/runs/43160345303), [Bootstrap license](https://api.github.com/repos/OMT-Global/bootstrap/license), [Flow license](https://api.github.com/repos/OMT-Global/flow/license)
+
+Bootstrap extended validation and attestation verification passed at the inspected commit. Flow workflow lint, extended validation, and its CI Gate passed at the inspected commit. Bootstrap's first immutable release and evidence from the exact published package remain open under the release pilot. [Bootstrap validation](https://github.com/OMT-Global/bootstrap/actions/runs/44180346983), [Bootstrap attestation](https://github.com/OMT-Global/bootstrap/actions/runs/44180346959), [Flow CI](https://github.com/OMT-Global/flow/actions/runs/43779104390), [release pilot #27](https://github.com/OMT-Global/bootstrap/issues/27)
+
+## 2026-11-08 baseline
+
 Captured 2026-11-08 at 15:24–15:27 UTC (09:24–09:27 America/Chicago) through authenticated, read-only GitHub REST and GraphQL requests. Both repositories are public and use `main`. This is a point-in-time observation, not approval to change settings or a claim that the dogfood migration is complete. No alert contents, credentials, or secret values were requested.
 
 ## Seven public security controls

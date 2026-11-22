@@ -36,7 +36,7 @@ function workflows(release: Record<string, unknown> = {}) {
 
 describe("standalone postpublish preflight contract", () => {
   it("forwards the selected run ID to the exact reusable workflow pinned by Bootstrap", () => {
-    const pin = "9b77eaaa3ed9ad2da35ec1af9fe13d1563c7cce4";
+    const pin = "4062ce00d678555fd6c711c0df9f0d28ec6627ab";
     expect(createHash("sha256").update(pinnedReusableBytes).digest("hex")).toBe("2de097c9a5482995d4ea02039565e8c5f56d00b2cc4be46c52df576e9f6bb4fb");
     const reusable = YAML.parse(pinnedReusableBytes);
     const caller = YAML.parse(readFileSync(new URL("../.github/workflows/release-postpublish.yml", import.meta.url), "utf8"));

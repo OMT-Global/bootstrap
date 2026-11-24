@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { trustedFixtureDirectory } from "./helpers/trusted-fixture-directory.js";
 
 const operator = vi.hoisted(() => ({ home: "" }));
 vi.mock("node:os", async (original) => {
@@ -127,7 +128,7 @@ class PublicFixture {
   }
 }
 async function fixture(options: { policyVersion?: string; managed?: boolean; bundlePath?: string; explicitClass?: boolean; targetRawPrefix?: string; targetRawSuffix?: string; canonicalization?: "sorted-utf16-v1" } = {}) {
-  const directory = await mkdtemp(path.join(await realpath(path.join(process.cwd(), "node_modules")), ".policy-observation-"));
+  const directory = await trustedFixtureDirectory(".policy-observation-");
   roots.push(directory);
   const home = path.join(directory, "home"); const sourceRoot = path.join(directory, "source"); const publisherRoot = path.join(directory, "publisher"); const empty = path.join(directory, "empty");
   await Promise.all([home, sourceRoot, publisherRoot, empty].map((root) => mkdir(root)));

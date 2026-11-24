@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -70,7 +70,8 @@ import { reviewReleaseManifest } from "../src/release-approval.js";
 import { packageFixture } from "./helpers/release-approved-package-fixture.js";
 import { capturePublicGenerator, generatorSnapshot } from "../src/upgrade-generator.js";
 import { copySnapshotFiles } from "../src/upgrade-git.js";
-import { neutralEnvironment, readRegular } from "../src/upgrade-host.js";
+import { neutralEnvironment } from "../src/upgrade-host.js";
+import { trustedFixtureDirectory } from "./helpers/trusted-fixture-directory.js";
 
 const roots: string[] = [];
 const blocked = "Governed upgrade host operation is unsupported.";
@@ -78,19 +79,8 @@ function git(root: string, env: NodeJS.ProcessEnv, args: string[], input?: Uint8
   return execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
     "-c", "commit.gpgsign=false", ...args], { cwd: root, env, input, maxBuffer: 2 * 1024 ** 2 });
 }
-async function fixtureDirectory(): Promise<string> {
-  for (const parent of [path.join(process.cwd(), "node_modules"), os.tmpdir()]) {
-    let directory: string | undefined;
-    try {
-      directory = await mkdtemp(path.join(await realpath(parent), ".bootstrap-generator-test-"));
-      const probe = path.join(directory, "probe"); await writeFile(probe, "fixture");
-      await readRegular(probe, 7, true); await rm(probe); roots.push(directory); return directory;
-    } catch { if (directory) await rm(directory, { recursive: true, force: true }); }
-  }
-  throw new Error("Generator fixture requires private writable ancestry.");
-}
 async function fixture(linked = false, nested = false) {
-  const directory = await fixtureDirectory();
+  const directory = await trustedFixtureDirectory(".bootstrap-generator-test-"); roots.push(directory);
   const home = path.join(directory, "home");
   const canonical = path.join(directory, "generator");
   const empty = path.join(directory, "empty");

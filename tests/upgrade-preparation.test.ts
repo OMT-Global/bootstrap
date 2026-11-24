@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -9,7 +10,7 @@ vi.mock("node:os", async (original) => {
   return { ...actual, default: { ...actual, userInfo: () => ({ ...actual.userInfo(), homedir: operator.home }) } };
 });
 // Simulate Linux eligibility/prlimit and trusted ancestry only for this test's
-// disposable fixture below /private/tmp. Git, captures, policy observations and
+// disposable fixture under the system temporary directory. Git, captures, policy observations and
 // current/target generation are real; all HTTP is fabricated.
 vi.mock("../src/upgrade-host.js", async (original) => {
   const actual = await original<typeof import("../src/upgrade-host.js")>();
@@ -87,7 +88,7 @@ class PublicFixture {
   }
 }
 async function fixture(options: { projectManifest?: boolean; drift?: boolean; modeDrift?: boolean; version?: string; canonicalization?: "sorted-utf16-v1"; state?: boolean } = {}) {
-  const directory = await mkdtemp(path.join(await realpath(process.cwd()), ".git/info/preparation-test-")); roots.push(directory); operator.fixture = directory;
+  const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "bootstrap-preparation-test-")); roots.push(directory); operator.fixture = directory;
   const [home, sourceRoot, publisherRoot, empty] = ["home", "source", "publisher", "empty"].map((name) => path.join(directory, name));
   await Promise.all([home, sourceRoot, publisherRoot, empty].map((root) => mkdir(root!))); operator.home = home!;
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_") || key === "EMAIL" || key === "XDG_CONFIG_HOME") vi.stubEnv(key, undefined);

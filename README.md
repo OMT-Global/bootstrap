@@ -55,6 +55,8 @@ Bootstrap records generated-file ownership in [the managed-file sidecar](docs/bo
 
 Run `bootstrap conform --manifest ./project.bootstrap.yaml --target .` for stable, machine-readable contract findings; see the [conformance core guide](docs/bootstrap/conformance.md).
 
+Use the [private repository baseline](docs/bootstrap/private-repository-baseline.md) for private-repo onboarding, merge fallback, and conformance evidence.
+
 ## Project Identity
 
 - Product name: `Bootstrap`

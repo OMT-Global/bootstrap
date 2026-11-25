@@ -32,6 +32,9 @@ import { runPublicInventory, collectPublicFleetInventory } from "../src/upgrade-
 import { createOwnershipSidecar } from "../src/state.js";
 import { projectLicensePolicy } from "../src/licensing.js";
 import { observePublicPolicies, POLICY_PUBLISHER, readOwnedPolicyObservation, copyOwnedTargetPolicyBytes } from "../src/upgrade-policy.js";
+import { GOVERNANCE_MARKER } from "../src/upgrade-approval-read.js";
+import { RUNTIME_CONTROLLER } from "../src/upgrade-runtime-policy.js";
+import { runGovernedUpgradeCommand } from "../src/upgrade-runtime.js";
 
 type Json = Record<string, unknown>;
 type Reply = { value: unknown; status?: number; headers?: Record<string, string>; url?: string };
@@ -42,6 +45,9 @@ const targetRef = "refs/tags/v1.2.3";
 const workflowPath = ".github/workflows/extended-validation.yml";
 const started = "2026-11-09T00:00:00Z";
 const ended = "2026-11-09T00:01:00Z";
+const governanceActor = { id: 501, login: "fixture-operator", type: "User" };
+const governanceIssue = 62;
+const cohortComment = 601;
 function git(root: string, env: NodeJS.ProcessEnv, args: string[], input?: string | Uint8Array): Buffer {
   return execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false", ...args],
     { cwd: root, env, input, maxBuffer: 4 * 1024 ** 2 });
@@ -74,18 +80,20 @@ class Objects {
 class PublicFixture {
   calls: { url: string; init: RequestInit }[] = [];
   change?: (url: URL, reply: Reply, call: number) => Reply;
-  constructor(readonly source: Objects, readonly publisher: Objects, readonly head: string, readonly oldPolicy: string, readonly newPolicy: string) {
+  cohort?: Json;
+  constructor(readonly source: Objects, readonly publisher: Objects, readonly head: string, readonly oldPolicy: string,
+    readonly newPolicy: string, readonly identity = { repository, id: 42 }) {
     vi.stubGlobal("fetch", vi.fn(this.fetch.bind(this)));
   }
   metadata(publisher = false): Json {
-    const name = publisher ? "flow" : "bootstrap-fixture";
-    return { id: publisher ? POLICY_PUBLISHER.id : 42, name, full_name: publisher ? POLICY_PUBLISHER.repository : repository,
+    const identity = publisher ? POLICY_PUBLISHER : this.identity;
+    return { id: identity.id, name: identity.repository.split("/")[1], full_name: identity.repository,
       owner: { login: "OMT-Global", id: 7, type: "Organization" }, private: false, visibility: "public", default_branch: "main", fork: false, archived: false, disabled: false };
   }
   run(): Json {
     return { id: 100, run_attempt: 1, check_suite_id: 200, workflow_id: 300, path: workflowPath, name: "Extended Validation",
       head_sha: this.head, head_branch: "main", event: "schedule", status: "completed", conclusion: "success", referenced_workflows: [],
-      repository: this.metadata(), head_repository: this.metadata(), html_url: `https://github.com/${repository}/actions/runs/100`,
+      repository: this.metadata(), head_repository: this.metadata(), html_url: `https://github.com/${this.identity.repository}/actions/runs/100`,
       created_at: started, run_started_at: started, updated_at: ended };
   }
   jobs(): Json[] {
@@ -94,7 +102,7 @@ class PublicFixture {
       ["Fast Checks", "Run fast checks"], ["Extended Checks", "Run extended validation"],
       ["Validate Secrets", "Scan repository for secret patterns"], ["Extended Validation Gate", "Check extended validation jobs"]
     ].map(([name, step], index) => ({ id: 400 + index, run_id: 100, run_attempt: 1, head_sha: this.head, head_branch: "main", workflow_name: "Extended Validation", name,
-      html_url: `https://github.com/${repository}/actions/runs/100/job/${400 + index}`, check_run_url: `https://api.github.com/repos/${repository}/check-runs/${500 + index}`,
+      html_url: `https://github.com/${this.identity.repository}/actions/runs/100/job/${400 + index}`, check_run_url: `https://api.github.com/repos/${this.identity.repository}/check-runs/${500 + index}`,
       status: "completed", conclusion: "success", started_at: started, completed_at: ended,
       steps: [
         ...(index > 0 && index < 4 ? [{ number: 1, name: "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262", status: "completed", conclusion: "success", started_at: started, completed_at: ended }] : []),
@@ -110,7 +118,11 @@ class PublicFixture {
     let value: unknown;
     if (parts[1] === "orgs") value = [this.metadata(), this.metadata(true)];
     else if (parts.length === 4) value = this.metadata(publisher);
-    else if (parts[4] === "git" && parts[5] === "ref") {
+    else if (this.cohort && url.pathname === "/repos/OMT-Global/bootstrap/issues/62") {
+      value = { id: 602, number: governanceIssue, html_url: "https://github.com/OMT-Global/bootstrap/issues/62", comments: 1 };
+    } else if (this.cohort && url.pathname === "/repos/OMT-Global/bootstrap/issues/62/comments") {
+      value = [this.cohort];
+    } else if (parts[4] === "git" && parts[5] === "ref") {
       const ref = `refs/${parts.slice(6).map(decodeURIComponent).join("/")}`;
       const sha = !publisher ? this.head : ref === sourceRef ? this.oldPolicy : this.newPolicy;
       value = { ref, object: { type: "commit", sha } };
@@ -131,7 +143,7 @@ class PublicFixture {
     return response;
   }
 }
-async function fixture(options: { policyVersion?: string; managed?: boolean; bundlePath?: string; explicitClass?: boolean; targetRawPrefix?: string; targetRawSuffix?: string; canonicalization?: "sorted-utf16-v1"; legal?: boolean; altered?: string; missing?: string; extraClaim?: boolean; alternate?: boolean; exceptions?: number; projectLegal?: boolean } = {}) {
+async function fixture(options: { policyVersion?: string; managed?: boolean; bundlePath?: string; explicitClass?: boolean; targetRawPrefix?: string; targetRawSuffix?: string; canonicalization?: "sorted-utf16-v1"; legal?: boolean; altered?: string; missing?: string; extraClaim?: boolean; alternate?: boolean; exceptions?: number; projectLegal?: boolean; governed?: boolean; manifestTail?: string } = {}) {
   const directory = await trustedFixtureDirectory(".policy-observation-");
   roots.push(directory);
   const home = path.join(directory, "home"); const sourceRoot = path.join(directory, "source"); const publisherRoot = path.join(directory, "publisher"); const empty = path.join(directory, "empty");
@@ -148,7 +160,13 @@ async function fixture(options: { policyVersion?: string; managed?: boolean; bun
   const bundlePath = options.bundlePath ?? "policy/flow-public-standard.json";
   const template = "SPDX-License-Identifier: {{spdx_identifier}}\nCopyright {{copyright_years}} {{copyright_holder}}\nFabricated MIT fixture terms.\n";
   const license = options.legal ? { mode: "spdx" as const, identifier: "MIT", holder: "Fabricated Holder", holderVerification: "fixture-entity", years: "2026", template: { path: "legal/MIT.txt", sha256: createHash("sha256").update(template).digest("hex"), approval: "fixture-approval", spdxIdentifier: "MIT" }, thirdPartyNotices: [] } : undefined;
-  const raw = { version: 1 as const, project: { owner: "OMT-Global", name: "bootstrap-fixture", visibility: "public" as const, defaultBranch: "main" }, archetype: { kind: "generic-empty" as const },
+  const identity = options.governed ? RUNTIME_CONTROLLER : { repository, id: 42 };
+  const raw = { version: 1 as const, project: { owner: "OMT-Global", name: identity.repository.split("/")[1]!, visibility: "public" as const, defaultBranch: "main" }, archetype: { kind: "generic-empty" as const },
+    ...(options.governed ? { fleetRuntime: {
+      schemaVersion: 1 as const, organization: "OMT-Global", repositories: [identity],
+      governance: { ...identity, issue: governanceIssue },
+      actors: [{ id: governanceActor.id, login: governanceActor.login, roles: ["cohort" as const] }]
+    } } : {}),
     repo: { ...(options.explicitClass === false ? {} : { class: "cli" as const }), managedPaths: options.managed === false ? ["LICENSE"] : ["project.bootstrap.yaml", workflowPath, "README.md"] },
     ci: { codeqlLanguages: ["javascript-typescript" as const] }, ...(license ? { license } : {}),
     exceptions: Array.from({ length: options.exceptions ?? 0 }, (_, index) => ({ id: `EX-${index + 1}`, policy: "PRS-CI-001", scope: "fixture", rationale: "Fabricated exception", approvedBy: "fixture-reviewer", issue: "https://github.com/OMT-Global/bootstrap/issues/62", permanent: false, expiresAt: "2099-01-01T00:00:00Z" })),
@@ -160,21 +178,25 @@ async function fixture(options: { policyVersion?: string; managed?: boolean; bun
   if (license) { await mkdir(path.join(sourceRoot, "legal")); await writeFile(path.join(sourceRoot, license.template.path), template); }
   const legal = await projectLicensePolicy(manifest, sourceRoot);
   const rendered = [...projection.files, ...(legal?.files ?? [])];
+  if (options.manifestTail) {
+    const manifestFile = rendered.find(({ path }) => path === "project.bootstrap.yaml")!;
+    manifestFile.contents += options.manifestTail;
+  }
   const sidecar = createOwnershipSidecar(manifest, rendered);
   if (options.extraClaim) { const value = JSON.parse(sidecar.contents); value.managedFiles["old-managed.txt"] = { sha256: "0".repeat(64), source: "bootstrap" }; sidecar.contents = JSON.stringify(value); }
   const source = new Objects(sourceRoot, env, new Set(rendered.filter((file) => file.executable).map((file) => file.path))); const publisher = new Objects(publisherRoot, env);
   const oldPolicy = await publisher.commit({ [POLICY_PUBLISHER.bundlePath]: JSON.stringify(bundle, null, 2) + "\n" });
   const newPolicy = await publisher.commit({ [POLICY_PUBLISHER.bundlePath]: `${options.targetRawPrefix ?? ""}${JSON.stringify(targetBundle)}${options.targetRawSuffix ?? ""}` }, oldPolicy);
   const expected = projection.files.find((file) => file.path === workflowPath)?.contents ?? "name: excluded\n";
-  const files = { ...Object.fromEntries([...rendered, sidecar].map((file) => [file.path, file.contents])), [bundlePath]: JSON.stringify(bundle),
+  const files: Record<string, string> = { ...Object.fromEntries([...rendered, sidecar].map((file) => [file.path, file.contents])), [bundlePath]: JSON.stringify(bundle),
     "package-lock.json": '{"lockfileVersion":3}\n', ".gitignore": "node_modules/\ndist/\n", ...(options.alternate ? { "COPYING.txt": "alternate fixture" } : {}), ...(options.projectLegal ? { LICENSE: "Project-owned fixture terms", "THIRD_PARTY_NOTICES.md": "Project-owned fixture notices" } : {}) };
   if (options.altered) files[options.altered] = "unexpected fixture content\n";
   if (options.missing) delete files[options.missing];
   const head = await source.commit(files);
-  const network = new PublicFixture(source, publisher, head, oldPolicy, newPolicy);
+  const network = new PublicFixture(source, publisher, head, oldPolicy, newPolicy, identity);
   const discovery = await discoverPublicManifests("OMT-Global", {});
   expect(discovery.status).toBe("complete");
-  const found = discovery.repositories.find((repo) => repo.repository === repository)!;
+  const found = discovery.repositories.find((repo) => repo.repository === identity.repository)!;
   const generator = await capturePublicGenerator(sourceRoot, head);
   const target = { ref: targetRef, sha256: flowPolicyDigest(targetBundle, options.canonicalization) };
   return { oldPolicy, directory, sourceRoot, source, publisher, network, discovery, found, generator, target, bundle, targetBundle, head, expected };
@@ -192,6 +214,81 @@ async function inventory(data: Awaited<ReturnType<typeof fixture>>) {
   const result = await runPublicInventory(options(data), Readable.from([]));
   return { ...result, report: JSON.parse(result.output), row: JSON.parse(result.output).repositories.find((row: { repository: string }) => row.repository === repository) };
 }
+
+async function governedRequest(manifestTail?: string) {
+  const data = await fixture({ governed: true, policyVersion: "1.0.1", ...(manifestTail ? { manifestTail } : {}) });
+  const { network, target, head } = data;
+  const { id: repositoryId, repository } = RUNTIME_CONTROLLER;
+  const cohort = {
+    schemaVersion: 1, kind: "cohort", organization: "OMT-Global",
+    inventory: [{ repositoryId, repository, managed: true },
+      { repositoryId: POLICY_PUBLISHER.id, repository: POLICY_PUBLISHER.repository, managed: false }],
+    members: [{ repositoryId, repository, repoClass: "cli", sourceVersion: data.bundle.version,
+      sourceDigest: flowPolicyDigest(data.bundle), sourceHead: head }],
+    target: { version: data.targetBundle.version, ref: target.ref, digest: target.sha256, commit: network.newPolicy }
+  };
+  network.cohort = {
+    id: cohortComment, user: governanceActor, body: GOVERNANCE_MARKER + JSON.stringify(cohort),
+    html_url: "https://github.com/OMT-Global/bootstrap/issues/62#issuecomment-601",
+    url: "https://api.github.com/repos/OMT-Global/bootstrap/issues/comments/601",
+    issue_url: "https://api.github.com/repos/OMT-Global/bootstrap/issues/62",
+    created_at: started, updated_at: started
+  };
+  const requestFile = path.join(data.directory, "governed-request.json");
+  await writeFile(requestFile, JSON.stringify({
+    repositoryId, repository, originalRoot: data.sourceRoot, generatorRoot: data.sourceRoot,
+    generatorCommit: head, cohortComment, target
+  }));
+  network.calls.length = 0;
+  return { ...data, requestFile };
+}
+
+describe("governed dry run with real ownership and fabricated provider", () => {
+  it("reports the selected representative in text and JSON without credentials or publication authority", async () => {
+    const data = await governedRequest();
+    const human = await runGovernedUpgradeCommand(data.requestFile, {});
+    const json = await runGovernedUpgradeCommand(data.requestFile, { json: true });
+    expect(human.exitCode, human.output).toBe(0);
+    expect(human.output).toContain("Fleet upgrade dry run for OMT-Global/bootstrap");
+    expect(human.output).toContain("Publication is unavailable.");
+    expect(human.output).not.toContain(data.directory);
+    expect(json.exitCode).toBe(0);
+    expect(json.output).not.toContain(data.directory);
+    expect(JSON.parse(json.output)).toMatchObject({
+      schemaVersion: 1, status: "planned", authority: "none", publication: "unavailable",
+      repositoryId: RUNTIME_CONTROLLER.id, baseCommit: data.head, cohortComment, targetDigest: data.target.sha256,
+      plan: { repo: RUNTIME_CONTROLLER.repository, repoClass: "cli", role: "pilot", risk: "patch", pilotOutcome: "pending", status: "review-required" },
+      independentReview: "pending",
+      publicationBlockers: ["authorized-signer-unconfigured", "native-review-profile-unconfigured",
+        "publication-app-unconfigured", "attempt-directory-unconfigured"]
+    });
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname === "/repos/OMT-Global/bootstrap/issues/62/comments")).toBe(true);
+    expect(data.network.calls.every(({ init }) => init.method === "GET" && !new Headers(init.headers).has("authorization"))).toBe(true);
+  });
+
+  it("rejects a moved controller before using cohort evidence or returning a plan", async () => {
+    const data = await governedRequest();
+    data.network.change = (url, reply) => url.pathname === "/repos/OMT-Global/bootstrap/git/ref/heads/main"
+      ? { value: { ref: "refs/heads/main", object: { type: "commit", sha: "f".repeat(40) } } } : reply;
+    const result = await runGovernedUpgradeCommand(data.requestFile, { json: true });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toEqual({
+      schemaVersion: 1, status: "blocked", authority: "none", publication: "unavailable", reason: "controller-not-current"
+    });
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname.includes("/issues/62"))).toBe(false);
+  });
+
+  it("still rejects unrecognized settings in the committed controller manifest", async () => {
+    const data = await governedRequest("futureRuntimeSwitch: true\n");
+    expect(data.found).toMatchObject({ outcome: "unsupported", reason: "invalid-manifest" });
+    const result = await runGovernedUpgradeCommand(data.requestFile, { json: true });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toEqual({
+      schemaVersion: 1, status: "blocked", authority: "none", publication: "unavailable", reason: "fleet-incomplete"
+    });
+  });
+});
+
 describe("public inventory command composition with fabricated provider and Linux eligibility", () => {
   it("collects actual discovered policies, complete rendered drift and pending planner gates without writes", async () => {
     const data = await fixture(); const result = await inventory(data);

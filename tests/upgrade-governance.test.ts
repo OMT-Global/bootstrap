@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { flowPolicyDigest } from "../src/policy.js";
-const fixtures = vi.hoisted(() => ({ runtime: {} as object, projection: {} as any, generator: {} as any,
+const fixtures = vi.hoisted(() => ({ runtime: {} as object, runtimeCaptures: new WeakSet<object>(), projection: {} as any, generator: {} as any,
   discovery: {} as any, policies: new Map<number, object>(), owned: new WeakMap<object, any>(),
   records: [] as any[], decisions: new WeakMap<object, any>(), ci: new WeakMap<object, any>(),
   ciFailure: false, reads: 0, changeOnRepeat: false, discoveryReads: 0, changedFleet: false, pr: {} as any,
@@ -10,13 +13,23 @@ const fixtures = vi.hoisted(() => ({ runtime: {} as object, projection: {} as an
 vi.mock("../src/upgrade-runtime-policy.js", async (original) => ({
   ...await original<typeof import("../src/upgrade-runtime-policy.js")>(),
   readRuntimePolicy(value: object) {
-    if (value !== fixtures.runtime) throw new Error("unowned runtime");
+    if (value !== fixtures.runtime && !fixtures.runtimeCaptures.has(value)) throw new Error("unowned runtime");
     return { generator: fixtures.generator, projection: fixtures.projection };
   },
   captureRuntimePolicy: vi.fn(async (generator: object) => {
     if (generator !== fixtures.generator) throw new Error("unowned generator"); fixtures.captureReads++;
-    return Object.freeze({ ...fixtures.runtime, requests: 1, receivedBytes: fixtures.runtimeBytes });
-  })
+    const captured = Object.freeze({ ...fixtures.runtime, requests: 1, receivedBytes: fixtures.runtimeBytes });
+    fixtures.runtimeCaptures.add(captured);
+    return captured;
+  }),
+  missingRuntimeConfiguration(value: object) {
+    if (!fixtures.runtimeCaptures.has(value)) throw new Error("unowned runtime");
+    return ["publication-app-unconfigured"];
+  }
+}));
+vi.mock("../src/upgrade-generator.js", async (original) => ({
+  ...await original<typeof import("../src/upgrade-generator.js")>(),
+  capturePublicGenerator: vi.fn(async () => fixtures.generator)
 }));
 vi.mock("../src/upgrade-discovery.js", () => ({ discoverPublicManifests: vi.fn(async () => {
   fixtures.discoveryReads++;
@@ -77,8 +90,15 @@ vi.mock("../src/upgrade-public-read.js", async (original) => {
     return { text, mode: "100644", oid: "9".repeat(40), sha256: fixtures.adrChanged ? "f".repeat(64) : "9".repeat(64) };
   })
 }; });
+vi.mock("../src/upgrade-history.js", () => ({ preparePublicUpgrade: vi.fn() }));
+vi.mock("../src/upgrade-preparation.js", () => ({ describePreparedUpgrade: vi.fn(), discardPreparedUpgrade: vi.fn() }));
+import { prepareGovernedCandidate } from "../src/upgrade-governed-preparation.js";
 import { observeUpgradeGovernance, readOwnedGovernance, recheckUpgradeGovernance } from "../src/upgrade-governance.js";
-import { runtimeDigest, type RuntimePolicy } from "../src/upgrade-runtime-policy.js";
+import { capturePublicGenerator } from "../src/upgrade-generator.js";
+import { preparePublicUpgrade } from "../src/upgrade-history.js";
+import { describePreparedUpgrade, discardPreparedUpgrade, type PreparedUpgrade } from "../src/upgrade-preparation.js";
+import { runGovernedUpgrade, runGovernedUpgradeCommand } from "../src/upgrade-runtime.js";
+import { captureRuntimePolicy, runtimeDigest, type RuntimePolicy } from "../src/upgrade-runtime-policy.js";
 import { observeManagedCi } from "../src/upgrade-pilot-ci.js";
 const originalPolicy = { ...JSON.parse(readFileSync(new URL("../policy/flow-public-standard.json", import.meta.url), "utf8")), version: "1.0.0" };
 const firstTargetPolicy = { ...originalPolicy, version: "1.0.1" };
@@ -104,7 +124,8 @@ function passedPilot(): any {
   fixtures.records.push(recordDecision(101, value)); return value;
 }
 beforeEach(() => {
-  fixtures.generator = { sourceCommit: "f".repeat(40) }; fixtures.runtime = Object.freeze({ projectionDigest: "runtime", controllerCommit: "f".repeat(40) });
+  fixtures.runtimeCaptures = new WeakSet();
+  fixtures.generator = { sourceCommit: "f".repeat(40), sourceSha256: "1".repeat(64) }; fixtures.runtime = Object.freeze({ projectionDigest: "runtime", controllerCommit: "f".repeat(40) });
   fixtures.projection = { organization: "OMT-Global", repositories: [{ repository: "OMT-Global/a", id: 1 }, { repository: "OMT-Global/b", id: 2 }],
     governance: { repository: "OMT-Global/bootstrap", id: 10, issue: 62 }, actors: [{ id: 42, login: "operator", roles: ["cohort", "pilot", "exception", "major"] }] };
   fixtures.policies.clear(); fixtures.reads = 0; fixtures.discoveryReads = 0; fixtures.changedFleet = false;
@@ -119,10 +140,11 @@ beforeEach(() => {
     const head = letter.repeat(40); const sourceDigest = flowPolicyDigest(originalPolicy);
     fixtures.discovery.repositories.push({ repository, repositoryId: id, head, defaultBranch: "main", outcome: "managed", fork: false, archived: false, disabled: false });
     const handle = Object.freeze({ status: "observed", requests: 1, receivedBytes: 100 }); fixtures.policies.set(id, handle);
-    fixtures.owned.set(handle, { repository: { repository, id, head, defaultBranch: "main" },
+    fixtures.owned.set(handle, { repository: { repository, id, head, tree: "2".repeat(40), defaultBranch: "main" },
       manifest: { project: { owner: "OMT-Global", name: letter, visibility: "public" }, repo: { class: "cli" }, exceptions: [] },
       source: { policy: { version: "1.0.0" } }, target: { policy: { version: target.version } },
-      sourceBinding: { ref: head, commit: head, canonicalSha256: sourceDigest }, targetBinding: { ref: target.ref, commit: target.commit, canonicalSha256: target.digest } });
+      sourceBinding: { ref: head, commit: head, canonicalSha256: sourceDigest },
+      targetBinding: { ref: target.ref, commit: target.commit, canonicalSha256: target.digest, rawSha256: "6".repeat(64) } });
     members.push({ repositoryId: id, repository, repoClass: "cli", sourceVersion: "1.0.0", sourceDigest, sourceHead: head });
   }
   fixtures.records = [recordDecision(100, { schemaVersion: 1, kind: "cohort", organization: "OMT-Global", members, target: { ...target },
@@ -150,6 +172,176 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 const observe = (id = 1) => observeUpgradeGovernance(fixtures.runtime as RuntimePolicy, request(id));
+describe("governed candidate preparation", () => {
+  const candidate = Object.freeze({}) as PreparedUpgrade;
+  const prepare = vi.mocked(preparePublicUpgrade);
+  const describeCandidate = vi.mocked(describePreparedUpgrade);
+
+  beforeEach(() => {
+    prepare.mockReset().mockResolvedValue(candidate);
+    describeCandidate.mockReset().mockReturnValue({
+      repository: "OMT-Global/a", repositoryId: 1, baseCommit: source(1).repository.head, baseTree: source(1).repository.tree,
+      tree: "3".repeat(40), sourceSha256: "4".repeat(64), generatorCommit: fixtures.generator.sourceCommit,
+      generatorSourceSha256: fixtures.generator.sourceSha256, sourceVersion: "1.0.0", targetVersion: target.version,
+      targetRef: target.ref, targetSha256: target.digest, risk: "patch", files: 10, sourceBytes: 100, changedPaths: ["fixture.txt"],
+      authority: "none", pilot: "unverified", hook: "pending", signing: "pending", finalCheck: "pending",
+      independentReview: "pending", publication: "pending"
+    });
+  });
+
+  it("refreshes exact governance around fixed preparation while preserving the original policy association", async () => {
+    const observation = await observe();
+    const originalPolicyObservation = readOwnedGovernance(observation).policy;
+    const nextPolicyObservation = Object.freeze({ ...originalPolicyObservation });
+    fixtures.owned.set(nextPolicyObservation, source(1));
+    fixtures.policies.set(1, nextPolicyObservation);
+    const discoveryReads = fixtures.discoveryReads;
+    prepare.mockImplementationOnce(async () => {
+      expect(fixtures.discoveryReads).toBe(discoveryReads + 2);
+      return candidate;
+    });
+    await expect(prepareGovernedCandidate(observation)).resolves.toBe(candidate);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare.mock.calls[0]?.[0].observation).toBe(originalPolicyObservation);
+    expect(prepare.mock.calls[0]?.[0].generator).toBe(fixtures.generator);
+    expect(prepare.mock.calls[0]?.[0].originalRoot).toBe("/fixture/target");
+    expect(fixtures.discoveryReads).toBe(discoveryReads + 4);
+    expect(discardPreparedUpgrade).not.toHaveBeenCalled();
+  });
+
+  it("refuses copied or stale observations before acquiring the candidate", async () => {
+    const observation = await observe();
+    await expect(prepareGovernedCandidate({ ...observation })).rejects.toThrow("unowned-governance");
+    fixtures.records[0].bodyDigest = "5".repeat(64);
+    await expect(prepareGovernedCandidate(observation)).rejects.toThrow("governance-changed");
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("discards a candidate if the current governing record changed during preparation", async () => {
+    const observation = await observe();
+    prepare.mockImplementationOnce(async () => {
+      fixtures.records[0].bodyDigest = "5".repeat(64);
+      return candidate;
+    });
+    await expect(prepareGovernedCandidate(observation)).rejects.toThrow("governance-changed");
+    expect(discardPreparedUpgrade).toHaveBeenCalledExactlyOnceWith(candidate);
+  });
+
+  it.each(["before", "after"])("refuses a different owned raw policy binding %s acquisition even with unchanged public planning facts", async (when) => {
+    const observation = await observe();
+    const changeBinding = () => {
+      const handle = Object.freeze({ ...readOwnedGovernance(observation).policy });
+      const current = source(1);
+      fixtures.owned.set(handle, { ...current, targetBinding: { ...current.targetBinding, rawSha256: "5".repeat(64) } });
+      fixtures.policies.set(1, handle);
+    };
+    if (when === "before") {
+      changeBinding();
+      expect(await observe()).toEqual(observation);
+    } else {
+      prepare.mockImplementationOnce(async () => { changeBinding(); return candidate; });
+    }
+    await expect(prepareGovernedCandidate(observation)).rejects.toThrow("governance-changed");
+    expect(prepare).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+    expect(discardPreparedUpgrade).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+  });
+
+  it.each([
+    { repositoryId: 2 }, { baseTree: "5".repeat(40) }, { targetSha256: "5".repeat(64) }, { generatorSourceSha256: "5".repeat(64) }
+  ])("discards a candidate returned with mismatched facts %j", async (mismatch) => {
+    const observation = await observe();
+    const matching = describeCandidate(candidate);
+    describeCandidate.mockReturnValueOnce({ ...matching, ...mismatch });
+    await expect(prepareGovernedCandidate(observation)).rejects.toThrow("governed-preparation-mismatch");
+    expect(discardPreparedUpgrade).toHaveBeenCalledExactlyOnceWith(candidate);
+  });
+
+  it("does not acquire a candidate after cancellation", async () => {
+    await expect(prepareGovernedCandidate(await observe(), { signal: AbortSignal.abort() })).rejects.toThrow();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(discardPreparedUpgrade).not.toHaveBeenCalled();
+  });
+
+  it.each(["observation", "caller"])("discards a candidate when the %s cancels during preparation", async (owner) => {
+    const observationLifetime = new AbortController();
+    const callerLifetime = new AbortController();
+    const observation = await observeUpgradeGovernance(fixtures.runtime as RuntimePolicy, request(), { signal: observationLifetime.signal });
+    prepare.mockImplementationOnce(async ({ signal }) => {
+      expect(signal?.aborted).toBe(false);
+      (owner === "observation" ? observationLifetime : callerLifetime).abort();
+      expect(signal?.aborted).toBe(true);
+      return candidate;
+    });
+    await expect(prepareGovernedCandidate(observation, { signal: callerLifetime.signal })).rejects.toThrow();
+    expect(discardPreparedUpgrade).toHaveBeenCalledExactlyOnceWith(candidate);
+  });
+});
+
+describe("governed upgrade dry run", () => {
+  it("uses the owned authenticated cohort plan and discloses no local paths or credentials", async () => {
+    const result = await runGovernedUpgrade(request());
+    expect(result).toMatchObject({
+      status: "planned", authority: "none", publication: "unavailable", repositoryId: 1,
+      baseCommit: "a".repeat(40), cohortComment: 100, targetDigest: target.digest,
+      plan: { repo: "OMT-Global/a", risk: "patch", role: "pilot", pilotOutcome: "pending" },
+      independentReview: "pending", publicationBlockers: ["publication-app-unconfigured"]
+    });
+    expect(capturePublicGenerator).toHaveBeenCalledWith("/fixture/generator", "f".repeat(40), { signal: expect.any(AbortSignal) });
+    expect(JSON.stringify(result)).not.toContain("/fixture/");
+    expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(0);
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) =>
+      init?.method === "GET" && !new Headers(init.headers).has("authorization"))).toBe(true);
+  });
+
+  it("reports pending class and stale fleet evidence as blocked without projecting a plan", async () => {
+    await expect(runGovernedUpgrade(request(2))).resolves.toMatchObject({
+      status: "blocked", authority: "none", reason: "representative-pilot-pending"
+    });
+    fixtures.changedFleet = true;
+    fixtures.discoveryReads = 0;
+    await expect(runGovernedUpgrade(request())).resolves.toMatchObject({ status: "blocked", reason: "fleet-changed" });
+  });
+
+  it("blocks unavailable controller policy without printing provider errors or starting a fleet read", async () => {
+    vi.mocked(captureRuntimePolicy).mockRejectedValueOnce(new Error("Private diagnostic for /fixture/private"));
+    await expect(runGovernedUpgrade(request())).resolves.toEqual({
+      schemaVersion: 1, status: "blocked", authority: "none",
+      publication: "unavailable", reason: "runtime-policy-unavailable"
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not capture a generator for unsafe requests or a cancelled plan", async () => {
+    await expect(runGovernedUpgrade({ ...request(), token: "fabricated-forbidden-input" })).resolves.toMatchObject({
+      status: "blocked", reason: "request-invalid"
+    });
+    await expect(runGovernedUpgrade(request(), { signal: AbortSignal.abort() })).resolves.toMatchObject({
+      status: "blocked", reason: "aborted-or-deadline"
+    });
+    expect(capturePublicGenerator).not.toHaveBeenCalled();
+  });
+
+  it("renders a request file in human and JSON formats and bounds its input", async () => {
+    const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "bootstrap-governed-upgrade-"));
+    const filename = path.join(directory, "request.json");
+    try {
+      await writeFile(filename, JSON.stringify(request()));
+      const human = await runGovernedUpgradeCommand(filename, {});
+      expect(human.exitCode).toBe(0);
+      expect(human.output).toContain("Fleet upgrade dry run for OMT-Global/a");
+      expect(human.output).toContain("Publication is unavailable.");
+      expect(human.output).not.toContain("/fixture/");
+      const json = await runGovernedUpgradeCommand(filename, { json: true });
+      expect(json.exitCode).toBe(0);
+      expect(JSON.parse(json.output)).toMatchObject({ status: "planned", plan: { role: "pilot" } });
+      await writeFile(filename, Buffer.alloc(64 * 1024 + 1, 32));
+      const rejected = await runGovernedUpgradeCommand(filename, { json: true });
+      expect(rejected.exitCode).toBe(1);
+      expect(JSON.parse(rejected.output)).toMatchObject({ status: "blocked", reason: "request-unavailable" });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
 describe("owned original cohort and current inventory", () => {
   it("allows a pending representative's reviewed pilot but blocks later class members", async () => {
     const handle = await observe(); expect(handle.role).toBe("pilot"); expect(handle.plan.pilotOutcome).toBe("pending");

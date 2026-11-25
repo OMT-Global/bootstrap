@@ -6,7 +6,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { generateProvenanceSigningKeyPair, provenanceSigningKeyFingerprint } from "../../src/provenance.js";
 import { controlHash, controlWire, type PrivateControlKey } from "../../src/private-provenance-control.js";
-import { deploymentRolePurposes, verifyCurrentPointer, verifyInstalledDeployment, type DeploymentBootstrap } from "../../src/private-provenance-deployment.js";
+import { deploymentRolePurposes, verifyCurrentPointer, verifyInstalledDeployment, type DeploymentBinding, type DeploymentBootstrap } from "../../src/private-provenance-deployment.js";
 import { establishPrivateRoleIdentity } from "../../src/private-provenance-identity.js";
 
 const issuedAt = "2026-11-15T00:00:00.000Z";
@@ -80,8 +80,8 @@ export const capturedAt = now.toISOString();
 export const retainUntil = new Date(now.getTime() + 90 * 86_400_000).toISOString();
 export const intent = { captureId, capturedAt, retainUntil };
 export type Hook = (phase: string, value: any, command?: any) => unknown;
-export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook) {
-  const f = fixture(purpose); const installed = f.install();
+export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, configure?: (binding: DeploymentBinding) => void) {
+  const f = fixture(purpose); configure?.(f.binding); const installed = f.install();
   const worker = f.binding.workloads.find((w: any) => w.purpose === purpose);
   const role = f.binding.aws.roles.find((r: any) => r.purpose === purpose);
   const seconds = now.getTime() / 1000;
@@ -91,7 +91,16 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook) 
     environment: "production", event_name: "workflow_dispatch", ref: "refs/heads/main", runner_environment: worker.runnerClass,
     sha: "b".repeat(40), workflow_ref: "fixture/control/.github/workflows/caller.yml@refs/heads/main", workflow_sha: "b".repeat(40),
     job_workflow_ref: worker.workflowRef, job_workflow_sha: worker.workflowSha };
-  const token = await new SignJWT(claims).setProtectedHeader({ alg: "RS256", kid: jwk.kid, typ: "JWT" }).sign(jwtPair.privateKey);
+  const issue = (payload: typeof claims) =>
+    new SignJWT(payload).setProtectedHeader({ alg: "RS256", kid: jwk.kid, typ: "JWT" }).sign(jwtPair.privateKey);
+  const token = await issue(claims);
+  const broker = f.binding.workloads.find((w: any) => w.purpose === "read-broker");
+  const peerToken = (audience: string, as: Purpose = "read-broker") => {
+    const peer = f.binding.workloads.find((w: any) => w.purpose === as);
+    const peerRole = f.binding.aws.roles.find((r: any) => r.purpose === as);
+    return issue({ ...claims, aud: audience, sub: peerRole.oidcSubject, runner_environment: peer.runnerClass,
+      job_workflow_ref: peer.workflowRef, job_workflow_sha: peer.workflowSha, run_id: "101", check_run_id: "301" });
+  };
   vi.stubEnv("GITHUB_ACTIONS", "true"); vi.stubEnv("GITHUB_TOKEN", "fabricated-github-token");
   vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fabricated-actions-token");
   vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://pipelines.actions.githubusercontent.com/fabricated/idtoken?api-version=2.0");
@@ -104,12 +113,18 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook) 
   const job = { id: 999, run_id: 100, run_url: prefix + "/actions/runs/100", head_sha: run.head_sha, status: "in_progress",
     conclusion: null, completed_at: null, labels: worker.runnerClass === "self-hosted" ? ["self-hosted", "linux"] : ["ubuntu-latest"],
     runner_id: 555, check_run_url: prefix + "/check-runs/300" };
+  const brokerRun = { ...run, id: 101, referenced_workflows: [{ path: broker.workflowRef, sha: broker.workflowSha }] };
+  const brokerJob = { ...job, id: 998, run_id: 101, run_url: prefix + "/actions/runs/101",
+    labels: ["self-hosted", "linux"], check_run_url: prefix + "/check-runs/301" };
   const fetchCalls: any[] = []; const stsCalls: any[] = []; const s3Calls: any[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input, init) => {
     const url = String(input); fetchCalls.push({ url, init }); let phase: string; let value: any;
     if (url.startsWith("https://pipelines.actions.githubusercontent.com/")) { phase = "token"; value = { value: token }; }
     else if (url === "https://token.actions.githubusercontent.com/.well-known/jwks") { phase = "jwks"; value = { keys: [jwk] }; }
     else if (url === prefix) { phase = "repository"; value = repo; }
+    else if (url.endsWith("/actions/runs/101/attempts/2/jobs?per_page=100")) { phase = "peer-jobs"; value = { total_count: 1, jobs: [brokerJob] }; }
+    else if (url.endsWith("/actions/runs/101/attempts/2")) { phase = "peer-attempt"; value = brokerRun; }
+    else if (url.endsWith("/actions/runs/101")) { phase = "peer-current"; value = brokerRun; }
     else if (url.endsWith("/attempts/2/jobs?per_page=100")) { phase = "jobs"; value = { total_count: 1, jobs: [job] }; }
     else if (url.endsWith("/attempts/2")) { phase = "attempt"; value = run; }
     else if (url.endsWith("/actions/runs/100")) { phase = "current"; value = run; }
@@ -152,7 +167,7 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook) 
     else throw new Error("Unexpected mocked S3 operation");
     return await hook?.(phase, value, command) ?? value;
   } as any);
-  return { f, installed, token, bytes, storage, makeEnvelope, common, fetchCalls, stsCalls, s3Calls,
+  return { f, installed, token, peerToken, bytes, storage, makeEnvelope, common, fetchCalls, stsCalls, s3Calls,
     setHook: (next?: Hook) => { hook = next; }, setBytes: (value: Buffer) => { storedBytes = value; },
     setPointer: (value: any) => { pointerPayload = value; }, start: (signal?: AbortSignal) => establishPrivateRoleIdentity(installed, signal),
     payloadCalls: () => s3Calls.filter((c) => c.input.Bucket === "fabricated-payload") };

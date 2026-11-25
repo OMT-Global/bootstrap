@@ -87,7 +87,9 @@ describe("approved retry executable boundary", () => {
       const url = new URL(String(request)); const method = init?.method ?? "GET";
       requests.push({ path: url.pathname, method });
       let value: any; let status = 200;
-      const release = { id: 400, tag_name: m.tag, draft: publish && !published, name: m.tag, upload_url: `https://uploads.github.com/repos/${m.repository}/releases/400/assets{?name,label}`, body: m.notes, prerelease: false, author: { id: 999 } };
+      const release = { id: 400, tag_name: m.tag, draft: publish && !published, immutable: publish && published, name: m.tag,
+        upload_url: `https://uploads.github.com/repos/${m.repository}/releases/400/assets{?name,label}`,
+        body: m.notes, prerelease: false, author: { id: 999 } };
       if (url.pathname === "/graphql") {
         const body = JSON.parse(String(init?.body));
         if(body.query.startsWith("mutation")){aliasMutations++;for(const u of body.variables.input.refUpdates){expect(aliasRefs.get(u.name.slice(10)).oid).toBe(u.beforeOid);}for(const u of body.variables.input.refUpdates)aliasRefs.set(u.name.slice(10),{__typename:"Commit",oid:u.afterOid});value={data:{updateRefs:{clientMutationId:body.variables.input.clientMutationId}}};}
@@ -129,7 +131,8 @@ describe("approved retry executable boundary", () => {
       return response;
     });
     try {
-      expect(await operation(environment)).toMatchObject({ kind: aliases ? "promoted-aliases" : publish ? "verified-created" : "verified-existing", releaseId: "400" });
+      expect(await operation(environment)).toMatchObject({ kind: aliases ? "promoted-aliases" : publish ? "verified-created" : "verified-existing",
+        releaseId: "400", ...(publish && { immutable: true }) });
       expect(producer).toHaveBeenCalledTimes(1);
       expect(validationReader).toHaveBeenCalledTimes(1); expect(validationCheck.mock.calls.length).toBeGreaterThanOrEqual(6);
       revoked = true;

@@ -38,7 +38,7 @@ async function fixture(latest = true) {
     else if (url.pathname.endsWith("/releases") && method === "POST") {
       expect(release).toBeUndefined(); const body = JSON.parse(init.body);
       expect(body).toEqual({ tag_name: m.tag, target_commitish: m.commit, name: m.tag, body: m.notes, draft: true, prerelease: m.prerelease, make_latest: "false" });
-      release = { ...body, id: 400, upload_url: `https://uploads.github.com/repos/${m.repository}/releases/400/assets{?name,label}` }; value = release;
+      release = { ...body, id: 400, immutable: false, upload_url: `https://uploads.github.com/repos/${m.repository}/releases/400/assets{?name,label}` }; value = release;
     } else if (url.pathname.endsWith("/releases")) value = release ? [release] : [];
     else if (url.pathname.endsWith("/assets") && method === "POST") {
       const name = url.searchParams.get("name"); const original = files.find((f) => f.name === name)!;
@@ -47,7 +47,11 @@ async function fixture(latest = true) {
     } else if (url.pathname.endsWith("/assets")) value = assets;
     else if (url.pathname.endsWith("/latest")) { value = release; if (!release || release.draft) status = 404; }
     else if (url.pathname.endsWith("/releases/400")) {
-      if (method === "PATCH") { expect(JSON.parse(init.body)).toEqual({ draft: false, make_latest: String(latest) }); release.draft = false; }
+      if (method === "PATCH") {
+        expect(JSON.parse(init.body)).toEqual({ draft: false, make_latest: String(latest) });
+        release.draft = false;
+        release.immutable = true;
+      }
       value = release;
     } else throw new Error("Unexpected request");
     value = mutate(url, method, structuredClone(value));
@@ -62,7 +66,8 @@ async function fixture(latest = true) {
 describe("one approved Bootstrap source publication", () => {
   it("publishes real verified four-asset source bytes through one owned draft and captured identities", async () => {
     const f = await fixture();
-    expect(await f.run()).toEqual({ kind: "verified-created", repository: f.m.repository, releaseId: "400", tag: f.m.tag, commit: f.m.commit, approvalSha256: f.m.approvalSha256 });
+    expect(await f.run()).toEqual({ kind: "verified-created", immutable: true, repository: f.m.repository, releaseId: "400", tag: f.m.tag,
+      commit: f.m.commit, approvalSha256: f.m.approvalSha256 });
     expect(f.writes().map((c) => c.method)).toEqual(["POST", "POST", "POST", "POST", "POST", "PATCH"]);
     expect(f.revalidate.mock.calls.length).toBeGreaterThan(8);
     expect(f.calls.every((c) => (c.method === "GET" || !c.url.includes("/git/")) && c.method !== "DELETE")).toBe(true);
@@ -146,6 +151,28 @@ describe("one approved Bootstrap source publication", () => {
   it("binds the final published release to the actual create ID", async () => {
     const f = await fixture(); f.set((u,m,v) => { if (u.pathname.endsWith("/releases") && m === "GET" && f.writes().length === 6) v[0].id = 401; return v; });
     await expect(f.run()).rejects.toThrow(); expect(f.writes()).toHaveLength(6);
+  });
+  it.each([undefined, false, "true"])("requires immutable publication in the final inventory (%s)", async (immutable) => {
+    const f = await fixture();
+    f.set((url, method, value) => {
+      if (method === "GET" && url.pathname.endsWith("/releases") && f.writes().length === 6) value[0].immutable = immutable;
+      return value;
+    });
+    await expect(f.run()).rejects.toThrow("reconcile");
+    expect(f.writes().map((call) => call.method)).toEqual(["POST", "POST", "POST", "POST", "POST", "PATCH"]);
+  });
+  it("withholds success when a repeated exact-ID read loses the immutable flag", async () => {
+    const f = await fixture();
+    let publishedReads = 0;
+    f.set((url, method, value) => {
+      if (method === "GET" && url.pathname.endsWith("/releases/400") && value.draft === false && ++publishedReads === 2) {
+        value.immutable = false;
+      }
+      return value;
+    });
+    await expect(f.run()).rejects.toThrow("reconcile");
+    expect(publishedReads).toBe(2);
+    expect(f.writes()).toHaveLength(6);
   });
   it("stops if the package expires after draft creation", async () => {
     const f = await fixture(); vi.useFakeTimers(); f.set((_u,m,v) => { if (m === "POST") vi.setSystemTime(Date.now() + 3600_000); return v; });

@@ -44,7 +44,8 @@ export async function verifyExistingGitHubRelease(input: {
     }
     function release(value: unknown, id: number) {
       const r = releaseObject(value);
-      if (r.id !== id || r.tag_name !== expected.tag || r.draft !== false || r.body !== expected.notes || r.prerelease !== expected.prerelease || (created && r.name !== expected.tag)) throw new Error();
+      if (r.id !== id || r.tag_name !== expected.tag || r.draft !== false || r.body !== expected.notes || r.prerelease !== expected.prerelease ||
+          (created && (r.name !== expected.tag || r.immutable !== true))) throw new Error();
       return { id, tag: r.tag_name, draft: r.draft, body: r.body, prerelease: r.prerelease };
     }
     async function snapshot() {

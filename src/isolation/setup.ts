@@ -12,8 +12,14 @@ function git(args, input) { return cp.execFileSync('git', args, { cwd: '/repo/pr
 try {
   writable();
   if (process.argv[2] === 'prepare') {
+    const python = run('python3', ['-I', '-S', '-c', [
+      'import os, sys',
+      'if os.name != "posix" or sys.implementation.name != "cpython" or sys.version_info < (3, 12):',
+      '    raise SystemExit("Isolated validation requires POSIX CPython 3.12+")',
+      'print("Python " + sys.version.split()[0])'
+    ].join('\n')], '/input').trim();
     const tools = { bash: run('bash', ['--version'], '/input').split('\n')[0], git: run('git', ['--version'], '/input').trim(),
-      python: run('python3', ['--version'], '/input').trim(), node: process.version, npm: run('npm', ['--version'], '/input').trim(), jq: run('jq', ['--version'], '/input').trim() };
+      python, node: process.version, npm: run('npm', ['--version'], '/input').trim(), jq: run('jq', ['--version'], '/input').trim() };
     if (!tools.node.startsWith('v24.') || !tools.jq.startsWith('jq-') || Object.values(tools).some(v => !v || v.length > 512)) throw Error();
     if (cp.execFileSync('jq', ['-ce', '.[] | select(.enabled) | .items | map(. + 1) == [2,3]'], {
       cwd: '/input', encoding: 'utf8', input: '[{"enabled":true,"items":[1,2]}]', maxBuffer: 1024

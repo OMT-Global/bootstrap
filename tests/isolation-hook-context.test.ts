@@ -64,16 +64,23 @@ it.each(["observe", "reject-active-policy"] as const)("replays the declared nati
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it.each(["missing", "version", "functional", "success"])("requires jq preflight before dependency/source work: %s", (result) => {
+it.each(["python", "missing", "version", "functional", "success"])("requires Python and jq preflight before dependency/source work: %s", (result) => {
   const events: string[] = [];
   const virtualProcess = { argv: ["node", "setup.cjs", "prepare"], version: "v24.22.1", exitCode: 0 };
-  const outputs: Record<string, string> = { bash: "GNU bash fixture\n", git: "git version fixture\n", python3: "Python 3 fixture\n", npm: "11.19.1\n" };
+  const outputs: Record<string, string> = { bash: "GNU bash fixture\n", git: "git version fixture\n", npm: "11.19.1\n" };
   const fsAdapter = {
     readFileSync: (name: string) => { expect(name).toBe("/input/manifest.json"); return "{}"; },
     mkdirSync: (name: string) => { events.push(`mkdir:${name}`); }, writeFileSync: () => undefined,
     copyFileSync: () => { events.push("dependency-copy"); throw new Error("Stop after the successful preflight."); }
   };
   const cpAdapter = { execFileSync: (command: string, args: string[], options: Record<string, unknown>) => {
+    if (command === "python3") {
+      expect(args.slice(0, 3)).toEqual(["-I", "-S", "-c"]);
+      expect(options).toMatchObject({ cwd: "/input" });
+      events.push("python-probe");
+      if (result === "python") throw new Error("Unsupported Python.");
+      return "Python 3.13.5\n";
+    }
     if (command !== "jq") { events.push(`version:${command}`); return outputs[command]; }
     if (args[0] === "--version") {
       events.push("jq-version"); if (result === "missing") throw new Error("No jq.");
@@ -86,7 +93,8 @@ it.each(["missing", "version", "functional", "success"])("requires jq preflight 
   runInNewContext(CONTAINER_SETUP, { require: (name: string) => name === "node:fs" ? fsAdapter : name === "node:child_process" ? cpAdapter : {},
     process: virtualProcess, console: { error: () => undefined }, Buffer });
   expect(virtualProcess.exitCode).toBe(1);
-  expect(events).toContain("jq-version");
+  expect(events).toContain("python-probe");
+  expect(events.includes("jq-version")).toBe(result !== "python");
   expect(events.includes("jq-functional")).toBe(result === "functional" || result === "success");
   expect(events.includes("mkdir:/install")).toBe(result === "success");
   expect(events.includes("dependency-copy")).toBe(result === "success");

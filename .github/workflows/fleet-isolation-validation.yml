@@ -34,7 +34,7 @@ jobs:
             linux/amd64|linux/x86_64) ;;
             *) echo "Unsupported Docker platform: $platform" >&2; exit 1 ;;
           esac
-          image='mcr.microsoft.com/devcontainers/javascript-node@sha256:447fa75fbc7123952284b50229148e933ea756c40718601fa0ec46edd29fd0c6'
+          image='mcr.microsoft.com/devcontainers/javascript-node@sha256:7f53703699da429555e7eebed7047e12823dac65508831413b5485e4566c00a8'
           docker pull --platform linux/amd64 "$image"
           test "$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
 

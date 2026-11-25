@@ -56,7 +56,7 @@ const publicKey = z.object({ kty: z.literal("OKP"), crv: z.literal("Ed25519"), x
   return bytes.length === 32 && bytes.toString("base64url") === value;
 }) }).strict();
 const keySchema = z.object({
-  ownerId: controlId, purpose: z.enum(["deployment-root", "requester-request", "codex-read-approval", "audit-ack"]),
+  ownerId: controlId, purpose: z.enum(["deployment-root", "requester-request", "codex-read-approval", "audit-ack", "workload-transport"]),
   publicKey, notBefore: controlTime, notAfter: controlTime, revoked: z.boolean()
 }).strict();
 export type PrivateControlKey = z.infer<typeof keySchema>;

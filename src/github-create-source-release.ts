@@ -102,7 +102,7 @@ export async function createApprovedSourceRelease(input: {
     await gate();
     release((await request(`${base}/releases/${releaseId}`, "PATCH", JSON.stringify({ draft: false, make_latest: String(expected.latest) }))).value, releaseId, false);
     const verified = await verifyExistingGitHubRelease({ package: packageFact, token, revalidate: gate, fetchImpl: fetcher, created: { releaseId, assetIds } });
-    return Object.freeze({ ...verified, kind: "verified-created" as const });
+    return Object.freeze({ ...verified, kind: "verified-created" as const, immutable: true as const });
   } catch {
     throw new Error("Source publication stopped; reconcile any draft, uploaded assets or published release manually. No write is retried or rolled back.");
   }

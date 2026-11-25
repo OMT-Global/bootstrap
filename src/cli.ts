@@ -20,6 +20,7 @@ import { planFleetPolicyUpgrades } from "./upgrades.js";
 import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
 import { runPublicDiscovery } from "./upgrade-discovery-command.js";
 import { runPublicInventory } from "./upgrade-public-inventory.js";
+import { runGovernedUpgradeCommand } from "./upgrade-runtime.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -242,6 +243,18 @@ async function main(): Promise<void> {
     .option("--read-token-stdin", "Read a trusted broker-supplied public-read capability from nonterminal stdin")
     .action(async (options) => {
       const result = await runPublicInventory({ ...options, generatorRoot: path.resolve(options.generatorRoot) }, process.stdin);
+      process.stdout.write(`${result.output}\n`);
+      process.exitCode = result.exitCode;
+    });
+
+  program
+    .command("upgrade-public-repository")
+    .description("Plan a governed upgrade for one managed public repository.")
+    .requiredOption("--request <path>", "Path to a fleet upgrade request JSON file")
+    .option("--publish", "Request publication (unavailable)")
+    .option("--json", "Emit JSON")
+    .action(async (options) => {
+      const result = await runGovernedUpgradeCommand(options.request, options);
       process.stdout.write(`${result.output}\n`);
       process.exitCode = result.exitCode;
     });

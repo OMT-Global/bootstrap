@@ -3,7 +3,8 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const operator = vi.hoisted(() => ({ home: "", fixture: "", source: "", fetches: 0, historyFailure: "", failCleanup: false, holdHost: undefined as Promise<void> | undefined }));
+const operator = vi.hoisted(() => ({ home: "", fixture: "", source: "", fetches: 0, historyFailure: "", snapshotFailure: "",
+  failCleanup: false, holdHost: undefined as Promise<void> | undefined }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual, rm: (...args: Parameters<typeof actual.rm>) => {
@@ -24,8 +25,24 @@ vi.mock("../src/upgrade-host.js", async (original) => {
     readRegular: (file: string, limit: number, trusted = false, proc = false) => actual.readRegular(file, limit, trusted && !file.startsWith(operator.fixture + "/"), proc),
     boundedGitCommand: async (executable: string, args: readonly string[], options: Parameters<typeof actual.boundedGitCommand>[2]) => {
       const remote = args.indexOf("https://github.com/OMT-Global/bootstrap-fixture.git");
+      if (args.includes("ls-tree") && args.includes("-l") && ["listing", "symlink", "size"].includes(operator.snapshotFailure)) {
+        const bytes = await actual.boundedGitCommand(executable, args, options);
+        if (operator.snapshotFailure === "listing") return bytes.subarray(0, -1);
+        if (operator.snapshotFailure === "symlink") return Buffer.concat([Buffer.from("120000"), bytes.subarray(6)]);
+        const tab = bytes.indexOf(9);
+        return Buffer.concat([bytes.subarray(0, 52), Buffer.from(" 536870913"), bytes.subarray(tab)]);
+      }
+      if (args.includes("--batch") && operator.snapshotFailure === "blob") {
+        const bytes = await actual.boundedGitCommand(executable, args, options);
+        const offset = bytes.indexOf(10) + 1;
+        bytes[offset] = bytes[offset]! ^ 1;
+        return bytes;
+      }
       if (remote < 0) return actual.boundedGitCommand(executable, args, options);
       expect(args).toContain("fetch"); operator.fetches++;
+      expect(args).toContain("credential.helper=");
+      expect(args).toContain("http.followRedirects=false");
+      expect(options.env.GH_TOKEN).toBeUndefined();
       const mapped = [...args]; mapped[remote] = operator.source; mapped.splice(mapped.indexOf("fetch"), 0, "-c", "protocol.file.allow=always");
       const result = await actual.boundedGitCommand(executable, mapped, options);
       const gitdir = options.env.GIT_DIR!;
@@ -40,14 +57,20 @@ vi.mock("../src/upgrade-host.js", async (original) => {
 });
 import { freezeNodeValidation, NODE_ISOLATION_IMAGE, NODE_ISOLATION_PROFILE, type NodeValidationInput } from "../src/isolation/node-profile.js";
 import * as backend from "../src/isolation/node-validation.js";
-import { acquirePreparedHistory, copyPreparedHistoryBundle, discardPreparedHistory } from "../src/upgrade-history.js";
+import { copySnapshotFiles } from "../src/upgrade-git.js";
+import { acquireObservedUpgradeSnapshot, acquirePreparedHistory, copyPreparedHistoryBundle, discardPreparedHistory, preparePublicUpgrade } from "../src/upgrade-history.js";
 import { prepareObservedUpgrade, describePreparedUpgrade, discardPreparedUpgrade } from "../src/upgrade-preparation.js";
 import { completeSignedCandidate, copyCandidateSigningRequest, copyCheckedCandidateBundle, describeCheckedCandidate, discardCandidateHook, discardCheckedCandidate, prepareCandidateHook, type CandidateCommitPlan } from "../src/upgrade-validation.js";
 import { fixture, git, roots } from "./helpers/fleet-validation-fixture.js";
 
-async function setup(options: { sourceSignal?: AbortSignal } = {}) {
+async function setupPublicBase() {
   const data = await fixture(operator); operator.source = data.root; operator.fetches = 0; operator.historyFailure = "";
-  const candidate = await prepareObservedUpgrade({ observation: data.observation, generator: data.generator, source: data.sourceSnapshot, originalRoot: data.root, signal: options.sourceSignal });
+  return data;
+}
+async function setup(options: { sourceSignal?: AbortSignal } = {}) {
+  const data = await setupPublicBase();
+  const candidate = await prepareObservedUpgrade({ observation: data.observation, generator: data.generator, source: data.sourceSnapshot,
+    originalRoot: data.root, ...(options.sourceSignal ? { signal: options.sourceSignal } : {}) });
   const key = path.join(data.directory, "ephemeral-signing-key");
   execFileSync("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], { env: data.env });
   const publicKey = (await readFile(key + ".pub", "utf8")).split(" ").slice(0, 2).join(" ").trim() + "\n";
@@ -59,7 +82,7 @@ async function setup(options: { sourceSignal?: AbortSignal } = {}) {
     calls.push(input); const frozen = freezeNodeValidation(input);
     const common = { profile: NODE_ISOLATION_PROFILE, image: NODE_ISOLATION_IMAGE, sourceSha256: frozen.sourceSha256, commitPlanSha256: frozen.commitPlanSha256,
       baseCommit: frozen.baseCommit, preparedTree: describePreparedUpgrade(candidate).tree, hook: frozen.hook,
-      tools: { bash: "fabricated bash", git: "fabricated git", python: "fabricated python", node: "v24.fabricated", npm: "fabricated npm", jq: "jq-fabricated" } };
+      tools: { bash: "fabricated bash", git: "fabricated git", python: "fabricated python", node: "v24.fabricated", npm: "fabricated npm", jq: "jq-fabricated" } } as const;
     const report: backend.NodeValidationReport = input.phase === "prepared-hook" ? { ...common, phase: input.phase, hookOutput: "fabricated hook result" }
       : { ...common, phase: input.phase, candidateCommit: input.candidateCommit, checkOutput: "fabricated check result" };
     return change ? change(input, report) : report;
@@ -82,10 +105,58 @@ async function inspectBundle(data: Awaited<ReturnType<typeof setup>>, bytes: Buf
   git(directory, data.env, ["fsck", "--strict", "--no-reflogs"]);
   return { raw: git(directory, data.env, ["cat-file", "commit", selected]), count: Number(git(directory, data.env, ["rev-list", "--count", selected]).toString()) };
 }
-async function expectClean(data: Awaited<ReturnType<typeof setup>>) {
+async function expectClean(data: Pick<Awaited<ReturnType<typeof setup>>, "directory">) {
   expect((await readdir(data.directory)).filter((name) => name.startsWith("bootstrap-history-") || name.startsWith("bootstrap-signature-"))).toEqual([]);
 }
-afterEach(async () => { operator.failCleanup = false; operator.holdHost = undefined; vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { operator.failCleanup = false; operator.snapshotFailure = ""; operator.holdHost = undefined; vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+
+describe("initial public snapshot acquisition and preparation", () => {
+  it("verifies the exact fetched raw source and prepares it with the original checkout unchanged", async () => {
+    const data = await setupPublicBase();
+    vi.stubEnv("GH_TOKEN", "fabricated test token");
+    const source = await acquireObservedUpgradeSnapshot(data.observation);
+    expect(source).toEqual(data.sourceSnapshot);
+    expect(copySnapshotFiles(source)).toEqual(copySnapshotFiles(data.sourceSnapshot));
+    expect(() => copySnapshotFiles({ ...source })).toThrow("unsupported");
+    await expectClean(data);
+
+    const before = git(data.root, data.env, ["status", "--porcelain=v1", "-z"]);
+    const candidate = await preparePublicUpgrade({ observation: data.observation, generator: data.generator, originalRoot: data.root });
+    expect(describePreparedUpgrade(candidate)).toMatchObject({ repositoryId: 42, baseCommit: source.baseCommit, baseTree: source.tree, authority: "none" });
+    expect(operator.fetches).toBe(2);
+    expect(git(data.root, data.env, ["status", "--porcelain=v1", "-z"])).toEqual(before);
+    discardPreparedUpgrade(candidate); await expectClean(data);
+  });
+  it("rejects copied policy facts before an anonymous Git fetch", async () => {
+    const data = await setupPublicBase(); const reads = data.network.calls.length;
+    await expect(acquireObservedUpgradeSnapshot({ ...data.observation })).rejects.toThrow("unavailable");
+    expect(operator.fetches).toBe(0);
+    expect(data.network.calls).toHaveLength(reads);
+    await expectClean(data);
+  });
+  it.each(["identity", "default branch", "head", "visibility"])("rejects changed public %s after acquisition", async (change) => {
+    const data = await setupPublicBase(); let checks = 0;
+    data.network.change = (url, value) => {
+      if (!url.pathname.endsWith(change === "head" ? "/ref/heads/main" : "/bootstrap-fixture") || ++checks < 2) return value;
+      const patch = change === "head" ? { object: { type: "commit", sha: "a".repeat(40) } }
+        : change === "identity" ? { id: 999 } : change === "default branch" ? { default_branch: "other" }
+        : { private: true, visibility: "private" };
+      return { ...(value as object), ...patch };
+    };
+    await expect(acquireObservedUpgradeSnapshot(data.observation)).rejects.toThrow("unavailable");
+    expect(operator.fetches).toBe(1); await expectClean(data);
+  });
+  it.each(["listing", "blob", "symlink", "size"])("rejects an invalid Git %s response", async (change) => {
+    const data = await setupPublicBase(); operator.snapshotFailure = change;
+    await expect(acquireObservedUpgradeSnapshot(data.observation)).rejects.toThrow("unavailable");
+    expect(operator.fetches).toBe(1); await expectClean(data);
+  });
+  it("does not return a source when cleanup fails", async () => {
+    const data = await setupPublicBase(); operator.failCleanup = true;
+    await expect(acquireObservedUpgradeSnapshot(data.observation)).rejects.toThrow("unavailable");
+    expect(operator.fetches).toBe(1);
+  });
+});
 
 describe("candidate history, hook and signature composition (fabricated isolation adapter)", () => {
   it("preserves complete merge ancestry and exact planned identities through hook, ephemeral signing and final-check", async () => {
@@ -186,6 +257,18 @@ describe("candidate history, hook and signature composition (fabricated isolatio
     const controller = new AbortController(); const options: { signal?: AbortSignal } = { signal: controller.signal };
     const operation = acquirePreparedHistory(data.candidate, options); delete options.signal; controller.abort(); release();
     await expect(operation).rejects.toThrow("unavailable"); expect(operator.fetches).toBe(0); await expectClean(data);
+  });
+  it("rechecks prepared candidate ownership after asynchronous host discovery", async () => {
+    const data = await setup();
+    const reads = data.network.calls.length;
+    let release!: () => void;
+    operator.holdHost = new Promise<void>((resolve) => { release = resolve; });
+    const operation = acquirePreparedHistory(data.candidate);
+    discardPreparedUpgrade(data.candidate);
+    release();
+    await expect(operation).rejects.toThrow("unavailable");
+    expect(data.network.calls).toHaveLength(reads);
+    expect(operator.fetches).toBe(0); await expectClean(data);
   });
   it("keeps completed historical results independent of source lifetime but respects validation caller cancellation", async () => {
     const source = new AbortController(); const validation = new AbortController(); const data = await setup({ sourceSignal: source.signal });

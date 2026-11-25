@@ -2,7 +2,10 @@ import { createPrivateKey, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { generateProvenanceSigningKeyPair, provenanceSigningKeyFingerprint } from "../src/provenance.js";
 import { controlHash, controlWire, type PrivateControlKey } from "../src/private-provenance-control.js";
-import { createPrivateReadCoordinator, privateApprovalStateKey, PrivateStateConflict, type PrivateReadObservation } from "../src/private-provenance-read.js";
+import {
+  createPrivateReadCoordinator, encodePrivateReadAuditSubmission, privateApprovalStateKey, PrivateStateConflict,
+  verifyPrivateReadAuditSubmission, type PrivateReadAuditEvidence, type PrivateReadObservation
+} from "../src/private-provenance-read.js";
 
 const start = "2026-11-15T00:00:00.000Z";
 const expiry = "2026-11-15T00:05:00.000Z";
@@ -32,14 +35,25 @@ function fixture() {
     approverWorkloadId: "codex", requestSha256: controlHash(requestBytes), requesterId: "reader", purposeId: "provenance-verification", ...scope,
     categoryIds: ["validation-summary"], maxUses: 1, issuedAt: start, notBefore: start, expiresAt: expiry };
   const documents = { request: requestBytes, approval: signed(approval), delegation: signed(delegation, root) };
-  const observed: PrivateReadObservation = { configEpoch: 1, repositoryId: "123", repository: "fixture/example", requesterId: "reader", auditOwnerId: "audit",
+  const observed: PrivateReadObservation = { configEpoch: 1, approvalMaxSeconds: 300, repositoryId: "123", repository: "fixture/example", requesterId: "reader", auditOwnerId: "audit",
     brokerWorkloadId: "broker-1", auditBucket: "fabricated-audit", auditPrefix: "events/", keys };
   let time = new Date("2026-11-15T00:00:10.000Z"); let serial = 0;
-  const states = new Map<string, { bytes: Buffer; etag: string }>(); const events: any[] = []; const order: string[] = []; const owned: Buffer[] = [];
+  const states = new Map<string, { bytes: Buffer; etag: string; versionId: string }>(); const events: any[] = []; const order: string[] = []; const owned: Buffer[] = [];
+  const put = (key: string, bytes: Uint8Array) => {
+    const etag = String(++serial);
+    const versionId = `version-${serial}`;
+    states.set(key, { bytes: Buffer.from(bytes), etag, versionId });
+    return versionId;
+  };
   const state = {
-    read: vi.fn(async (key: string) => { const value = states.get(key); return value ? { bytes: Buffer.from(value.bytes), etag: value.etag } : null; }),
-    create: vi.fn(async (key: string, bytes: Uint8Array) => { if (states.has(key)) throw new PrivateStateConflict(); states.set(key, { bytes: Buffer.from(bytes), etag: String(++serial) }); }),
-    replace: vi.fn(async (key: string, etag: string, bytes: Uint8Array) => { if (states.get(key)?.etag !== etag) throw new PrivateStateConflict(); states.set(key, { bytes: Buffer.from(bytes), etag: String(++serial) }); })
+    read: vi.fn(async (key: string) => {
+      const value = states.get(key);
+      // The broker has GetObject on the key and no ListBucket permission.
+      if (!value) throw Object.assign(new Error(marker), { name: "AccessDenied", $metadata: { httpStatusCode: 403 } });
+      return { ...value, bytes: Buffer.from(value.bytes) };
+    }),
+    create: vi.fn(async (key: string, bytes: Uint8Array) => { if (states.has(key)) throw new PrivateStateConflict(); put(key, bytes); }),
+    replace: vi.fn(async (key: string, etag: string, bytes: Uint8Array) => { if (states.get(key)?.etag !== etag) throw new PrivateStateConflict(); return put(key, bytes); })
   };
   let plaintext = controlWire({ schemaVersion: 1, evidence: [{ category: "validation-summary", text: controlWire({
     checkId: "unit", result: "pass", passed: 4, failed: 0, revision: "a".repeat(40)
@@ -47,7 +61,7 @@ function fixture() {
   const ports = {
     state, now: () => time, observe: vi.fn(async () => structuredClone(observed)),
     loadVerifiedBundle: vi.fn(async () => { order.push("load"); const value = Buffer.from(plaintext); owned.push(value); return value; }),
-    audit: vi.fn(async (bytes: Uint8Array) => { const event = JSON.parse(Buffer.from(bytes).toString()); events.push(event); order.push(event.phase);
+    audit: vi.fn(async (bytes: Uint8Array, _evidence: PrivateReadAuditEvidence) => { const event = JSON.parse(Buffer.from(bytes).toString()); events.push(event); order.push(event.phase);
       return signed({ ...base("bootstrap-private-audit-ack"), eventId: event.eventId, eventSha256: controlHash(bytes), operationId: event.operationId,
         phase: event.phase, storage: { region: "us-east-2", bucket: observed.auditBucket, key: `events/${event.eventId}`, versionId: "audit-v1" },
         recordedAt: time.toISOString(), retainUntil: new Date(time.getTime() + 90 * 86400000).toISOString(), configEpoch: observed.configEpoch }, auditor);
@@ -64,15 +78,17 @@ function fixture() {
 
 const denied = async (promise: Promise<unknown>) => expect(promise).rejects.toThrow("Private provenance control unavailable or invalid.");
 describe("private read control consumer", () => {
-  it("requires signed audit attempts and completion before one-use release; clears owned plaintext", async () => {
+  it("initializes state without listing, audits attempt and completion before one-use release, and clears owned plaintext", async () => {
     const f = fixture(); const result = await f.coordinator.read(f.documents);
     expect(JSON.parse(result.toString()).evidence[0].category).toBe("validation-summary");
     expect(f.order).toEqual(["attempt", "load", "complete"]);
     expect(f.events[1].previousEventSha256).toBe(controlHash(controlWire(f.events[0])));
+    const versions = f.ports.audit.mock.calls.map(([, { state }]) => [state.versionId, JSON.parse(Buffer.from(state.bytes).toString()).state]);
+    expect(versions).toEqual([["version-2", "reserved"], ["version-3", "spent"]]);
     expect(f.stateValue().state).toBe("spent"); expect(f.owned[0]?.every((v) => v === 0)).toBe(true);
     await denied(f.coordinator.read(f.documents)); expect(f.ports.loadVerifiedBundle).toHaveBeenCalledTimes(1);
   });
-  it("persists revocation before the first read and across restart without a requester identity assertion", async () => {
+  it("persists revocation on an absent key without listing or a requester identity assertion", async () => {
     const f = fixture(); expect(await f.revoke(f.root)).toBe("revoked");
     expect(f.stateValue()).toMatchObject({ state: "revoked", requestId: null, operationId: null, delegationId: "delegation-1" });
     const original = [...f.states.values()][0]!.bytes.toString();
@@ -85,6 +101,7 @@ describe("private read control consumer", () => {
     const outcomes = await Promise.allSettled([f.coordinator.read(f.documents), f.revoke()]);
     expect(f.states.size).toBe(1); expect(f.stateValue().state).toBe("revoked");
     expect(outcomes[0]?.status).toBe("rejected"); expect(outcomes[1]).toMatchObject({ status: "fulfilled", value: "revoked" });
+    expect(f.ports.loadVerifiedBundle).not.toHaveBeenCalled();
     await denied(f.coordinator.read(f.documents));
   });
   it("allows only one concurrent first use", async () => {
@@ -129,11 +146,11 @@ describe("private read control consumer", () => {
   });
   it.each(["attempt outage", "complete outage", "unsigned true", "wrong event digest", "wrong audit target"])("withholds plaintext on %s", async (scenario) => {
     const f = fixture(); const original = f.ports.audit.getMockImplementation()!;
-    f.ports.audit.mockImplementation(async (bytes) => {
+    f.ports.audit.mockImplementation(async (bytes, evidence) => {
       const event = JSON.parse(Buffer.from(bytes).toString());
       if (scenario === `${event.phase} outage`) throw new Error(marker);
       if (scenario === "unsigned true") return true as never;
-      const result = await original(bytes);
+      const result = await original(bytes, evidence);
       if (scenario.startsWith("wrong")) { const ack = JSON.parse(result.toString()).payload;
         if (scenario === "wrong event digest") ack.eventSha256 = "d".repeat(64); else ack.storage.bucket = "other-audit";
         return f.signed(ack, f.auditor);
@@ -147,7 +164,7 @@ describe("private read control consumer", () => {
   });
   it("rechecks expiry and revocation after attempt audit, before decryption", async () => {
     const f = fixture(); const audit = f.ports.audit.getMockImplementation()!;
-    f.ports.audit.mockImplementation(async (bytes) => { const ack = await audit(bytes); if (JSON.parse(Buffer.from(bytes).toString()).phase === "attempt") f.setTime(expiry); return ack; });
+    f.ports.audit.mockImplementation(async (bytes, evidence) => { const ack = await audit(bytes, evidence); if (JSON.parse(Buffer.from(bytes).toString()).phase === "attempt") f.setTime(expiry); return ack; });
     await denied(f.coordinator.read(f.documents)); expect(f.ports.loadVerifiedBundle).not.toHaveBeenCalled();
   });
   it("withholds and clears decrypted bytes if authority changes during the load", async () => {
@@ -155,11 +172,45 @@ describe("private read control consumer", () => {
     f.ports.loadVerifiedBundle.mockImplementation(async () => { const bytes = await load(); f.observed.configEpoch++; return bytes; });
     await denied(f.coordinator.read(f.documents)); expect(f.owned[0]?.every((v) => v === 0)).toBe(true);
   });
+  it("withholds plaintext when initial state creation succeeds but its acknowledgment is lost", async () => {
+    const f = fixture(); const create = f.ports.state.create.getMockImplementation()!;
+    f.ports.state.create.mockImplementationOnce(async (...args) => { await create(...args); throw new Error(marker); });
+    await denied(f.coordinator.read(f.documents));
+    expect(f.stateValue().state).toBe("available");
+    expect(f.ports.state.create).toHaveBeenCalledTimes(1);
+    expect(f.ports.state.replace).not.toHaveBeenCalled();
+    expect(f.ports.audit).not.toHaveBeenCalled();
+    expect(f.ports.loadVerifiedBundle).not.toHaveBeenCalled();
+  });
   it("preserves reserved state on an uncertain write acknowledgment without loading plaintext", async () => {
     const f = fixture(); const replace = f.ports.state.replace.getMockImplementation()!;
     f.ports.state.replace.mockImplementationOnce(async (...args) => { await replace(...args); throw new Error(marker); });
     await denied(f.coordinator.read(f.documents)); expect(f.stateValue().state).toBe("reserved");
     await denied(createPrivateReadCoordinator(f.ports).read(f.documents)); expect(f.ports.loadVerifiedBundle).not.toHaveBeenCalled();
+  });
+  it("withholds plaintext and completion when a landed spend lacks a versioned acknowledgment", async () => {
+    const f = fixture();
+    const replace = f.ports.state.replace.getMockImplementation()!;
+    f.ports.state.replace.mockImplementation(async (...args) => {
+      const version = await replace(...args);
+      return JSON.parse(Buffer.from(args[2]).toString()).state === "spent" ? "null" : version;
+    });
+    await denied(f.coordinator.read(f.documents));
+    expect(f.stateValue().state).toBe("spent");
+    expect(f.events.some((event) => event.phase === "complete")).toBe(false);
+    const evidence = f.ports.audit.mock.calls.at(-1)?.[1];
+    expect(evidence?.state.versionId).toBe("version-3");
+    expect(f.owned[0]?.every((v) => v === 0)).toBe(true);
+  });
+  it("verifies the exact coordinator-issued completion evidence without accepting a relabelled reservation", async () => {
+    const f = fixture();
+    await f.coordinator.read(f.documents);
+    const [attempt, completion] = f.ports.audit.mock.calls;
+    const verified = verifyPrivateReadAuditSubmission(encodePrivateReadAuditSubmission(...completion!), f.observed, f.ports.now(), 60);
+    expect(verified).toMatchObject({ event: { phase: "complete", stateRevision: 2 }, stateVersionId: "version-3",
+      stateSha256: controlHash(completion![1].state.bytes) });
+    expect(() => verifyPrivateReadAuditSubmission(encodePrivateReadAuditSubmission(completion![0], attempt![1]),
+      f.observed, f.ports.now(), 60)).toThrow("Private provenance control unavailable or invalid.");
   });
   it("does not acknowledge an uncertain revocation until a later exact-state reconciliation", async () => {
     const f = fixture(); const create = f.ports.state.create.getMockImplementation()!;
@@ -188,31 +239,42 @@ describe("private read control consumer", () => {
   });
   it("isolates owned plaintext from later producer-buffer mutation", async () => {
     const f = fixture(); const audit = f.ports.audit.getMockImplementation()!;
-    f.ports.audit.mockImplementation(async (bytes) => {
+    f.ports.audit.mockImplementation(async (bytes, evidence) => {
       if (JSON.parse(Buffer.from(bytes).toString()).phase === "complete") f.owned[0]?.fill(120);
-      return audit(bytes);
+      return audit(bytes, evidence);
     });
     const result = await f.coordinator.read(f.documents);
     expect(JSON.parse(result.toString()).schemaVersion).toBe(1);
   });
-  it.each([1, 2, 3, 4])("checks a fresh read window after ledger read %i", async (target) => {
-    const f = fixture(); let reads = 0; const readState = f.ports.state.read.getMockImplementation()!;
+  it.each([
+    { boundary: "initialization", state: "available", loads: 0 },
+    { boundary: "before decryption", state: "reserved", loads: 0 },
+    { boundary: "before spend", state: "reserved", loads: 1 }
+  ])("withholds plaintext when the state read $boundary crosses expiry", async ({ boundary, state, loads }) => {
+    const f = fixture(); let crossed = false; const readState = f.ports.state.read.getMockImplementation()!;
     f.ports.state.read.mockImplementation(async (...args) => {
       const result = await readState(...args);
-      if (++reads === target) f.setTime(expiry);
+      if (!crossed && JSON.parse(result.bytes.toString()).state === state
+        && f.ports.loadVerifiedBundle.mock.calls.length === loads) {
+        crossed = true;
+        f.setTime(expiry);
+      }
       return result;
     });
     await denied(f.coordinator.read(f.documents));
-    expect(f.ports.loadVerifiedBundle).toHaveBeenCalledTimes(target === 4 ? 1 : 0);
-    if (target <= 2) expect(f.ports.state.replace).not.toHaveBeenCalled();
+    expect(crossed).toBe(true);
+    expect(f.ports.loadVerifiedBundle).toHaveBeenCalledTimes(loads);
+    if (boundary === "initialization") expect(f.ports.state.replace).not.toHaveBeenCalled();
+    expect(f.stateValue().state).toBe(boundary === "initialization" ? "available" : "failed");
     expect(f.events.some((event) => event.phase === "complete")).toBe(false);
     expect(f.owned.every((bytes) => bytes.every((value) => value === 0))).toBe(true);
   });
   it.each(["reserved", "spent"])("withholds plaintext when %s CAS acknowledgment crosses expiry", async (transition) => {
     const f = fixture(); const replace = f.ports.state.replace.getMockImplementation()!;
     f.ports.state.replace.mockImplementation(async (...args) => {
-      await replace(...args);
+      const version = await replace(...args);
       if (JSON.parse(Buffer.from(args[2]).toString()).state === transition) f.setTime(expiry);
+      return version;
     });
     await denied(f.coordinator.read(f.documents));
     expect(f.stateValue().state).toBe(transition === "spent" ? "spent" : "failed");
@@ -233,8 +295,8 @@ describe("private read control consumer", () => {
   });
   it("keeps confirmed timely spend as the authorization point when only completion audit finishes after expiry", async () => {
     const f = fixture(); const audit = f.ports.audit.getMockImplementation()!;
-    f.ports.audit.mockImplementation(async (bytes) => {
-      const ack = await audit(bytes);
+    f.ports.audit.mockImplementation(async (bytes, evidence) => {
+      const ack = await audit(bytes, evidence);
       if (JSON.parse(Buffer.from(bytes).toString()).phase === "complete") f.setTime(expiry);
       return ack;
     });

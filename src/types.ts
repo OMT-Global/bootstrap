@@ -1,3 +1,5 @@
+import type { RuntimePolicyProjection } from "./upgrade-runtime-schema.js";
+
 export type ProjectVisibility = "private" | "public" | "internal";
 export type ArchetypeKind = "nextjs-web" | "node-ts-service" | "python-service" | "generic-empty";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "python";
@@ -258,6 +260,7 @@ export interface BootstrapManifest {
   publisher: PublisherConfig;
   license?: LicensePolicy;
   notifications?: NotificationConfig;
+  fleetRuntime?: RuntimePolicyProjection;
   repo: RepoConfig;
   archetype: {
     kind: ArchetypeKind;

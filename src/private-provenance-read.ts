@@ -47,13 +47,21 @@ type Approval = z.infer<typeof privateReadApprovalSchema>;
 type State = z.infer<typeof stateSchema>;
 export class PrivateStateConflict extends Error { constructor() { super("Conditional private state conflict."); } }
 export interface PrivateApprovalStore {
-  read(key: string): Promise<{ bytes: Uint8Array; etag: string } | null>;
+  read(key: string): Promise<{ bytes: Uint8Array; etag: string; versionId: string } | null>;
   create(key: string, bytes: Uint8Array): Promise<void>; // Provider-enforced If-None-Match: *.
-  replace(key: string, etag: string, bytes: Uint8Array): Promise<void>; // Provider-enforced If-Match.
+  replace(key: string, etag: string, bytes: Uint8Array): Promise<string>; // Provider-enforced If-Match; verified resulting VersionId.
+}
+export interface PrivateReadAuditEvidence {
+  readonly approval: Uint8Array;
+  readonly delegation: Uint8Array;
+  readonly request?: Uint8Array;
+  readonly revocation?: Uint8Array;
+  readonly state: Readonly<{ key: string; versionId: string; bytes: Uint8Array }>;
 }
 /** Acquired by the fixed broker from enrolled identity/current configuration, never request fields. */
 export interface PrivateReadObservation {
   configEpoch: number;
+  approvalMaxSeconds: number;
   repositoryId: string;
   repository: string;
   requesterId: string;
@@ -70,7 +78,7 @@ export interface PrivateReadPorts {
   /** Fixed decrypt producer verifies receipt/public binding, exact version/retention/AEAD; transfers ownership of its returned bytes. */
   loadVerifiedBundle(request: Readonly<PrivateReadRequest>): Promise<Uint8Array>;
   /** Durable audit producer returns signed exact-event acknowledgment, never a success boolean. */
-  audit(event: Uint8Array): Promise<Uint8Array>;
+  audit(event: Uint8Array, evidence: PrivateReadAuditEvidence): Promise<Uint8Array>;
 }
 export interface PrivateReadDocuments { request: Uint8Array; approval: Uint8Array; delegation: Uint8Array }
 const same = (a: unknown, b: unknown) => controlWire(a).equals(controlWire(b));
@@ -78,6 +86,7 @@ const subset = (a: readonly string[], b: readonly string[]) => a.every((v) => b.
 const ms = (s: string) => Date.parse(s);
 const fingerprint = (documents: Omit<PrivateReadDocuments, "request">) => controlHash(documents.approval);
 const snapshot = (v: Uint8Array) => { requireControl(v instanceof Uint8Array && v.byteLength <= 16_384); return Buffer.from(v); };
+const objectVersion = controlStorage.shape.versionId.refine((v) => v !== "null" && !/[\x00-\x1f\x7f]/.test(v));
 
 function checkIssuedWindow(value: { issuedAt: string; notBefore: string; expiresAt: string }, now: Date) {
   requireControl(Number.isFinite(now.getTime()) && ms(value.issuedAt) <= now.getTime()
@@ -88,6 +97,7 @@ function checkWindow(value: { notBefore: string; expiresAt: string }, now: Date)
 }
 function verifyApproval(documents: Omit<PrivateReadDocuments, "request">, observed: PrivateReadObservation, now: Date, usage: "read" | "revoke" = "read"): Approval {
   controlCounter.parse(observed.configEpoch); controlId.parse(observed.repositoryId);
+  requireControl(Number.isSafeInteger(observed.approvalMaxSeconds) && observed.approvalMaxSeconds > 0 && observed.approvalMaxSeconds <= 300);
   controlSubject.shape.repository.parse(observed.repository); controlId.parse(observed.requesterId);
   controlId.parse(observed.auditOwnerId); controlId.parse(observed.brokerWorkloadId);
   controlStorage.shape.bucket.parse(observed.auditBucket); controlText(1024).parse(observed.auditPrefix);
@@ -103,16 +113,16 @@ function verifyApproval(documents: Omit<PrivateReadDocuments, "request">, observ
     && a.subject.repository === observed.repository && delegation.repositoryIds.includes(observed.repositoryId) && delegation.requesterIds.includes(a.requesterId)
     && delegation.purposeIds.includes(a.purposeId) && subset(a.categoryIds, delegation.categoryIds)
     && ms(a.expiresAt) <= ms(delegation.expiresAt) && ms(a.issuedAt) >= ms(delegation.notBefore)
-    && ms(a.expiresAt) - ms(a.issuedAt) <= delegation.maxApprovalSeconds * 1000);
+    && ms(a.expiresAt) - ms(a.issuedAt) <= Math.min(delegation.maxApprovalSeconds, observed.approvalMaxSeconds) * 1000);
   return a;
 }
-function authorize(documents: PrivateReadDocuments, observed: PrivateReadObservation, now: Date) {
-  const approval = verifyApproval(documents, observed, now);
+function authorize(documents: PrivateReadDocuments, observed: PrivateReadObservation, now: Date, usage: "read" | "audit-failure" = "read") {
+  const approval = verifyApproval(documents, observed, now, usage === "read" ? "read" : "revoke");
   const verified = verifyPrivateControl(documents.request, privateReadRequestSchema, "requester-request", observed.keys, now);
   const request = verified.payload;
   requireControl(verified.ownerId === request.requesterId && request.requesterId === observed.requesterId
     && request.configEpoch === observed.configEpoch && approval.requestSha256 === verified.sha256
-    && ms(request.issuedAt) <= now.getTime() && now.getTime() < ms(request.expiresAt)
+    && ms(request.issuedAt) <= now.getTime() && (usage === "audit-failure" || now.getTime() < ms(request.expiresAt))
     && ms(approval.issuedAt) >= ms(request.issuedAt) && ms(approval.expiresAt) <= ms(request.expiresAt));
   for (const field of ["subject", "runId", "storage", "receiptSha256", "requesterId", "purposeId"] as const) {
     requireControl(same(request[field], approval[field]));
@@ -120,16 +130,35 @@ function authorize(documents: PrivateReadDocuments, observed: PrivateReadObserva
   requireControl(same([...request.requestedCategoryIds].sort(), [...approval.categoryIds].sort()));
   return { approval, request };
 }
+function verifyRevocation(documents: Omit<PrivateReadDocuments, "request">, revocation: Uint8Array, observed: PrivateReadObservation, now: Date) {
+  const approval = verifyApproval(documents, observed, now, "revoke");
+  let signed;
+  try { signed = verifyPrivateControl(revocation, revocationSchema, "deployment-root", observed.keys, now); }
+  catch {
+    signed = verifyPrivateControl(revocation, revocationSchema, "codex-read-approval", observed.keys, now);
+    requireControl(signed.ownerId === approval.approverWorkloadId && signed.fingerprint ===
+      verifyPrivateControl(documents.approval, privateReadApprovalSchema, "codex-read-approval", observed.keys, now).fingerprint);
+  }
+  const r = signed.payload;
+  const digest = fingerprint(documents);
+  requireControl(r.scopeId === approval.approvalId && r.delegationId === approval.delegationId && r.scopeSha256 === digest
+    && r.configEpoch === observed.configEpoch && ms(r.at) <= now.getTime());
+  return { approval, signed, digest };
+}
 export function privateApprovalStateKey(delegationId: string, approvalId: string): string {
   return `approvals/${controlHash(controlWire({ domain: "bootstrap-approval-state-key", delegationId: controlId.parse(delegationId), approvalId: controlId.parse(approvalId) }))}.json`;
+}
+/** Canonical bounded state data only; this parser does not establish approval authority. */
+export function parsePrivateApprovalStateRecord(bytes: Uint8Array): Readonly<State> {
+  return Object.freeze(stateSchema.parse(parsePrivateControl(bytes)));
 }
 async function readState(store: PrivateApprovalStore, key: string, approval: Approval, digest: string) {
   const stored = await store.read(key);
   if (!stored) return null;
   requireControl(typeof stored.etag === "string" && stored.etag.length > 0 && stored.etag.length <= 1024);
-  const state = stateSchema.parse(parsePrivateControl(stored.bytes));
+  const state = parsePrivateApprovalStateRecord(stored.bytes);
   requireControl(state.approvalId === approval.approvalId && state.delegationId === approval.delegationId && state.approvalSha256 === digest && state.configEpoch === approval.configEpoch);
-  return { state, etag: stored.etag };
+  return { state, etag: stored.etag, versionId: objectVersion.parse(stored.versionId) };
 }
 function initial(approval: Approval, digest: string, now: Date, requestId: string | null, revocation: string | null): State {
   return stateSchema.parse({ approvalId: approval.approvalId, delegationId: approval.delegationId, approvalSha256: digest,
@@ -145,8 +174,17 @@ async function createOrRead(store: PrivateApprovalStore, key: string, approval: 
 }
 async function replaceState(store: PrivateApprovalStore, key: string, prior: { state: State; etag: string }, patch: Partial<State>, now: Date) {
   const next = stateSchema.parse({ ...prior.state, ...patch, revision: prior.state.revision + 1, updatedAt: now.toISOString() });
-  await store.replace(key, prior.etag, controlWire(next));
-  return next;
+  const versionId = objectVersion.parse(await store.replace(key, prior.etag, controlWire(next)));
+  return { state: next, versionId };
+}
+
+function auditEvidence(documents: Omit<PrivateReadAuditEvidence, "state">, key: string,
+  version: { state: State; versionId: string }): PrivateReadAuditEvidence {
+  // Give the transport owned copies. It must never mutate the broker's authenticated input.
+  return { approval: snapshot(documents.approval), delegation: snapshot(documents.delegation),
+    ...(documents.request === undefined ? {} : { request: snapshot(documents.request) }),
+    ...(documents.revocation === undefined ? {} : { revocation: snapshot(documents.revocation) }),
+    state: { key, versionId: version.versionId, bytes: controlWire(version.state) } };
 }
 
 const summarySchemas = {
@@ -169,9 +207,87 @@ const auditEventSchema = z.object({
   purposeId: controlPurpose.nullable(), stateRevision: controlCounter.nullable(),
   resultCode: z.enum(["OK", "REVOKED", "REPLAY", "ABORTED"]), previousEventSha256: controlDigest.nullable()
 }).strict();
-async function acknowledgeAudit(ports: PrivateReadPorts, authority: PrivateReadObservation, value: unknown) {
+const auditSubmissionMaximum = 65_536;
+const encodedControl = z.string().min(4).max(Math.ceil(16_384 / 3) * 4);
+const auditSubmissionSchema = z.object({
+  ...controlBase("bootstrap-private-read-audit-submission"), event: encodedControl,
+  approval: encodedControl, delegation: encodedControl, request: encodedControl.optional(), revocation: encodedControl.optional(),
+  state: z.object({ key: controlText(128), versionId: objectVersion, bytes: encodedControl }).strict()
+}).strict();
+function decodeControl(value: string): Buffer {
+  const bytes = Buffer.from(value, "base64");
+  requireControl(bytes.byteLength > 0 && bytes.byteLength <= 16_384 && bytes.toString("base64") === value);
+  return bytes;
+}
+/** The transport proof signs the digest of this whole submission, including the verified state version. */
+export function encodePrivateReadAuditSubmission(event: Uint8Array, evidence: PrivateReadAuditEvidence): Buffer {
+  const part = (bytes: Uint8Array) => {
+    requireControl(bytes instanceof Uint8Array && bytes.byteLength > 0 && bytes.byteLength <= 16_384);
+    return Buffer.from(bytes).toString("base64");
+  };
+  const encoded = controlWire(auditSubmissionSchema.parse({
+    domain: "bootstrap-private-read-audit-submission", version: 1, canonicalization: "sorted-json-v1",
+    event: part(event), approval: part(evidence.approval), delegation: part(evidence.delegation),
+    ...(evidence.request === undefined ? {} : { request: part(evidence.request) }),
+    ...(evidence.revocation === undefined ? {} : { revocation: part(evidence.revocation) }),
+    state: { key: evidence.state.key, versionId: evidence.state.versionId, bytes: part(evidence.state.bytes) }
+  }));
+  requireControl(encoded.byteLength <= auditSubmissionMaximum);
+  return encoded;
+}
+/** Only preliminary parsing for endpoint routing. Signed request/scope verification follows identity authentication. */
+export function inspectPrivateReadAuditSubmission(body: Uint8Array) {
+  const encoded = auditSubmissionSchema.parse(parsePrivateControl(body, auditSubmissionMaximum));
+  const bytes = decodeControl(encoded.event);
+  const event = auditEventSchema.parse(parsePrivateControl(bytes));
+  requireControl(event.subject);
+  return { repository: event.subject.repository, actorId: event.actorId };
+}
+/** Validate event and transition scope under the authenticated broker context. Returns data, not audit authority. */
+export function verifyPrivateReadAuditSubmission(body: Uint8Array, authority: PrivateReadObservation, now: Date, skewSeconds: number) {
+  const encoded = auditSubmissionSchema.parse(parsePrivateControl(body, auditSubmissionMaximum));
+  const eventBytes = decodeControl(encoded.event);
+  const event = auditEventSchema.parse(parsePrivateControl(eventBytes));
+  const stateBytes = decodeControl(encoded.state.bytes);
+  const state = parsePrivateApprovalStateRecord(stateBytes);
+  const documents = { approval: decodeControl(encoded.approval), delegation: decodeControl(encoded.delegation) };
+  const eventTime = ms(event.at);
+  requireControl(eventTime <= now.getTime() && now.getTime() - eventTime <= skewSeconds * 1000
+    && ms(state.updatedAt) <= eventTime && event.configEpoch === authority.configEpoch && event.configEpoch === state.configEpoch
+    && event.workloadId === authority.brokerWorkloadId && event.actorId === authority.requesterId
+    && event.approvalSha256 === fingerprint(documents) && event.approvalSha256 === state.approvalSha256
+    && event.delegationId === state.delegationId && event.stateRevision === state.revision
+    && encoded.state.key === privateApprovalStateKey(state.delegationId, state.approvalId));
+  let approval: Approval;
+  if (encoded.revocation !== undefined) {
+    requireControl(encoded.request === undefined && event.previousEventSha256 === null);
+    const verified = verifyRevocation(documents, decodeControl(encoded.revocation), authority, new Date(eventTime));
+    approval = verified.approval;
+    requireControl(verified.signed.ownerId === event.actorId &&
+      (event.phase === "revoked" && event.resultCode === "REVOKED" && state.state === "revoked"
+        || event.phase === "failed" && event.resultCode === "REPLAY" && state.state === "spent"));
+    // A durable tombstone may come from an earlier authorized revocation of the same approval.
+  } else {
+    requireControl(encoded.request !== undefined && state.operationId === event.operationId);
+    const failed = event.phase === "failed";
+    const verified = authorize({ ...documents, request: decodeControl(encoded.request) }, authority, new Date(state.updatedAt), failed ? "audit-failure" : "read");
+    approval = verified.approval;
+    requireControl(state.requestId === verified.request.requestId);
+    if (failed) requireControl(event.resultCode === "ABORTED" && state.state !== "available");
+    else requireControl(event.resultCode === "OK" &&
+      (event.phase === "attempt" && state.state === "reserved" && event.previousEventSha256 === null
+        || event.phase === "complete" && state.state === "spent" && event.previousEventSha256 !== null));
+  }
+  requireControl(approval.approvalId === state.approvalId && approval.delegationId === state.delegationId);
+  for (const field of ["subject", "runId", "storage", "receiptSha256", "purposeId", "requestSha256"] as const) {
+    requireControl(same(approval[field], event[field]));
+  }
+  return { event, eventBytes, stateKey: encoded.state.key, stateVersionId: encoded.state.versionId,
+    stateSha256: controlHash(stateBytes), categoryIds: approval.categoryIds, revoked: encoded.revocation !== undefined };
+}
+async function acknowledgeAudit(ports: PrivateReadPorts, authority: PrivateReadObservation, value: unknown, evidence: PrivateReadAuditEvidence) {
   const event = auditEventSchema.parse(value); const bytes = controlWire(event); const eventHash = controlHash(bytes);
-  const verified = verifyPrivateControl(await ports.audit(bytes), ackSchema, "audit-ack", authority.keys, ports.now());
+  const verified = verifyPrivateControl(await ports.audit(bytes, evidence), ackSchema, "audit-ack", authority.keys, ports.now());
   const ack = verified.payload;
   requireControl(typeof authority.auditPrefix === "string" && authority.auditPrefix.length > 0 && authority.auditPrefix.endsWith("/")
     && verified.ownerId === authority.auditOwnerId && ack.configEpoch === authority.configEpoch && ack.eventId === event.eventId
@@ -189,18 +305,10 @@ export function createPrivateReadCoordinator(ports: PrivateReadPorts) {
       const documents = { approval: snapshot(input.approval), delegation: snapshot(input.delegation) };
       const revocation = snapshot(input.revocation);
       const observed = await ports.observe(); const now = ports.now();
-      const approval = verifyApproval(documents, observed, now, "revoke");
-      let signed;
-      try { signed = verifyPrivateControl(revocation, revocationSchema, "deployment-root", observed.keys, now); }
-      catch { signed = verifyPrivateControl(revocation, revocationSchema, "codex-read-approval", observed.keys, now);
-        requireControl(signed.ownerId === approval.approverWorkloadId && signed.fingerprint ===
-          verifyPrivateControl(documents.approval, privateReadApprovalSchema, "codex-read-approval", observed.keys, now).fingerprint); }
-      const r = signed.payload; const digest = fingerprint(documents);
-      requireControl(r.scopeId === approval.approvalId && r.delegationId === approval.delegationId && r.scopeSha256 === digest
-        && r.configEpoch === observed.configEpoch && ms(r.at) <= now.getTime());
+      const { approval, signed, digest } = verifyRevocation(documents, revocation, observed, now);
       const key = privateApprovalStateKey(approval.delegationId, approval.approvalId);
-      let current = await readState(ports.state, key, approval, digest);
-      if (!current) current = await createOrRead(ports.state, key, approval, initial(approval, digest, now, null, signed.sha256));
+      // Conditional create arbitrates first use without a missing-object read or ListBucket grant.
+      let current = await createOrRead(ports.state, key, approval, initial(approval, digest, now, null, signed.sha256));
       // Bounded arbitration; repeated conflicts deny acknowledgment, never overwrite a winner.
       for (let attempt = 0; attempt < 4; attempt++) {
         if (current.state.state === "revoked" || current.state.state === "spent") {
@@ -210,7 +318,8 @@ export function createPrivateReadCoordinator(ports: PrivateReadPorts) {
             configEpoch: observed.configEpoch, actorId: signed.ownerId, workloadId: observed.brokerWorkloadId,
             requestSha256: approval.requestSha256, approvalSha256: digest, delegationId: approval.delegationId,
             receiptSha256: approval.receiptSha256, subject: approval.subject, runId: approval.runId, storage: approval.storage,
-            purposeId: approval.purposeId, stateRevision: current.state.revision, resultCode: spent ? "REPLAY" : "REVOKED", previousEventSha256: null });
+            purposeId: approval.purposeId, stateRevision: current.state.revision, resultCode: spent ? "REPLAY" : "REVOKED", previousEventSha256: null },
+          auditEvidence({ ...documents, revocation }, key, current));
           return spent ? "already-spent" : "revoked";
         }
         requireControl(current.state.state === "available" || current.state.state === "reserved");
@@ -228,25 +337,26 @@ export function createPrivateReadCoordinator(ports: PrivateReadPorts) {
       const observed = await ports.observe(); const now = ports.now();
       const { request, approval } = authorize(documents, observed, now);
       const digest = fingerprint(documents); const key = privateApprovalStateKey(approval.delegationId, approval.approvalId);
-      let current = await readState(ports.state, key, approval, digest);
-      if (!current) current = await createOrRead(ports.state, key, approval, initial(approval, digest, now, request.requestId, null));
+      // Existing state wins the conditional create; a terminal tombstone is never reinitialized.
+      const current = await createOrRead(ports.state, key, approval, initial(approval, digest, now, request.requestId, null));
       requireControl(current.state.state === "available" && current.state.requestId === request.requestId);
       // Ledger latency must not carry an earlier authorization past its validity window.
       authorize(documents, observed, ports.now());
       const operationId = randomUUID();
       const reserved = await replaceState(ports.state, key, current, { state: "reserved", operationId }, ports.now());
       let previousEventSha256: string | null = null;
-      const record = async (eventPhase: z.infer<typeof phase>, authority: PrivateReadObservation, revision: number) => {
+      const record = async (eventPhase: z.infer<typeof phase>, authority: PrivateReadObservation, version: { state: State; versionId: string }) => {
         const event = { domain: "bootstrap-private-audit-event", version: 1, canonicalization: "sorted-json-v1",
           eventId: randomUUID(), operationId, phase: eventPhase, at: ports.now().toISOString(), configEpoch: authority.configEpoch,
           actorId: request.requesterId, workloadId: authority.brokerWorkloadId, requestSha256: controlHash(documents.request), approvalSha256: digest,
           delegationId: approval.delegationId, receiptSha256: request.receiptSha256, subject: request.subject, runId: request.runId,
-          storage: request.storage, purposeId: request.purposeId, stateRevision: revision, resultCode: eventPhase === "failed" ? "ABORTED" : "OK", previousEventSha256 };
-        previousEventSha256 = await acknowledgeAudit(ports, authority, event);
+          storage: request.storage, purposeId: request.purposeId, stateRevision: version.state.revision,
+          resultCode: eventPhase === "failed" ? "ABORTED" : "OK", previousEventSha256 };
+        previousEventSha256 = await acknowledgeAudit(ports, authority, event, auditEvidence(documents, key, version));
       };
       try {
         authorize(documents, observed, ports.now());
-        await record("attempt", observed, reserved.revision);
+        await record("attempt", observed, reserved);
         const beforeLoad = await ports.observe();
         authorize(documents, beforeLoad, ports.now()); requireControl(same(observed, beforeLoad));
         const beforeDecrypt = await readState(ports.state, key, approval, digest);
@@ -266,15 +376,15 @@ export function createPrivateReadCoordinator(ports: PrivateReadPorts) {
         // A late CAS acknowledgment cannot establish a timely spend. Never refund terminal state.
         authorize(documents, refreshed, ports.now());
         // Confirmed timely spend is the authorization point; completion audit still gates release.
-        await record("complete", refreshed, spent.revision);
+        await record("complete", refreshed, spent);
         return Buffer.from(plaintext);
       } catch {
         try {
           const latest = await readState(ports.state, key, approval, digest);
-          if (latest?.state.state === "reserved" && latest.state.operationId === operationId) {
-            await replaceState(ports.state, key, latest, { state: "failed" }, ports.now());
-          }
-          await record("failed", observed, latest?.state.revision ?? reserved.revision);
+          const version = latest?.state.state === "reserved" && latest.state.operationId === operationId
+            ? await replaceState(ports.state, key, latest, { state: "failed" }, ports.now())
+            : latest ?? reserved;
+          await record("failed", observed, version);
         } catch { /* Failed audit/state cannot authorize release or replace a terminal tombstone. */ }
         throw new PrivateControlError();
       }

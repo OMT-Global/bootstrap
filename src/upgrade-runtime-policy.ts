@@ -5,6 +5,9 @@ import { z } from "zod";
 import { generatorSnapshot, type PublicGeneratorCapture } from "./upgrade-generator.js";
 import { copySnapshotFiles } from "./upgrade-git.js";
 import { boundedValue, ObservationFailure, PublicObservationRead, publicHead, publicRepository, readPublicFile, record } from "./upgrade-public-read.js";
+import { runtimePolicyProjectionConflict, runtimePolicyProjectionSchema, type RuntimePolicyProjection } from "./upgrade-runtime-schema.js";
+
+export { governanceRole, type RuntimePolicyProjection } from "./upgrade-runtime-schema.js";
 
 export const RUNTIME_CONTROLLER = Object.freeze({ repository: "OMT-Global/bootstrap", id: 1194768990 });
 export const runtimeDigest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -13,28 +16,12 @@ const oid = z.string().regex(/^[0-9a-f]{40}$/);
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
 const positive = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const slug = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/);
-const reference = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
-export const governanceRole = z.enum(["cohort", "pilot", "exception", "major"]);
-const identity = z.object({ repository: slug, id: positive }).strict();
-const policySchema = z.object({
-  schemaVersion: z.literal(1), organization: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/),
-  repositories: z.array(identity).min(1).max(500),
-  governance: identity.extend({ issue: positive }),
-  actors: z.array(z.object({ id: positive, login: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/),
-    roles: z.array(governanceRole).min(1).max(4) }).strict()).min(1).max(100),
-  signing: z.object({ principal: reference, publicKey: z.string().regex(/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$/), keyReference: reference }).strict().optional(),
-  review: z.object({ profile: z.literal("fleet-native-sol-high-v1"), authorSession: reference, reviewerPrincipal: reference }).strict().optional(),
-  app: z.object({ appId: positive, installationId: positive, keyReference: reference,
-    profile: z.enum(["fleet-publication-v1", "fleet-workflow-publication-v1"]) }).strict().optional(),
-  attemptDirectory: z.string().max(4096).refine(path.isAbsolute).optional()
-}).strict();
 const requestSchema = z.object({ repository: slug, repositoryId: positive, originalRoot: z.string().max(4096).refine(path.isAbsolute),
   generatorRoot: z.string().max(4096).refine(path.isAbsolute), generatorCommit: oid,
   target: z.object({ ref: z.string().regex(/^(?:[0-9a-f]{40}|refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+)$/), sha256: digest }).strict(),
   cohortComment: positive.optional()
 }).strict();
 export type UpgradeRuntimeRequest = z.infer<typeof requestSchema>;
-export type RuntimePolicyProjection = z.infer<typeof policySchema>;
 export type RuntimePolicy = Readonly<{ controllerCommit: string; projectionDigest: string; requests: number; receivedBytes: number }>;
 type OwnedPolicy = Readonly<{ generator: PublicGeneratorCapture; projection: RuntimePolicyProjection; manifestSha256: string; signal?: AbortSignal }>;
 const policies = new WeakMap<RuntimePolicy, OwnedPolicy>();
@@ -47,12 +34,10 @@ export function parseUpgradeRuntimeRequest(value: unknown): UpgradeRuntimeReques
 }
 /** Parsing configuration alone grants no authority; the producer below binds its source. */
 export function parseRuntimePolicyProjection(value: unknown): RuntimePolicyProjection {
-  boundedValue(value); const parsed = policySchema.parse(value);
-  runtimeDemand(new Set(parsed.repositories.map((repo) => repo.id)).size === parsed.repositories.length &&
-    new Set(parsed.repositories.map((repo) => repo.repository.toLowerCase())).size === parsed.repositories.length, "duplicate-repository");
-  runtimeDemand(new Set(parsed.actors.map((actor) => actor.id)).size === parsed.actors.length &&
-    new Set(parsed.actors.map((actor) => actor.login.toLowerCase())).size === parsed.actors.length, "duplicate-actor");
-  for (const actor of parsed.actors) runtimeDemand(new Set(actor.roles).size === actor.roles.length, "duplicate-role");
+  boundedValue(value);
+  const parsed = runtimePolicyProjectionSchema.parse(value);
+  const conflict = runtimePolicyProjectionConflict(parsed);
+  if (conflict) throw new ObservationFailure(conflict);
   return freezeRuntimeValue(parsed);
 }
 export function readRuntimePolicy(handle: RuntimePolicy): OwnedPolicy {

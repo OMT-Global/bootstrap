@@ -19,6 +19,19 @@ describe("CLI help", () => {
     expect(result.stdout).not.toContain("--create-pr");
   });
 
+  it("registers the governed planner and refuses publication before opening the request", async () => {
+    const command = [cli, "upgrade-public-repository"];
+    const help = await execFileAsync(tsx, [...command, "--help"]);
+    expect(help.stdout).toContain("--request <path>");
+    expect(help.stdout).toContain("Request publication (unavailable)");
+    const attempt = await execFileAsync(tsx, [...command, "--request", "/nonexistent/fabricated-request", "--publish", "--json"])
+      .catch((error: { code: number; stdout: string; stderr: string }) => error);
+    expect(attempt).toMatchObject({ code: 1, stderr: "" });
+    expect(JSON.parse(attempt.stdout)).toMatchObject({
+      status: "blocked", authority: "none", publication: "unavailable", reason: "publication-unavailable"
+    });
+  });
+
   it("describes configured webhook delivery", async () => {
     const [deliver, exceptions, conform] = await Promise.all([
       execFileAsync(tsx, [cli, "notifications", "deliver", "--help"]),

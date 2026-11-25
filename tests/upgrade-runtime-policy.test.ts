@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import YAML from "yaml";
 const state = vi.hoisted(() => ({ capture: {} as object, snapshot: {} as object, bytes: Buffer.alloc(0), changed: false, head: "a".repeat(40) }));
 vi.mock("../src/upgrade-generator.js", () => ({ generatorSnapshot(value: object) {
   if (value !== state.capture) throw new Error("unowned generator"); return state.snapshot;
@@ -14,7 +15,8 @@ vi.mock("../src/upgrade-public-read.js", async (original) => ({
   publicHead: vi.fn(async () => state.head),
   readPublicFile: vi.fn(async () => ({ mode: "100644", sha256: state.changed ? "f".repeat(64) : createHash("sha256").update(state.bytes).digest("hex") }))
 }));
-import { captureRuntimePolicy, missingRuntimeConfiguration, parseRuntimePolicyProjection, parseUpgradeRuntimeRequest, readRuntimePolicy } from "../src/upgrade-runtime-policy.js";
+import { normalizeManifest, stringifyManifest } from "../src/manifest.js";
+import { captureRuntimePolicy, missingRuntimeConfiguration, parseRuntimePolicyProjection, parseUpgradeRuntimeRequest, readRuntimePolicy, type RuntimePolicy } from "../src/upgrade-runtime-policy.js";
 import type { PublicGeneratorCapture } from "../src/upgrade-generator.js";
 
 function projection() {
@@ -22,6 +24,10 @@ function projection() {
     governance: { repository: "OMT-Global/bootstrap", id: 1194768990, issue: 62 },
     actors: [{ id: 42, login: "operator", roles: ["cohort", "pilot", "exception", "major"] }] };
 }
+const manifestIdentity = {
+  project: { name: "bootstrap", owner: "OMT-Global", visibility: "public" as const },
+  archetype: { kind: "generic-empty" as const }
+};
 beforeEach(() => {
   state.capture = { sourceCommit: "a".repeat(40), tree: "b".repeat(40), sourceSha256: "c".repeat(64) };
   state.snapshot = { baseCommit: "a".repeat(40), tree: "b".repeat(40), sourceSha256: "c".repeat(64) };
@@ -52,6 +58,24 @@ describe("owned runtime policy", () => {
   });
 });
 describe("bounded projections and request claims", () => {
+  it("round-trips the optional fleet configuration without granting runtime authority", () => {
+    const fleetRuntime = {
+      ...projection(),
+      signing: { principal: "fixture-signer", publicKey: "ssh-ed25519 AA==", keyReference: "fixture-signing-key" },
+      review: { profile: "fleet-native-sol-high-v1", authorSession: "fixture-author", reviewerPrincipal: "fixture-reviewer" },
+      app: { appId: 61, installationId: 62, keyReference: "fixture-app-key", profile: "fleet-workflow-publication-v1" },
+      attemptDirectory: "/fixture/attempts"
+    };
+    const absent = normalizeManifest(manifestIdentity);
+    expect(absent).not.toHaveProperty("fleetRuntime");
+    expect(YAML.parse(stringifyManifest(absent))).not.toHaveProperty("fleetRuntime");
+    const manifest = normalizeManifest({ ...manifestIdentity, fleetRuntime } as Parameters<typeof normalizeManifest>[0]);
+    const roundTrip = normalizeManifest(YAML.parse(stringifyManifest(manifest)));
+    expect(roundTrip.unknownSettings).toEqual([]);
+    expect(roundTrip.fleetRuntime).toEqual(fleetRuntime);
+    expect(() => readRuntimePolicy(roundTrip.fleetRuntime as unknown as RuntimePolicy)).toThrow("unowned-runtime-policy");
+  });
+
   it.each(["duplicate id", "duplicate name", "duplicate actor", "duplicate role"])("rejects %s", (kind) => {
     const value = projection();
     if (kind === "duplicate id") value.repositories.push({ id: 1, repository: "OMT-Global/b" });
@@ -59,6 +83,13 @@ describe("bounded projections and request claims", () => {
     if (kind === "duplicate actor") value.actors.push({ ...value.actors[0]! });
     if (kind === "duplicate role") value.actors[0]!.roles.push("cohort");
     expect(() => parseRuntimePolicyProjection(value)).toThrow();
+    expect(() => normalizeManifest({ ...manifestIdentity, fleetRuntime: value } as Parameters<typeof normalizeManifest>[0])).toThrow();
+  });
+
+  it("rejects a nested secret field in both manifest and runtime projection parsing", () => {
+    const fleetRuntime = { ...projection(), actors: [{ ...projection().actors[0], token: "forbidden" }] };
+    expect(() => parseRuntimePolicyProjection(fleetRuntime)).toThrow();
+    expect(() => normalizeManifest({ ...manifestIdentity, fleetRuntime } as Parameters<typeof normalizeManifest>[0])).toThrow();
   });
   it("rejects executable/token/URL overrides and keeps caller objects separate", () => {
     const value = { repository: "OMT-Global/a", repositoryId: 1, originalRoot: "/fixture/target", generatorRoot: "/fixture/generator",

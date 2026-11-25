@@ -16,6 +16,13 @@ not recreate the helpers' process-owned associations. The generator capture must
 match the observation; the complete raw snapshot must match its public base
 commit and tree. The requested policy version must advance.
 
+`preparePublicUpgrade` in `src/upgrade-history.ts` obtains the input snapshot
+through the fixed anonymous Git transport. It fetches the observed commit into
+a fresh private Git directory and reuses the pack audit used for later candidate
+history acquisition. It verifies the raw commit, exact tree and bounded stream
+of regular blobs, rechecks the public repository's numeric identity and default
+branch head, then removes the temporary Git directory before preparation begins.
+
 Before and after staging, anonymous bounded reads recheck the public repository's
 numeric identity, visibility and default head, the Flow publisher identity, and
 both policy selectors. The original ordinary checkout is audited against the

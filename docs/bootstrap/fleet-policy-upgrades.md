@@ -16,11 +16,62 @@ Policy versions use numeric `X.Y.Z` triplets, optionally prefixed by `v`. Compon
 
 The planner does not create PRs, execute target-repository code, or verify remote pilot outcomes. Operators must attach policy diff, validation, exceptions, and provenance evidence to any governed upgrade PR.
 
-## Guarded execution follow-up
+## Governed upgrade dry run
 
-[#62](https://github.com/OMT-Global/bootstrap/issues/62) remains open for version-aware PR generation. Its mutating executor is deferred until an isolated validation backend and the credential boundary receive independent review. Repository-controlled checks, Git hooks, and review tools must execute without the orchestrator's GitHub publication credentials or machine-local authentication state. Only reviewed outputs should cross into narrowly scoped credentialed publication. Planner eligibility does not establish that this isolation or pilot verification exists.
+[#62](https://github.com/OMT-Global/bootstrap/issues/62) remains open for governed PR generation. [#268](https://github.com/OMT-Global/bootstrap/pull/268) prepares exact candidates. [#272](https://github.com/OMT-Global/bootstrap/pull/272) and [#273](https://github.com/OMT-Global/bootstrap/pull/273) provide runtime policy and pilot verification. [#274](https://github.com/OMT-Global/bootstrap/pull/274) and [#275](https://github.com/OMT-Global/bootstrap/pull/275) provide native review and signing.
 
-This change retains the planner's pending-pilot repair and the separate reconciliation recovery behavior below. It provides no new upgrade execution command or unsafe opt-in around the isolation gate.
+The governed command plans a single selected repository. Its read-only plan needs a clean trusted Linux Bootstrap generator checkout at the current public controller commit, the controller's enrolled `fleetRuntime` policy, and current public governance evidence. The request selects one public repository by name and numeric ID, an exact Flow target and digest, and the existing local paths. Keep request files local. The paths below are fabricated.
+
+```sh
+bootstrap upgrade-public-repository --request ./upgrade-request.json
+bootstrap upgrade-public-repository --request ./upgrade-request.json --json
+```
+
+```json
+{
+  "repository": "example/widget",
+  "repositoryId": 501,
+  "originalRoot": "/home/example/checkouts/widget",
+  "generatorRoot": "/home/example/checkouts/bootstrap",
+  "generatorCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "target": {
+    "ref": "refs/tags/v1.2.3",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "cohortComment": 720
+}
+```
+
+A verified plan exits zero and reports the selected base, rollout role, pilot status, and pending publication gates. Missing, blocked, or stale evidence exits nonzero with a redacted reason. Publication remains unavailable in this source stage, and `--publish` exits nonzero. A passing pilot requires the merged PR and CI evidence below.
+
+### Pilot outcomes and remediation
+
+The enrolled human pilot actor records outcomes in the configured governance issue. Each comment body consists of the marker line and a single compact JSON line in `JSON.stringify` form. Paste just those two lines as the comment body, ending immediately after the JSON object. Select the current cohort and its exact target digest. The examples below are fabricated alternatives.
+
+A passing record binds an actual merged PR, its exact candidate and merge commits, and successful CI evidence for the recorded target.
+
+```text
+PRS-FLEET-GOVERNANCE-001
+{"schemaVersion":1,"kind":"pilot-outcome","outcome":"passed","cohort":720,"repositoryId":501,"targetDigest":"1111111111111111111111111111111111111111111111111111111111111111","candidateCommit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","mergedCommit":"cccccccccccccccccccccccccccccccccccccccc","pullNumber":42,"ci":{"runId":900,"attempt":1,"evidenceSha256":"2222222222222222222222222222222222222222222222222222222222222222","workflowSha256":"3333333333333333333333333333333333333333333333333333333333333333"}}
+```
+
+A failed outcome can refer to a candidate whose PR has yet to merge. Supply a merge commit only when the PR actually merged.
+
+```text
+PRS-FLEET-GOVERNANCE-001
+{"schemaVersion":1,"kind":"pilot-outcome","outcome":"failed","cohort":720,"repositoryId":501,"targetDigest":"1111111111111111111111111111111111111111111111111111111111111111","candidateCommit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","pullNumber":42,"failure":"The representative failed validation."}
+```
+
+A remediation record references the failed outcome's comment ID. This permits the representative to retry. Later members of the same class stay blocked until an authenticated pass for that target.
+
+```text
+PRS-FLEET-GOVERNANCE-001
+{"schemaVersion":1,"kind":"remediation","cohort":720,"repositoryId":501,"targetDigest":"1111111111111111111111111111111111111111111111111111111111111111","failedComment":723,"resolution":"The failed validation was corrected and reviewed."}
+```
+
+### Publication recovery
+
+The forthcoming executor depends on the exact signed candidate, verified native capture and provenance, and the narrowly scoped App. After an uncertain branch write, PR creation, or credential cleanup, retain the attempt and reconcile the exact ref and PR with a maintainer. The unresolved repository record blocks a fresh attempt for that numeric repository, including a regenerated candidate or different branch.
 
 ## Reconciliation recovery
 

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { readTextIfExists } from "./lib/fs.js";
 import { isSupportedSpdxIdentifier } from "./spdx.js";
+import { runtimePolicyProjectionConflict, runtimePolicyProjectionSchema } from "./upgrade-runtime-schema.js";
 import type {
   AdditionalWorkflowConfig,
   DependabotConfig,
@@ -560,6 +561,10 @@ const manifestSchema = z.object({
     .optional(),
   capabilities: capabilitiesSchema.optional(),
   policy: policySchema.optional(),
+  fleetRuntime: runtimePolicyProjectionSchema.superRefine((projection, context) => {
+    const conflict = runtimePolicyProjectionConflict(projection);
+    if (conflict) context.addIssue({ code: "custom", message: conflict });
+  }).optional(),
   exceptions: z.array(exceptionSchema).optional(),
   environments: z
     .object({
@@ -572,7 +577,7 @@ const manifestSchema = z.object({
 }).passthrough();
 
 const KNOWN_MANIFEST_SETTINGS = new Set([
-  "version", "project", "publisher", "license", "notifications", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "exceptions", "environments"
+  "version", "project", "publisher", "license", "notifications", "repo", "archetype", "github", "ci", "release", "agents", "capabilities", "policy", "fleetRuntime", "exceptions", "environments"
 ]);
 
 function slugify(value: string): string {
@@ -970,6 +975,7 @@ export function normalizeManifest(raw: z.input<typeof manifestSchema>): Bootstra
     },
     ...(parsed.license ? { license: parsed.license as LicensePolicy } : {}),
     ...(parsed.notifications ? { notifications: { ...parsed.notifications } } : {}),
+    ...(parsed.fleetRuntime ? { fleetRuntime: parsed.fleetRuntime } : {}),
     repo: normalizeRepo(parsed.repo),
     archetype: {
       kind: parsed.archetype.kind,

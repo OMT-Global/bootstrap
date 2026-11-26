@@ -1,0 +1,11 @@
+# Private audit HTTPS framing
+
+The enrolled audit worker uses `createPrivateReadAuditRequestListener` as its direct Node HTTPS request listener. The listener accepts the actual negotiated TLS socket with the configuration-pinned local certificate. The HTTP Host must match the installed audit origin. Use a protected listener configuration with a bounded native header parser and connection timeouts. A TLS-terminating proxy cannot supply the socket for this protocol.
+
+1. Send HTTP/1.1 `POST /challenge` with a single `Content-Length: 0` and no credentials. The canonical JSON response carries the one-use challenge, audit origin and dedicated OIDC audience. Keep the same TLS connection.
+2. Send `POST /audit` on that connection. Use a single exact `Content-Length`, a canonical private read audit submission of at most 65,536 bytes, and `Content-Type: application/json`. The enrolled broker sends its endpoint-audience OIDC token as `Authorization: Bearer …` and the canonical signed workload proof as standard padded Base64 in `X-Bootstrap-Workload-Proof`. The proof signs the submission digest and the connection's challenge.
+3. The listener authenticates the broker and event, checks the stored audit object by exact version, and consumes that verified result in the fixed custody signer. The canonical signed acknowledgment is the only successful submission response. It is returned once with caching disabled, and the connection is closed. The broker must verify the existing acknowledgment contract before continuing.
+
+The listener caps requests at 30 seconds and holds at most 16 active requests. It rejects duplicate transport headers, partial or oversized bodies, content encodings, transfer encodings and pipelining. A connection drop cancels work and may leave an unacknowledged stored event. Failures return a fixed response or terminate the connection, without reissuing an acknowledgment or retrying storage.
+
+Protected deployment still must supply the listener's TLS configuration, native connection limits and the broker-side proof and delivery composition. Configure the server's native `checkContinue` path if it must reject an `Expect` header before Node sends an interim response. The wire tests exercise the actual listener with fabricated TLS messages and provider responses.

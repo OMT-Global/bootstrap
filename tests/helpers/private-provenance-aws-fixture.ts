@@ -6,7 +6,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { generateProvenanceSigningKeyPair, provenanceSigningKeyFingerprint } from "../../src/provenance.js";
 import { controlHash, controlWire, type PrivateControlKey } from "../../src/private-provenance-control.js";
-import { deploymentRolePurposes, verifyCurrentPointer, verifyInstalledDeployment, type DeploymentBinding, type DeploymentBootstrap } from "../../src/private-provenance-deployment.js";
+import { deploymentRolePurposes, verifyCurrentPointer, verifyInstalledDeployment, type DeploymentBootstrap } from "../../src/private-provenance-deployment.js";
 import { establishPrivateRoleIdentity } from "../../src/private-provenance-identity.js";
 
 const issuedAt = "2026-11-15T00:00:00.000Z";
@@ -65,12 +65,19 @@ function fixture(purpose: Purpose) {
     workloadPurpose: purpose, roleArn: localRole.arn, oidcSubject: localRole.oidcSubject, admin: { ...binding.admin } };
   const signed = (payload: unknown, fingerprint = rootFingerprint) => controlWire({ payload, signature: { keyFingerprint: fingerprint,
     value: sign(null, controlWire(payload), createPrivateKey({ key: pairs.get(fingerprint)!.privateKey, format: "jwk" })).toString("base64") } });
-  const install = () => verifyInstalledDeployment(signed(binding), bootstrap, now);
+  const installFor = (selected: Purpose) => {
+    const worker = workloads.find((entry) => entry.purpose === selected)!;
+    const role = roles.find((entry) => entry.purpose === selected)!;
+    return verifyInstalledDeployment(signed(binding), { ...bootstrap,
+      workloadId: worker.id, workloadPurpose: selected, roleArn: role.arn, oidcSubject: role.oidcSubject }, now);
+  };
+  const install = () => installFor(purpose);
   const pointer = (bytes = signed(binding)) => ({ ...controlBase("bootstrap-active-config"), configId: binding.configId,
     epoch: binding.epoch, bindingSha256: controlHash(bytes), issuedAt: now.toISOString(), validUntil });
   const current = (payload = pointer(), installed = install()) => verifyCurrentPointer({ bytes: signed(payload),
     bucket: bootstrap.configBucket, key: bootstrap.configKey }, installed, now);
-  return { binding, bootstrap, rootKey, rootFingerprint, key, signed, install, pointer, current };
+  return { binding, bootstrap, rootKey, rootFingerprint, key, signed, install, installFor, pointer, current,
+    testKeyPair: (fingerprint: string) => pairs.get(fingerprint)! };
 }
 
 const jwtPair = await generateKeyPair("RS256");
@@ -80,8 +87,10 @@ export const capturedAt = now.toISOString();
 export const retainUntil = new Date(now.getTime() + 90 * 86_400_000).toISOString();
 export const intent = { captureId, capturedAt, retainUntil };
 export type Hook = (phase: string, value: any, command?: any) => unknown;
-export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, configure?: (binding: DeploymentBinding) => void) {
-  const f = fixture(purpose); configure?.(f.binding); const installed = f.install();
+export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, configure?: (f: ReturnType<typeof fixture>) => void) {
+  const f = fixture(purpose);
+  configure?.(f);
+  const installed = f.install();
   const worker = f.binding.workloads.find((w: any) => w.purpose === purpose);
   const role = f.binding.aws.roles.find((r: any) => r.purpose === purpose);
   const seconds = now.getTime() / 1000;
@@ -95,6 +104,7 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, 
     new SignJWT(payload).setProtectedHeader({ alg: "RS256", kid: jwk.kid, typ: "JWT" }).sign(jwtPair.privateKey);
   const token = await issue(claims);
   const broker = f.binding.workloads.find((w: any) => w.purpose === "read-broker");
+  const brokerRole = f.binding.aws.roles.find((r: any) => r.purpose === "read-broker");
   const peerToken = (audience: string, as: Purpose = "read-broker") => {
     const peer = f.binding.workloads.find((w: any) => w.purpose === as);
     const peerRole = f.binding.aws.roles.find((r: any) => r.purpose === as);
@@ -105,7 +115,7 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, 
   vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fabricated-actions-token");
   vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://pipelines.actions.githubusercontent.com/fabricated/idtoken?api-version=2.0");
   vi.stubEnv("GITHUB_RUN_ID", "100"); vi.stubEnv("GITHUB_RUN_ATTEMPT", "2");
-  const repo = { id: 123, full_name: "fixture/control", owner: { id: 456 } };
+  const repo = { id: 123, full_name: "fixture/control", owner: { id: 456 }, private: false, node_id: "fixture-repository" };
   const run = { id: 100, run_attempt: 2, repository: repo, head_repository: repo, head_sha: "b".repeat(40), event: "workflow_dispatch",
     head_branch: "main", status: "in_progress", conclusion: null, actor: { id: 9 }, path: ".github/workflows/caller.yml@main",
     referenced_workflows: [{ path: worker.workflowRef, sha: worker.workflowSha }] };
@@ -116,10 +126,15 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, 
   const brokerRun = { ...run, id: 101, referenced_workflows: [{ path: broker.workflowRef, sha: broker.workflowSha }] };
   const brokerJob = { ...job, id: 998, run_id: 101, run_url: prefix + "/actions/runs/101",
     labels: ["self-hosted", "linux"], check_run_url: prefix + "/check-runs/301" };
+  let brokerAwsToken: string | undefined;
   const fetchCalls: any[] = []; const stsCalls: any[] = []; const s3Calls: any[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input, init) => {
     const url = String(input); fetchCalls.push({ url, init }); let phase: string; let value: any;
-    if (url.startsWith("https://pipelines.actions.githubusercontent.com/")) { phase = "token"; value = { value: token }; }
+    if (url.startsWith("https://pipelines.actions.githubusercontent.com/")) {
+      phase = "token";
+      const requested = new URL(url).searchParams.get("audience");
+      value = { value: !brokerAwsToken ? token : requested && requested !== "sts.amazonaws.com" ? await peerToken(requested) : brokerAwsToken };
+    }
     else if (url === "https://token.actions.githubusercontent.com/.well-known/jwks") { phase = "jwks"; value = { keys: [jwk] }; }
     else if (url === prefix) { phase = "repository"; value = repo; }
     else if (url.endsWith("/actions/runs/101/attempts/2/jobs?per_page=100")) { phase = "peer-jobs"; value = { total_count: 1, jobs: [brokerJob] }; }
@@ -128,14 +143,19 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, 
     else if (url.endsWith("/attempts/2/jobs?per_page=100")) { phase = "jobs"; value = { total_count: 1, jobs: [job] }; }
     else if (url.endsWith("/attempts/2")) { phase = "attempt"; value = run; }
     else if (url.endsWith("/actions/runs/100")) { phase = "current"; value = run; }
+    else if (url === prefix + "/pulls/44") { phase = "pull"; value = undefined; }
+    else if (url === "https://api.github.com/graphql") { phase = "graphql"; value = undefined; }
     else throw new Error("Unexpected mocked URL");
     value = await hook?.(phase, structuredClone(value)) ?? value;
     return value instanceof Response ? value : new Response(JSON.stringify(value), { status: 200 });
   }));
   vi.spyOn(STSClient.prototype, "send").mockImplementation(async function(this: STSClient, command: any, options: any) {
     stsCalls.push({ input: command.input, config: this.config, options });
-    const value = { $metadata: { httpStatusCode: 200 }, SubjectFromWebIdentityToken: role.oidcSubject, Audience: "sts.amazonaws.com",
-      AssumedRoleUser: { Arn: `arn:aws:sts::123456789012:assumed-role/${purpose}/bootstrap-100-2` },
+    const brokerRequest = Boolean(brokerAwsToken) && command.input.RoleArn === brokerRole.arn;
+    if (brokerRequest && command.input.WebIdentityToken !== brokerAwsToken) throw new Error("Unexpected fabricated broker STS token");
+    const value = { $metadata: { httpStatusCode: 200 }, SubjectFromWebIdentityToken: brokerRequest ? brokerRole.oidcSubject : role.oidcSubject,
+      Audience: "sts.amazonaws.com",
+      AssumedRoleUser: { Arn: `arn:aws:sts::123456789012:assumed-role/${brokerRequest ? "read-broker/bootstrap-101-2" : `${purpose}/bootstrap-100-2`}` },
       Credentials: { AccessKeyId: `fabricated-access-${stsCalls.length}`, SecretAccessKey: "fabricated-secret", SessionToken: "fabricated-session",
         Expiration: new Date(now.getTime() + 900_000) } };
     return await hook?.("sts", value, command) ?? value;
@@ -170,5 +190,10 @@ export async function payloadHarness(purpose: Purpose = "capture", hook?: Hook, 
   return { f, installed, token, peerToken, bytes, storage, makeEnvelope, common, fetchCalls, stsCalls, s3Calls,
     setHook: (next?: Hook) => { hook = next; }, setBytes: (value: Buffer) => { storedBytes = value; },
     setPointer: (value: any) => { pointerPayload = value; }, start: (signal?: AbortSignal) => establishPrivateRoleIdentity(installed, signal),
+    async startBroker() {
+      brokerAwsToken = await peerToken("sts.amazonaws.com");
+      vi.stubEnv("GITHUB_RUN_ID", "101");
+      return establishPrivateRoleIdentity(f.installFor("read-broker"));
+    },
     payloadCalls: () => s3Calls.filter((c) => c.input.Bucket === "fabricated-payload") };
 }

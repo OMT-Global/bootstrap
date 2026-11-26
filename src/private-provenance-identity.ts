@@ -1,21 +1,33 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, sign } from "node:crypto";
+import type { IncomingMessage } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { TLSSocket } from "node:tls";
 import { AssumeRoleWithWebIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { GetObjectCommand, GetObjectRetentionCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DecryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { createLocalJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { z } from "zod";
 import { parseCanonical, PRIVATE_PROVENANCE_LIMITS, RETENTION_MS, timestamp } from "./private-provenance-codec.js";
 import {
-  inspectPrivateReadAuditSubmission, parsePrivateApprovalStateRecord, privateApprovalStateKey, PrivateStateConflict,
-  verifyPrivateReadAuditSubmission, type PrivateApprovalStore
+  encodePrivateReadAuditSubmission, inspectPrivateReadAuditSubmission, parsePrivateApprovalStateRecord,
+  privateApprovalStateKey, privateAuditAckSchema, PrivateStateConflict, verifyPrivateReadAuditAck, verifyPrivateReadAuditSubmission,
+  type PrivateApprovalStore, type PrivateReadObservation, type PrivateReadPorts
 } from "./private-provenance-read.js";
-import { controlBase, controlDigest, controlHash, controlId, controlText, verifyPrivateControl, type PrivateControlKey } from "./private-provenance-control.js";
+import { controlBase, controlDigest, controlHash, controlId, controlText, controlWire, parsePrivateControl,
+  verifyPrivateControl, type PrivateControlKey } from "./private-provenance-control.js";
 import { createPrivateCiphertextWriter, createPrivateCiphertextVerifier, type PrivateCaptureStorageIntent,
   type PrivateCiphertextStorage, type PrivateCiphertextInspection } from "./private-provenance-storage.js";
 import {
   inspectInstalledDeployment, verifyCurrentPointer,
   type InstalledDeployment, type CurrentDeployment
 } from "./private-provenance-deployment.js";
+import { observeWorkloadPublicGitHubReviews, publicPullRequestContextSchema,
+  type PublicPullRequestContext } from "./provenance-github.js";
+import {
+  createPublicProvenance, provenanceSigningKeyFingerprint, signedProvenanceSigningPayload,
+  signedPublicProvenanceSchema, verifySignedPublicProvenance, PROVENANCE_SIGNATURE_ALGORITHM,
+  PROVENANCE_CANONICALIZATION_ID, SIGNED_PROVENANCE_ENVELOPE_VERSION, type ProvenanceSigningPublicKey
+} from "./provenance.js";
 
 const ISSUER = "https://token.actions.githubusercontent.com";
 const JWKS = `${ISSUER}/.well-known/jwks`;
@@ -90,7 +102,7 @@ async function json(url: string, token: string | undefined, signal: AbortSignal,
   } finally { signal.removeEventListener("abort", cancel); cancel(); }
 }
 
-function runtime() {
+function runtime(audience = AUDIENCE) {
   const token = process.env.GITHUB_TOKEN;
   const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   const runId = process.env.GITHUB_RUN_ID; const attempt = process.env.GITHUB_RUN_ATTEMPT;
@@ -103,8 +115,8 @@ function runtime() {
     && /^[a-z0-9-]+\.actions\.githubusercontent\.com$/.test(url.hostname)
     && /^\/[A-Za-z0-9._/-]+\/idtoken$/.test(url.pathname)
     && [...url.searchParams.keys()].every((key) => key === "api-version" || key === "audience")
-    && (!url.searchParams.has("audience") || url.searchParams.get("audience") === AUDIENCE));
-  url.searchParams.set("audience", AUDIENCE);
+    && (!url.searchParams.has("audience") || url.searchParams.get("audience") === audience));
+  url.searchParams.set("audience", audience);
   return { githubToken: token, requestToken, tokenUrl: url.href, runId, attempt };
 }
 function enrollment(installed: InstalledDeployment, workloadId = installed.localWorkloadId) {
@@ -217,7 +229,7 @@ async function pointer(session: Session, signal: AbortSignal): Promise<CurrentDe
 
 // Credentials stay inside this module; every exchange uses the already verified exact role/token.
 async function exchange(session: Pick<Session, "installed" | "token" | "claims" | "runId" | "attempt">,
-  policy: string, signal: AbortSignal): Promise<{ s3: S3Client; expires: number }> {
+  policy: string, signal: AbortSignal, custody = false): Promise<{ s3: S3Client; expires: number; kms?: KMSClient }> {
   const { binding, role } = enrollment(session.installed);
   insist(!signal.aborted && Date.now() < session.claims.exp! * 1000 && Buffer.byteLength(policy) <= 2048);
   const config = { region: REGION, maxAttempts: 1, useFipsEndpoint: false, useDualstackEndpoint: false,
@@ -236,11 +248,16 @@ async function exchange(session: Pick<Session, "installed" | "token" | "claims" 
         `arn:aws:sts::${binding.aws.accountId}:assumed-role/${role.arn.split("/").at(-1)}/${sessionName}`
       && c && text(c.AccessKeyId, 128) && text(c.SecretAccessKey, 256) && text(c.SessionToken, 16_384)
       && expires && Number.isFinite(expires) && expires > Date.now() + 30_000 && expires <= started + role.sessionSeconds * 1000 + 5000);
+    const credentials = {
+      accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken, expiration: c.Expiration!
+    };
     const s3 = new S3Client({ ...config, endpoint: `https://s3.${REGION}.amazonaws.com`, forcePathStyle: true,
-      followRegionRedirects: false, useArnRegion: false, credentials: {
-        accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken, expiration: c.Expiration!
-      } });
-    return { s3, expires: Math.min(expires, session.claims.exp! * 1000, Date.parse(binding.validUntil)) };
+      followRegionRedirects: false, useArnRegion: false, credentials });
+    try {
+      const kms = custody ? new KMSClient({ ...config, endpoint: `https://kms.${REGION}.amazonaws.com`, credentials }) : undefined;
+      return { s3, expires: Math.min(expires, session.claims.exp! * 1000, Date.parse(binding.validUntil)),
+        ...(kms ? { kms } : {}) };
+    } catch (error) { s3.destroy(); throw error; }
   } finally { sts.destroy(); }
 }
 /** Fixed Actions-runtime entrypoint; importing the module performs no credential lookup or provider operation. */
@@ -272,6 +289,170 @@ export async function refreshPrivateRoleIdentity(identity: PrivateRoleIdentity, 
 export function disposePrivateRoleIdentity(identity: PrivateRoleIdentity): void {
   const session = sessions.get(identity); insist(session); sessions.delete(identity);
   session.controller.abort(); session.s3.destroy(); session.token = ""; session.githubToken = "";
+}
+
+// The configured descriptor is selected exclusively through the enrolled local workload and current root binding.
+function signingCustody(session: Session, purpose: "public-manifest" | "audit-ack" | "workload-transport") {
+  const { binding, workload } = enrollment(session.installed);
+  const transport = purpose === "workload-transport";
+  insist(workload.purpose === (transport ? "read-broker" : purpose === "public-manifest" ? "public-signer" : "audit"));
+  const fingerprint = transport ? workload.transportKeyFingerprint : workload.signingKeyFingerprint;
+  const key = session.installed.keys.find((entry) => entry.fingerprint === fingerprint);
+  insist(key && key.ownerId === workload.id && key.purpose === purpose && !key.revoked && key.custody
+    && Date.parse(key.notBefore) <= Date.now() && Date.now() < Date.parse(key.notAfter));
+  return {
+    key, versionId: key.custody.versionId, sha256: key.custody.ciphertextSha256,
+    object: `keys/${transport ? "transport" : "semantic"}/v1/${binding.epoch}/${key.fingerprint}.pkcs8.kms`,
+    context: { purpose: key.purpose, ownerId: key.ownerId, fingerprint: key.fingerprint, configEpoch: String(binding.epoch) }
+  };
+}
+function custodyPolicy(session: Session, custody: ReturnType<typeof signingCustody>) {
+  const { binding } = enrollment(session.installed);
+  const resource = `arn:aws:s3:::${binding.aws.buckets.custody}/${custody.object}`;
+  return JSON.stringify({ Version: "2012-10-17", Statement: [
+    { Effect: "Allow", Action: "s3:GetObjectVersion", Resource: resource,
+      Condition: { StringEquals: { "s3:VersionId": custody.versionId } } },
+    { Effect: "Allow", Action: "kms:Decrypt", Resource: binding.aws.keys.serviceArn,
+      Condition: { StringEquals: { "kms:ViaService": `s3.${REGION}.amazonaws.com`, "kms:CallerAccount": binding.aws.accountId,
+        "kms:EncryptionContext:aws:s3:arn": resource } } },
+    { Effect: "Allow", Action: "kms:Decrypt", Resource: binding.aws.keys.custodyArn, Condition: {
+      StringEquals: { "kms:CallerAccount": binding.aws.accountId, "kms:EncryptionAlgorithm": "SYMMETRIC_DEFAULT",
+        ...Object.fromEntries(Object.entries(custody.context).map(([key, value]) => [`kms:EncryptionContext:${key}`, value])) },
+      "ForAllValues:StringEquals": { "kms:EncryptionContextKeys": Object.keys(custody.context) }
+    } }
+  ] });
+}
+const MAX_WRAPPED_SIGNER_BYTES = 6144;
+const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+
+async function readCustodyObject(session: Session, custody: ReturnType<typeof signingCustody>, signal: AbortSignal) {
+  const { binding } = enrollment(session.installed);
+  const output = await session.s3.send(new GetObjectCommand({
+    Bucket: binding.aws.buckets.custody, Key: custody.object, VersionId: custody.versionId,
+    ExpectedBucketOwner: binding.aws.accountId, ChecksumMode: "ENABLED"
+  }), { abortSignal: signal });
+  const body = output.Body;
+  const destroy = () => { if (body && "destroy" in body && typeof body.destroy === "function") body.destroy(); };
+  signal.addEventListener("abort", destroy, { once: true });
+  try {
+    insist(!signal.aborted && Date.now() < session.expires && output.$metadata.httpStatusCode === 200
+      && output.VersionId === custody.versionId && output.ChecksumType === "FULL_OBJECT"
+      && output.ServerSideEncryption === "aws:kms" && output.SSEKMSKeyId === binding.aws.keys.serviceArn
+      && output.BucketKeyEnabled !== true && !output.DeleteMarker && output.ContentRange === undefined
+      && output.PartsCount === undefined && output.SSECustomerAlgorithm === undefined
+      && Number.isSafeInteger(output.ContentLength) && output.ContentLength! > 0 && output.ContentLength! <= MAX_WRAPPED_SIGNER_BYTES
+      && body && Symbol.asyncIterator in body);
+    const bytes = Buffer.alloc(output.ContentLength!);
+    let length = 0;
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      insist(!signal.aborted && Date.now() < session.expires && chunk instanceof Uint8Array
+        && chunk.byteLength > 0 && length + chunk.byteLength <= bytes.length);
+      bytes.set(chunk, length);
+      length += chunk.byteLength;
+    }
+    const digest = createHash("sha256").update(bytes).digest();
+    insist(!signal.aborted && length === bytes.length && output.ChecksumSHA256 === digest.toString("base64")
+      && custody.sha256 === digest.toString("hex"));
+    return bytes;
+  } finally {
+    signal.removeEventListener("abort", destroy);
+    destroy();
+  }
+}
+
+// Never expose an unwrapped key or a general signing function outside this module.
+async function unwrapSigningKey(session: Session, scoped: Session, kms: KMSClient | undefined,
+  custody: ReturnType<typeof signingCustody>, signal: AbortSignal) {
+  const ciphertext = await readCustodyObject(scoped, custody, signal);
+  const { binding } = enrollment(session.installed);
+  await pointer(session, signal);
+  insist(kms && !signal.aborted && Date.now() < scoped.expires);
+  const response = await kms.send(new DecryptCommand({ CiphertextBlob: ciphertext, KeyId: binding.aws.keys.custodyArn,
+    EncryptionAlgorithm: "SYMMETRIC_DEFAULT", EncryptionContext: custody.context }), { abortSignal: signal });
+  const plaintext = response.Plaintext;
+  try {
+    insist(!signal.aborted && Date.now() < scoped.expires && response.$metadata.httpStatusCode === 200
+      && response.KeyId === binding.aws.keys.custodyArn && response.EncryptionAlgorithm === "SYMMETRIC_DEFAULT"
+      && response.CiphertextForRecipient === undefined && plaintext instanceof Uint8Array
+      && plaintext.byteLength === ED25519_PKCS8_PREFIX.byteLength + 32
+      && ED25519_PKCS8_PREFIX.every((byte, index) => plaintext[index] === byte));
+    const der = Buffer.from(plaintext.buffer, plaintext.byteOffset, plaintext.byteLength);
+    const privateKey = createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+    insist(privateKey.asymmetricKeyType === "ed25519");
+    const publicKey = createPublicKey(privateKey).export({ format: "jwk" }) as ProvenanceSigningPublicKey;
+    insist(provenanceSigningKeyFingerprint(publicKey) === custody.key.fingerprint);
+    return { privateKey, publicKey };
+  } finally { if (plaintext instanceof Uint8Array) plaintext.fill(0); }
+}
+
+async function observeSignablePullRequest(session: Session, expected: PublicPullRequestContext, signal: AbortSignal) {
+  const { binding } = enrollment(session.installed);
+  const enrolled = binding.repositories.find((repo) => repo.nameWithOwner === expected.repository);
+  insist(enrolled);
+  const root = `https://api.github.com/repos/${enrolled.nameWithOwner}`;
+  const baseMatches = (repo: Json) => repo && id(repo.id) === enrolled.id && repo.full_name === enrolled.nameWithOwner
+    && repo.private === false && repo.owner && id(repo.owner.id) === enrolled.ownerId && text(repo.node_id, 256);
+  const native = await json(root, session.githubToken, signal);
+  insist(baseMatches(native));
+  const observe = async () => {
+    const pr = await json(`${root}/pulls/${expected.pullRequest}`, session.githubToken, signal);
+    insist(pr.number === expected.pullRequest && pr.state === "open" && pr.draft === false
+      && text(pr.node_id, 256) && baseMatches(pr.base?.repo) && pr.base.repo.node_id === native.node_id
+      && pr.base.ref === enrolled.baseRef.slice("refs/heads/".length) && sha(pr.base.sha)
+      && pr.head?.sha === expected.commitSha && pr.head.repo?.private === false && text(pr.head.repo.node_id, 256));
+    return { identity: { repositoryNodeId: native.node_id, headRepositoryNodeId: pr.head.repo.node_id, pullRequestNodeId: pr.node_id },
+      baseSha: pr.base.sha };
+  };
+  const before = await observe();
+  const identity = before.identity;
+  const reviews = await observeWorkloadPublicGitHubReviews(expected, identity, session.githubToken, signal);
+  insist(JSON.stringify(before) === JSON.stringify(await observe()));
+  return { reviewers: reviews.reviewers, snapshot: JSON.stringify({ ...before, reviews: reviews.snapshot }) };
+}
+
+/** Construct a v2 envelope only for current native approvals of the selected enrolled PR. */
+export async function signPrivateRolePublicProvenance(identity: PrivateRoleIdentity, selector: PublicPullRequestContext,
+  signal?: AbortSignal): Promise<Buffer> {
+  try {
+    const session = sessions.get(identity);
+    insist(session && !session.controller.signal.aborted && Date.now() < session.expires);
+    const expected = publicPullRequestContextSchema.parse(selector);
+    const custody = signingCustody(session, "public-manifest");
+    return await bounded([session.controller.signal, ...(signal ? [signal] : [])], async (abortSignal) => {
+      await fresh(session, abortSignal);
+      const before = await observeSignablePullRequest(session, expected, abortSignal);
+      await fresh(session, abortSignal);
+      const lease = await exchange(session, custodyPolicy(session, custody), abortSignal, true);
+      let result: Buffer;
+      try {
+        const scoped = { ...session, ...lease };
+        await pointer(session, abortSignal);
+        const { privateKey, publicKey } = await unwrapSigningKey(session, scoped, lease.kms, custody, abortSignal);
+        await pointer(session, abortSignal);
+        insist(!abortSignal.aborted && Date.now() < lease.expires);
+        signingCustody(session, "public-manifest");
+        const signedAt = new Date().toISOString();
+        const manifest = createPublicProvenance({ runId: `gh-${session.runId}-${session.attempt}`,
+          subject: { repository: expected.repository, commitSha: expected.commitSha, ref: `refs/pull/${expected.pullRequest}/head` },
+          execution: { workflow: "bootstrap-public-signer", createdAt: signedAt }, reviewers: before.reviewers });
+        const value = sign(null, Buffer.from(signedProvenanceSigningPayload(manifest, signedAt), "utf8"), privateKey).toString("base64");
+        const envelope = signedPublicProvenanceSchema.parse({ envelopeVersion: SIGNED_PROVENANCE_ENVELOPE_VERSION, manifest,
+          signature: { algorithm: PROVENANCE_SIGNATURE_ALGORITHM, canonicalization: PROVENANCE_CANONICALIZATION_ID, publicKey,
+            fingerprint: custody.key.fingerprint, signedAt, value } });
+        verifySignedPublicProvenance(envelope, { trustedPublicKeys: [custody.key.publicJwk], expectedSubject: expected });
+        result = controlWire(envelope);
+        insist(result.byteLength <= PRIVATE_PROVENANCE_LIMITS.publicEnvelope);
+      } finally {
+        lease.kms?.destroy();
+        lease.s3.destroy();
+      }
+      const after = await observeSignablePullRequest(session, expected, abortSignal);
+      insist(before.snapshot === after.snapshot);
+      await fresh(session, abortSignal);
+      signingCustody(session, "public-manifest");
+      return result;
+    }, 120_000);
+  } catch { throw new PrivateIdentityError(); }
 }
 
 const PAYLOAD_PREFIX = "payloads/captures/";
@@ -309,7 +490,8 @@ function immutableObjectPolicy(session: Session, bucket: string, key: string, ve
 }
 async function fresh(session: Session, signal: AbortSignal) {
   insist(!signal.aborted && !session.controller.signal.aborted && Date.now() < session.expires);
-  await nativeContext(session, signal); await pointer(session, signal);
+  await nativeContext(session, signal);
+  return await pointer(session, signal);
 }
 function clientKey(bytes: Uint8Array, keyArn: string) {
   const value = parseCanonical(bytes, PRIVATE_PROVENANCE_LIMITS.envelope, 5) as { header?: { kmsKeyArn?: unknown } };
@@ -573,9 +755,12 @@ export interface PrivateAuditAdmission {
   readonly eventId: string;
 }
 type AuditSubmission = ReturnType<typeof verifyPrivateReadAuditSubmission>;
+type AuditConnection = { identity: PrivateRoleIdentity; expires: number; socket: TLSSocket; brokerClaims: JWTPayload };
 const auditAdmissions = new WeakMap<PrivateAuditAdmission, {
-  identity: PrivateRoleIdentity; submission: AuditSubmission; expires: number; socket: TLSSocket; brokerClaims: JWTPayload
-}>();
+  submission: AuditSubmission
+} & AuditConnection>();
+export type VerifiedPrivateAuditStorage = Readonly<Omit<z.infer<typeof privateAuditAckSchema>, "domain" | "version" | "canonicalization">>;
+const auditStorageEvidence = new WeakMap<VerifiedPrivateAuditStorage, AuditConnection & { eventAt: string }>();
 
 function auditContext(identity: PrivateRoleIdentity) {
   const session = sessions.get(identity);
@@ -585,7 +770,10 @@ function auditContext(identity: PrivateRoleIdentity) {
   const broker = binding.workloads.find((item) => item.purpose === "read-broker");
   const endpoint = binding.endpoints.find((item) => item.purpose === "audit");
   insist(broker && endpoint);
-  const keys: PrivateControlKey[] = session.installed.keys.flatMap((key) => {
+  return { session, binding, workload, broker, endpoint, keys: controlKeyring(session.installed) };
+}
+function controlKeyring(installed: InstalledDeployment): PrivateControlKey[] {
+  return installed.keys.flatMap((key) => {
     switch (key.purpose) {
       case "deployment-root": case "requester-request": case "codex-read-approval": case "audit-ack": case "workload-transport":
         return [{ ownerId: key.ownerId, purpose: key.purpose, publicKey: key.publicJwk,
@@ -593,7 +781,23 @@ function auditContext(identity: PrivateRoleIdentity) {
       default: return [];
     }
   });
-  return { session, binding, workload, broker, endpoint, keys };
+}
+function verifyAuditScope(body: Uint8Array, binding: InstalledDeployment["binding"], auditOwnerId: string,
+  brokerWorkloadId: string, keys: readonly PrivateControlKey[]) {
+  const route = inspectPrivateReadAuditSubmission(body);
+  const repository = binding.repositories.find((repo) => repo.nameWithOwner === route.repository);
+  insist(repository);
+  const observation: PrivateReadObservation = { configEpoch: binding.epoch, approvalMaxSeconds: binding.policy.approvalMaxSeconds,
+    repositoryId: repository.id, repository: repository.nameWithOwner, requesterId: route.actorId,
+    auditOwnerId, auditBucket: binding.aws.buckets.audit, auditPrefix: "events/", brokerWorkloadId, keys };
+  const submission = verifyPrivateReadAuditSubmission(body, observation, new Date(), binding.policy.clockSkewSeconds);
+  if (!submission.revoked) {
+    const actor = binding.principals.find((p) => p.kind === "requester" && p.id === route.actorId);
+    insist(actor && actor.repositoryIds.includes(repository.id) && submission.event.purposeId
+      && actor.purposeIds.includes(submission.event.purposeId)
+      && submission.categoryIds.every((category) => actor.categoryIds.includes(category)));
+  }
+  return { observation, submission };
 }
 function requireAuditSocket(socket: TLSSocket, expectedSpkiSha256: string) {
   insist(socket instanceof TLSSocket && socket.encrypted && !socket.destroyed && socket.getProtocol());
@@ -615,7 +819,8 @@ export function createPrivateReadAuditIngress(identity: PrivateRoleIdentity, sig
     challenges.set(socket, state);
     return Object.freeze({ challengeId: state.challengeId, nonce: state.nonce, origin: endpoint.origin, audience });
   }
-  async function admit(socket: TLSSocket, token: string, proof: Uint8Array, body: Uint8Array): Promise<PrivateAuditAdmission> {
+  async function admit(socket: TLSSocket, token: string, proof: Uint8Array, body: Uint8Array,
+    requestSignal?: AbortSignal): Promise<PrivateAuditAdmission> {
     try {
       requireAuditSocket(socket, endpoint.tlsSpkiSha256);
       const pending = challenges.get(socket);
@@ -628,7 +833,7 @@ export function createPrivateReadAuditIngress(identity: PrivateRoleIdentity, sig
       const abort = () => close.abort();
       socket.once("close", abort);
       try {
-        return await bounded([close.signal, session.controller.signal, ...(signal ? [signal] : [])], async (abortSignal) => {
+        return await bounded([close.signal, session.controller.signal, ...(signal ? [signal] : []), ...(requestSignal ? [requestSignal] : [])], async (abortSignal) => {
           const signed = verifyPrivateControl(ownedProof, workloadProof, "workload-transport", keys, new Date());
           const p = signed.payload;
           insist(signed.ownerId === broker.id && signed.fingerprint === broker.transportKeyFingerprint && p.workloadId === broker.id
@@ -641,20 +846,7 @@ export function createPrivateReadAuditIngress(identity: PrivateRoleIdentity, sig
           const expires = Math.min(pending.expires, claims.exp! * 1000, session.expires);
           insist(!abortSignal.aborted && Date.now() < expires);
           requireAuditSocket(socket, endpoint.tlsSpkiSha256);
-          const route = inspectPrivateReadAuditSubmission(ownedBody);
-          const repository = binding.repositories.find((repo) => repo.nameWithOwner === route.repository);
-          insist(repository);
-          const submission = verifyPrivateReadAuditSubmission(ownedBody, { configEpoch: binding.epoch,
-            approvalMaxSeconds: binding.policy.approvalMaxSeconds,
-            repositoryId: repository.id, repository: repository.nameWithOwner, requesterId: route.actorId,
-            auditOwnerId: workload.id, auditBucket: binding.aws.buckets.audit, auditPrefix: "events/",
-            brokerWorkloadId: broker.id, keys }, new Date(), binding.policy.clockSkewSeconds);
-          if (!submission.revoked) {
-            const actor = binding.principals.find((p) => p.kind === "requester" && p.id === route.actorId);
-            insist(actor && actor.repositoryIds.includes(repository.id) && submission.event.purposeId
-              && actor.purposeIds.includes(submission.event.purposeId)
-              && submission.categoryIds.every((category) => actor.categoryIds.includes(category)));
-          }
+          const { submission } = verifyAuditScope(ownedBody, binding, workload.id, broker.id, keys);
           insist(Date.now() < expires);
           const admitted = Object.freeze({ eventId: submission.event.eventId });
           auditAdmissions.set(admitted, { identity, submission, expires, socket, brokerClaims: claims });
@@ -663,7 +855,7 @@ export function createPrivateReadAuditIngress(identity: PrivateRoleIdentity, sig
       } finally { socket.removeListener("close", abort); }
     } catch { throw new PrivateIdentityError(); }
   }
-  return Object.freeze({ challenge, admit });
+  return Object.freeze({ origin: endpoint.origin, challenge, admit });
 }
 
 function closeAuditResourceOnAbort(signal: AbortSignal, dispose: () => void): () => void {
@@ -685,7 +877,8 @@ function closeAuditResourceOnAbort(signal: AbortSignal, dispose: () => void): ()
 }
 
 /** Fixed audit-only storage. A successful result is verified storage evidence, not a signed acknowledgment. */
-export async function persistPrivateRoleAuditEvent(identity: PrivateRoleIdentity, admission: PrivateAuditAdmission, signal?: AbortSignal) {
+export async function persistPrivateRoleAuditEvent(identity: PrivateRoleIdentity, admission: PrivateAuditAdmission,
+  signal?: AbortSignal): Promise<VerifiedPrivateAuditStorage> {
   try {
     const { session, binding, broker, endpoint } = auditContext(identity);
     const admitted = auditAdmissions.get(admission);
@@ -766,10 +959,219 @@ export async function persistPrivateRoleAuditEvent(identity: PrivateRoleIdentity
       now();
       requireAuditSocket(socket, endpoint.tlsSpkiSha256);
       now();
-      return Object.freeze({ eventId: event.eventId, eventSha256: controlHash(eventBytes),
+      const evidence = Object.freeze({ eventId: event.eventId, eventSha256: controlHash(eventBytes),
         operationId: event.operationId, phase: event.phase, recordedAt, retainUntil, configEpoch: event.configEpoch,
         storage: Object.freeze({ region: REGION, bucket, key: object.Key, versionId }) });
+      auditStorageEvidence.set(evidence, { identity, expires, socket, brokerClaims, eventAt: event.at });
+      return evidence;
     }, 30_000); }
     finally { socket.removeListener("close", close); }
   } catch { throw new PrivateIdentityError(); }
+}
+
+/** The enrolled audit worker may sign only a recent, locally verified and unused storage result. */
+export async function signPrivateRoleAuditAck(identity: PrivateRoleIdentity, evidence: VerifiedPrivateAuditStorage,
+  signal?: AbortSignal): Promise<Buffer> {
+  try {
+    const { session, binding, workload, broker, endpoint, keys } = auditContext(identity);
+    const stored = auditStorageEvidence.get(evidence);
+    insist(stored && stored.identity === identity);
+    auditStorageEvidence.delete(evidence);
+    const { socket, brokerClaims, eventAt, expires } = stored;
+    const confirm = () => {
+      const time = Date.now();
+      requireAuditSocket(socket, endpoint.tlsSpkiSha256);
+      insist(time < expires && Date.parse(eventAt) <= time && time - Date.parse(eventAt) <= binding.policy.clockSkewSeconds * 1000
+        && evidence.configEpoch === binding.epoch && evidence.storage.bucket === binding.aws.buckets.audit
+        && evidence.storage.key === `events/${evidence.eventId}.json` && Date.parse(evidence.recordedAt) <= time
+        && Date.parse(evidence.retainUntil) === Date.parse(evidence.recordedAt) + binding.policy.auditDays * 86_400_000
+        && time < Date.parse(evidence.retainUntil));
+    };
+    confirm();
+    const custody = signingCustody(session, "audit-ack");
+    const closed = new AbortController();
+    const close = () => closed.abort();
+    socket.once("close", close);
+    try {
+      return await bounded([closed.signal, session.controller.signal, ...(signal ? [signal] : [])], async (abortSignal) => {
+        await fresh(session, abortSignal); confirm();
+        const lease = await exchange(session, custodyPolicy(session, custody), abortSignal, true);
+        try {
+          const { privateKey } = await unwrapSigningKey(session, { ...session, ...lease }, lease.kms, custody, abortSignal);
+          await nativeContext({ ...session, claims: brokerClaims, runId: String(brokerClaims.run_id),
+            attempt: String(brokerClaims.run_attempt) }, abortSignal, broker.id);
+          await fresh(session, abortSignal); confirm();
+          insist(!abortSignal.aborted && Date.now() < lease.expires);
+          signingCustody(session, "audit-ack");
+          const payload = privateAuditAckSchema.parse({
+            domain: "bootstrap-private-audit-ack", version: 1, canonicalization: "sorted-json-v1", ...evidence
+          });
+          const acknowledged = controlWire({ payload, signature: { keyFingerprint: custody.key.fingerprint,
+            value: sign(null, controlWire(payload), privateKey).toString("base64") } });
+          const verified = verifyPrivateControl(acknowledged, privateAuditAckSchema, "audit-ack", keys, new Date());
+          insist(verified.ownerId === workload.id && verified.fingerprint === custody.key.fingerprint);
+          return acknowledged;
+        } finally {
+          lease.kms?.destroy();
+          lease.s3.destroy();
+        }
+      }, 30_000);
+    } finally { socket.removeListener("close", close); }
+  } catch { throw new PrivateIdentityError(); }
+}
+
+const auditChallengeSchema = z.object({
+  challengeId: controlId, nonce: z.string().regex(/^[A-Za-z0-9+/]{43}=$/).refine((value) => Buffer.from(value, "base64").toString("base64") === value),
+  origin: controlText(512), audience: controlText(1024)
+}).strict();
+
+function requirePinnedAuditPeer(socket: TLSSocket, expectedPin: string) {
+  insist(socket.authorized && !socket.destroyed && socket.getProtocol());
+  const certificate = socket.getPeerX509Certificate();
+  insist(certificate && createHash("sha256").update(certificate.publicKey.export({ type: "spki", format: "der" }))
+    .digest("hex") === expectedPin);
+}
+
+async function readAuditHttpResponse(response: IncomingMessage, socket: TLSSocket, signal: AbortSignal, challenge: boolean) {
+  const headers = response.headersDistinct;
+  const lengths = headers["content-length"];
+  insist(response.socket === socket && response.statusCode === 200 && response.httpVersion === "1.1"
+    && headers["content-type"]?.length === 1 && headers["content-type"][0] === "application/json"
+    && headers["transfer-encoding"] === undefined && headers["content-encoding"] === undefined
+    && headers["trailer"] === undefined && (!challenge || !headers.connection?.some((value) => /(?:^|,)\s*close\s*(?:,|$)/i.test(value)))
+    && lengths?.length === 1 && /^[1-9][0-9]{0,4}$/.test(lengths[0]!));
+  const length = Number(lengths[0]);
+  insist(length <= MAX_DOCUMENT);
+  const bytes = Buffer.alloc(length);
+  let offset = 0;
+  for await (const chunk of response) {
+    insist(!signal.aborted && Buffer.isBuffer(chunk) && chunk.byteLength > 0 && offset + chunk.byteLength <= bytes.length);
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  insist(!signal.aborted && response.complete && response.rawTrailers.length === 0 && offset === bytes.length);
+  return bytes;
+}
+
+type AuditHttpSend =
+  | { path: "/challenge"; body: Buffer }
+  | { path: "/audit"; body: Buffer; token: string; proof: Buffer; socket: TLSSocket; expires: number };
+
+function postPrivateAudit(endpoint: URL, pin: string, agent: HttpsAgent, input: AuditHttpSend,
+  signal: AbortSignal): Promise<{ socket: TLSSocket; bytes: Buffer }> {
+  return new Promise((resolve, reject) => {
+    let socket: TLSSocket | undefined;
+    let response: IncomingMessage | undefined;
+    const req = httpsRequest({ protocol: "https:", hostname: endpoint.hostname.replace(/^\[|\]$/g, ""), port: endpoint.port || 443,
+      path: input.path, method: "POST", agent, signal, rejectUnauthorized: true,
+      headers: { Host: endpoint.host, "Content-Length": input.body.byteLength,
+        ...(input.path === "/audit" ? { "Content-Type": "application/json" } : {}) }
+    }, (message) => {
+      response = message;
+      const peer = socket;
+      if (!peer) { fail(); return; }
+      void readAuditHttpResponse(message, peer, signal, input.path === "/challenge").then(
+        (bytes) => resolve({ socket: peer, bytes }), fail
+      );
+    });
+    function fail() {
+      response?.destroy();
+      req.destroy();
+      reject(new PrivateIdentityError());
+    }
+    req.once("error", fail);
+    req.once("socket", (candidate) => {
+      if (!(candidate instanceof TLSSocket) || signal.aborted || candidate.destroyed
+        || (input.path === "/audit" && candidate !== input.socket)) { fail(); return; }
+      socket = candidate;
+      const write = () => {
+        try {
+          insist(!signal.aborted);
+          requirePinnedAuditPeer(candidate, pin);
+          if (input.path === "/audit") {
+            // Do not attach credentials or send bytes on a replacement or unverified TLS connection.
+            insist(Date.now() < input.expires);
+            req.setHeader("Authorization", `Bearer ${input.token}`);
+            req.setHeader("X-Bootstrap-Workload-Proof", input.proof.toString("base64"));
+          }
+          req.end(input.body);
+        } catch { fail(); }
+      };
+      if (candidate.authorized && candidate.getProtocol()) write();
+      else candidate.once("secureConnect", write);
+    });
+  });
+}
+
+/** Fixed audit port for the enrolled broker. It accepts no target, trust override or arbitrary signing callback. */
+export function createPrivateRoleReadBrokerAudit(identity: PrivateRoleIdentity, signal?: AbortSignal): PrivateReadPorts["audit"] {
+  const { session, binding } = stateSession(identity);
+  const { workload } = enrollment(session.installed);
+  const audit = binding.workloads.find((item) => item.purpose === "audit");
+  const endpoint = binding.endpoints.find((item) => item.purpose === "audit");
+  insist(audit && endpoint);
+  const target = new URL(endpoint.origin);
+  const audience = `${endpoint.origin}/audit`;
+  const keys = controlKeyring(session.installed);
+  signingCustody(session, "workload-transport");
+
+  return async (event, evidence) => {
+    try {
+      const body = encodePrivateReadAuditSubmission(event, evidence);
+      const { observation, submission } = verifyAuditScope(body, binding, audit.id, workload.id, keys);
+      const custody = signingCustody(session, "workload-transport");
+      return await bounded([session.controller.signal, ...(signal ? [signal] : [])], async (abortSignal) => {
+        await fresh(session, abortSignal);
+        const agent = new HttpsAgent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1, maxCachedSessions: 0 });
+        try {
+          const challengedAt = Date.now();
+          const challengeReply = await postPrivateAudit(target, endpoint.tlsSpkiSha256, agent,
+            { path: "/challenge", body: Buffer.alloc(0) }, abortSignal);
+          const challenge = auditChallengeSchema.parse(parsePrivateControl(challengeReply.bytes));
+          insist(challenge.origin === endpoint.origin && challenge.audience === audience);
+          const challengeDeadline = Math.min(challengedAt + binding.policy.challengeMaxSeconds * 1000, session.expires);
+          const stillAdmitted = () => {
+            insist(!abortSignal.aborted && Date.now() < challengeDeadline);
+            requirePinnedAuditPeer(challengeReply.socket, endpoint.tlsSpkiSha256);
+          };
+          stillAdmitted();
+          const inputs = runtime(audience);
+          insist(inputs.runId === session.runId && inputs.attempt === session.attempt && inputs.githubToken === session.githubToken);
+          const tokenResponse = await json(inputs.tokenUrl, inputs.requestToken, abortSignal, MAX_DOCUMENT + 1024);
+          const token = tokenResponse.value;
+          insist(text(token, MAX_DOCUMENT));
+          const claims = await verifyToken(token, session.installed, abortSignal, { runId: session.runId, attempt: session.attempt, audience });
+          await nativeContext({ ...session, claims }, abortSignal);
+          await fresh(session, abortSignal);
+          stillAdmitted();
+          const lease = await exchange(session, custodyPolicy(session, custody), abortSignal, true);
+          let sendDeadline = Math.min(challengeDeadline, claims.exp! * 1000, lease.expires, Date.parse(custody.key.notAfter));
+          let proof: Buffer;
+          try {
+            const { privateKey } = await unwrapSigningKey(session, { ...session, ...lease }, lease.kms, custody, abortSignal);
+            const current = await fresh(session, abortSignal);
+            sendDeadline = Math.min(sendDeadline, Date.parse(current.pointer.validUntil));
+            stillAdmitted();
+            signingCustody(session, "workload-transport");
+            insist(Date.now() < sendDeadline);
+            const payload = workloadProof.parse({ domain: "bootstrap-workload-proof", version: 1, canonicalization: "sorted-json-v1",
+              workloadId: workload.id, challengeId: challenge.challengeId, nonce: challenge.nonce,
+              origin: challenge.origin, audience: challenge.audience, bodySha256: controlHash(body) });
+            proof = controlWire({ payload, signature: { keyFingerprint: custody.key.fingerprint,
+              value: sign(null, controlWire(payload), privateKey).toString("base64") } });
+          } finally { lease.kms?.destroy(); lease.s3.destroy(); }
+          stillAdmitted();
+          insist(Date.now() < sendDeadline);
+          const reply = await postPrivateAudit(target, endpoint.tlsSpkiSha256, agent,
+            { path: "/audit", body, token, proof, socket: challengeReply.socket, expires: sendDeadline }, abortSignal);
+          await fresh(session, abortSignal);
+          const ack = verifyPrivateReadAuditAck(reply.bytes, submission.eventBytes, observation, new Date());
+          insist(!abortSignal.aborted && ack.storage.key === `events/${submission.event.eventId}.json`
+            && text(ack.storage.versionId, 1024) && ack.storage.versionId !== "null"
+            && Date.parse(ack.retainUntil) === Date.parse(ack.recordedAt) + binding.policy.auditDays * 86_400_000);
+          return reply.bytes;
+        } finally { agent.destroy(); }
+      }, 60_000);
+    } catch { throw new PrivateIdentityError(); }
+  };
 }

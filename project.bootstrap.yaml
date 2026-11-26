@@ -701,6 +701,7 @@ license:
         The following locked AWS SDK and Smithy runtime components share Apache-2.0 terms. Exact package sources and packaged-license identities are listed separately; the common terms are reproduced once.
 
         - @aws-sdk/checksums@3.1002.5 — https://registry.npmjs.org/@aws-sdk/checksums/-/checksums-3.1002.5.tgz; LICENSE SHA-256 07364a5f7d0177a59a05a0002187431f8f899320983c0dc049d72df015e8064c Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+        - @aws-sdk/client-kms@3.1169.0 — https://registry.npmjs.org/@aws-sdk/client-kms/-/client-kms-3.1169.0.tgz; LICENSE SHA-256 e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
         - @aws-sdk/client-s3@3.1169.0 — https://registry.npmjs.org/@aws-sdk/client-s3/-/client-s3-3.1169.0.tgz; LICENSE SHA-256 e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
         - @aws-sdk/client-sts@3.1169.0 — https://registry.npmjs.org/@aws-sdk/client-sts/-/client-sts-3.1169.0.tgz; LICENSE SHA-256 e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
         - @aws-sdk/core@3.981.0 — https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.0.tgz; LICENSE SHA-256 edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -1085,15 +1086,13 @@ license:
 
         PERFORMANCE OF THIS SOFTWARE.
   thirdPartyNoticesTransition:
-    fromSha256: 010af23399dfec698d83e7e370a09b54927dcda2afdb78619285a238b3bd655f
-    toSha256: 6c2faffffaaad878a7c292b741eab252f7deb5365880e7bcf3f6a513e6291997
-    approvedBy: Root coordinator under owner-authorized private identity dependency implementation, 2026-11-15
+    fromSha256: 6c2faffffaaad878a7c292b741eab252f7deb5365880e7bcf3f6a513e6291997
+    toSha256: d735cf72ac4fcc9572b3c92e3940e5b3f12e26dbb46f6cfa2a81accf137ae40f
+    approvedBy: jmcte (owner confirmation in Bootstrap task, 2026-11-19)
     issue: https://github.com/OMT-Global/bootstrap/issues/161
-    reconciliation: Add 28 locked runtime dependencies from the approved AWS SDK v3 and jose source
-      implementation; preserve every existing notice and first-party LICENSE bytes. Common
-      Apache-2.0 terms appear once with exact component sources, packaged-license hashes and
-      copyright variants; MIT and 0BSD notices remain separate. No independent legal assessment is
-      asserted.
+    reconciliation: Add the exact pinned AWS KMS package to the existing AWS SDK and Smithy Apache-2.0
+      inventory with the approved source URL, packaged license hash, and copyright. Preserve the
+      existing inventory entries and the MIT license bytes.
   transition:
     from:
       mode: existing-unclassified

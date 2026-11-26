@@ -112,7 +112,14 @@ async function readPage(context: PublicPullRequestContext, cursor: string | unde
   });
 }
 
-async function collect(context: PublicPullRequestContext, deadline: number) {
+type ReadReviewPage = (cursor: string | undefined, deadline: number) => Promise<unknown>;
+interface ReviewIdentity {
+  repositoryNodeId: string;
+  headRepositoryNodeId: string;
+  pullRequestNodeId: string;
+}
+async function collect(context: PublicPullRequestContext, deadline: number, read: ReadReviewPage,
+  expected?: ReviewIdentity) {
   const rows: Array<z.infer<typeof review>> = [];
   const cursors = new Set<string>();
   let cursor: string | undefined;
@@ -121,10 +128,14 @@ async function collect(context: PublicPullRequestContext, deadline: number) {
   let authorLogin = "";
   let total = 0;
   for (let page = 0; page < 16; page += 1) {
-    const result = responseSchema.parse(await readPage(context, cursor, deadline)).data.repository;
+    const result = responseSchema.parse(await read(cursor, deadline)).data.repository;
     const pr = result.pullRequest;
     if (result.nameWithOwner !== context.repository || pr.number !== context.pullRequest || pr.headRefOid !== context.commitSha) {
       throw new Error("GitHub review subject does not match the expected context.");
+    }
+    if (expected && (result.id !== expected.repositoryNodeId || pr.id !== expected.pullRequestNodeId
+      || pr.headRepository.id !== expected.headRepositoryNodeId)) {
+      throw new Error("GitHub review identity does not match the expected context.");
     }
     const { latestOpinionatedReviews: connection, ...prIdentity } = pr;
     const currentIdentity = canonicalizeProvenanceJson({ repositoryId: result.id, name: result.nameWithOwner, ...prIdentity, total: connection.totalCount });
@@ -171,12 +182,61 @@ export async function resolvePublicGitHubReviewers(context: PublicPullRequestCon
   try {
     const expected = publicPullRequestContextSchema.parse(context);
     const deadline = performance.now() + 120_000;
-    const before = await collect(expected, deadline);
-    const after = await collect(expected, deadline);
+    const read: ReadReviewPage = (cursor, end) => readPage(expected, cursor, end);
+    const before = await collect(expected, deadline, read);
+    const after = await collect(expected, deadline, read);
     if (before.snapshot !== after.snapshot) throw new Error("GitHub reviews changed during lookup.");
     return after.reviewers;
   } catch {
     // Remote errors and payloads can contain authentication diagnostics or untrusted text.
     throw new Error("Public GitHub reviewer verification failed.");
   }
+}
+
+/** Review observation for the enrolled workload, using its explicit token and the fixed GitHub API. */
+export async function observeWorkloadPublicGitHubReviews(context: PublicPullRequestContext,
+  identity: ReviewIdentity, token: string, signal: AbortSignal) {
+  const expected = publicPullRequestContextSchema.parse(context);
+  const [owner, name] = expected.repository.split("/");
+  const read: ReadReviewPage = async (cursor, deadline) => {
+    const timeout = Math.min(30_000, Math.floor(deadline - performance.now()));
+    if (timeout <= 0 || signal.aborted) throw new Error("GitHub review lookup exceeded its deadline.");
+    const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(timeout)]);
+    const response = await fetch("https://api.github.com/graphql", {
+      method: "POST", redirect: "error", signal: abortSignal, cache: "no-store",
+      headers: { authorization: `Bearer ${token}`, accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ query, variables: { owner, name, number: expected.pullRequest, cursor } })
+    });
+    if (response.status !== 200 || response.redirected || !response.body) {
+      void response.body?.cancel().catch(() => {});
+      throw new Error("GitHub review response is unavailable.");
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    const cancel = () => { void reader.cancel().catch(() => {}); };
+    abortSignal.addEventListener("abort", cancel, { once: true });
+    try {
+      for (;;) {
+        const row = await reader.read();
+        if (abortSignal.aborted) throw new Error("GitHub review lookup was interrupted.");
+        if (row.done) break;
+        size += row.value.byteLength;
+        if (size > 1_048_576 || chunks.length >= 16_384) throw new Error("GitHub review response exceeds its bound.");
+        chunks.push(row.value);
+      }
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
+    } finally {
+      abortSignal.removeEventListener("abort", cancel);
+      cancel();
+    }
+  };
+  const deadline = performance.now() + 120_000;
+  const before = await collect(expected, deadline, read, identity);
+  const after = await collect(expected, deadline, read, identity);
+  if (before.snapshot !== after.snapshot) throw new Error("GitHub reviews changed during lookup.");
+  if (after.reviewers.some((reviewer) => reviewer.state === "changes_requested")) {
+    throw new Error("GitHub has a blocking opinion at the expected head.");
+  }
+  return after;
 }

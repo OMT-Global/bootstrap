@@ -134,7 +134,7 @@
       "source": "bootstrap"
     },
     "project.bootstrap.yaml": {
-      "sha256": "646cefa45f9cfb731b4574800ee23ba62952e27ab81df24dc226890cebe76988",
+      "sha256": "6db7e855a171c6e3902002284c34df545fddd0f44547739e7cfa0aa2affa6664",
       "source": "bootstrap"
     },
     "scripts/check-detect-secrets.sh": {
@@ -202,7 +202,7 @@
       "source": "bootstrap"
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "6c2faffffaaad878a7c292b741eab252f7deb5365880e7bcf3f6a513e6291997",
+      "sha256": "d735cf72ac4fcc9572b3c92e3940e5b3f12e26dbb46f6cfa2a81accf137ae40f",
       "source": "bootstrap"
     }
   }

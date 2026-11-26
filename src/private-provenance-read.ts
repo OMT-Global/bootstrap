@@ -31,7 +31,7 @@ const revocationSchema = z.object({
   scopeSha256: controlDigest, delegationId: controlId, configEpoch: controlCounter, sequence: controlCounter, at: controlTime
 }).strict();
 const phase = z.enum(["attempt", "complete", "failed", "revoked"]);
-const ackSchema = z.object({
+export const privateAuditAckSchema = z.object({
   ...controlBase("bootstrap-private-audit-ack"), eventId: controlId, eventSha256: controlDigest,
   operationId: controlId, phase, storage: controlStorage, recordedAt: controlTime,
   retainUntil: controlTime, configEpoch: controlCounter
@@ -285,17 +285,23 @@ export function verifyPrivateReadAuditSubmission(body: Uint8Array, authority: Pr
   return { event, eventBytes, stateKey: encoded.state.key, stateVersionId: encoded.state.versionId,
     stateSha256: controlHash(stateBytes), categoryIds: approval.categoryIds, revoked: encoded.revocation !== undefined };
 }
-async function acknowledgeAudit(ports: PrivateReadPorts, authority: PrivateReadObservation, value: unknown, evidence: PrivateReadAuditEvidence) {
-  const event = auditEventSchema.parse(value); const bytes = controlWire(event); const eventHash = controlHash(bytes);
-  const verified = verifyPrivateControl(await ports.audit(bytes, evidence), ackSchema, "audit-ack", authority.keys, ports.now());
+export function verifyPrivateReadAuditAck(ackBytes: Uint8Array, eventBytes: Uint8Array, authority: PrivateReadObservation, now: Date) {
+  const event = auditEventSchema.parse(parsePrivateControl(eventBytes));
+  const eventHash = controlHash(eventBytes);
+  const verified = verifyPrivateControl(ackBytes, privateAuditAckSchema, "audit-ack", authority.keys, now);
   const ack = verified.payload;
   requireControl(typeof authority.auditPrefix === "string" && authority.auditPrefix.length > 0 && authority.auditPrefix.endsWith("/")
     && verified.ownerId === authority.auditOwnerId && ack.configEpoch === authority.configEpoch && ack.eventId === event.eventId
     && ack.eventSha256 === eventHash && ack.operationId === event.operationId && ack.phase === event.phase
     && ack.storage.bucket === authority.auditBucket && ack.storage.key.startsWith(authority.auditPrefix)
-    && ms(ack.recordedAt) >= ms(event.at) && ms(ack.recordedAt) <= ports.now().getTime()
+    && ms(ack.recordedAt) >= ms(event.at) && ms(ack.recordedAt) <= now.getTime()
     && ms(ack.retainUntil) >= ms(ack.recordedAt) + 90 * 86_400_000);
-  return eventHash;
+  return ack;
+}
+async function acknowledgeAudit(ports: PrivateReadPorts, authority: PrivateReadObservation, value: unknown, evidence: PrivateReadAuditEvidence) {
+  const bytes = controlWire(auditEventSchema.parse(value));
+  verifyPrivateReadAuditAck(await ports.audit(bytes, evidence), bytes, authority, ports.now());
+  return controlHash(bytes);
 }
 
 /** Source-only coordinator: fixed authenticated runtime composition and provider qualification remain required. */

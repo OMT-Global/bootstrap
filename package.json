@@ -20,6 +20,7 @@
     "check": "npm run typecheck && npm run test"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "3.1169.0",
     "@aws-sdk/client-s3": "3.1169.0",
     "@aws-sdk/client-sts": "3.1169.0",
     "commander": "^14.0.2",

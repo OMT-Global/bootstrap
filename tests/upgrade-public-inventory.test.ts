@@ -34,7 +34,7 @@ import { projectLicensePolicy } from "../src/licensing.js";
 import { observePublicPolicies, POLICY_PUBLISHER, readOwnedPolicyObservation, copyOwnedTargetPolicyBytes } from "../src/upgrade-policy.js";
 import { GOVERNANCE_MARKER } from "../src/upgrade-approval-read.js";
 import { RUNTIME_CONTROLLER } from "../src/upgrade-runtime-policy.js";
-import { runGovernedUpgradeCommand } from "../src/upgrade-runtime.js";
+import { runGovernedUpgradeCommand, runPilotCiCommand } from "../src/upgrade-runtime.js";
 
 type Json = Record<string, unknown>;
 type Reply = { value: unknown; status?: number; headers?: Record<string, string>; url?: string };
@@ -286,6 +286,109 @@ describe("governed dry run with real ownership and fabricated provider", () => {
     expect(JSON.parse(result.output)).toEqual({
       schemaVersion: 1, status: "blocked", authority: "none", publication: "unavailable", reason: "fleet-incomplete"
     });
+  });
+});
+
+async function pilotCiRequest() {
+  const data = await governedRequest();
+  const target = { ref: sourceRef, sha256: flowPolicyDigest(data.bundle) };
+  const request = JSON.parse(await readFile(data.requestFile, "utf8"));
+  await writeFile(data.requestFile, JSON.stringify({ ...request, target }));
+  return { ...data, target };
+}
+
+describe("pilot CI evidence with real Git and fabricated GitHub responses", () => {
+  it("prints the four fields for the verified current head and target", async () => {
+    const data = await pilotCiRequest();
+    const json = await runPilotCiCommand(data.requestFile, data.head, { json: true });
+    expect(json.exitCode, json.output).toBe(0);
+    const report = JSON.parse(json.output);
+    expect(report).toEqual({
+      repository: RUNTIME_CONTROLLER.repository, repositoryId: RUNTIME_CONTROLLER.id, head: data.head,
+      target: { ...data.target, commit: data.oldPolicy, version: data.bundle.version },
+      ci: {
+        runId: 100, attempt: 1, evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        workflowSha256: createHash("sha256").update(data.expected).digest("hex")
+      }
+    });
+    const human = await runPilotCiCommand(data.requestFile, data.head, {});
+    expect(human.exitCode, human.output).toBe(0);
+    expect(human.output).toContain(data.head);
+    expect(human.output).toContain(JSON.stringify(report.ci));
+    expect(human.output).not.toContain(data.directory);
+    expect(data.network.calls.every(({ init }) => init.method === "GET" && !new Headers(init.headers).has("authorization"))).toBe(true);
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname.includes("/issues/"))).toBe(false);
+  });
+
+  it("refuses a different merged SHA and a head that moves during CI evidence collection", async () => {
+    const data = await pilotCiRequest();
+    const wrong = await runPilotCiCommand(data.requestFile, "f".repeat(40), { json: true });
+    expect(wrong.exitCode).toBe(1);
+    expect(JSON.parse(wrong.output)).toMatchObject({ status: "blocked", reason: "pilot-merged-head-mismatch" });
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname.includes("/actions/"))).toBe(false);
+
+    data.network.change = (url, reply) => {
+      const startedCi = data.network.calls.some((call) => new URL(call.url).pathname.includes("/actions/"));
+      return startedCi && url.pathname === "/repos/OMT-Global/bootstrap/git/ref/heads/main"
+        ? { value: { ref: "refs/heads/main", object: { type: "commit", sha: "f".repeat(40) } } } : reply;
+    };
+    const moved = await runPilotCiCommand(data.requestFile, data.head, { json: true });
+    expect(moved.exitCode).toBe(1);
+    expect(JSON.parse(moved.output)).toMatchObject({ status: "blocked", reason: "ci-changed-head" });
+    expect(JSON.parse(moved.output)).not.toHaveProperty("ci");
+  });
+
+  it("refuses an enrolled repository whose current policy differs from the selected target", async () => {
+    const data = await governedRequest();
+    const result = await runPilotCiCommand(data.requestFile, data.head, { json: true });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "blocked", reason: "pilot-policy-not-target" });
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname.includes("/actions/"))).toBe(false);
+  });
+
+  it("refuses an ID that the current controller has not enrolled", async () => {
+    const data = await pilotCiRequest();
+    const request = JSON.parse(await readFile(data.requestFile, "utf8"));
+    await writeFile(data.requestFile, JSON.stringify({ ...request, repositoryId: 3 }));
+    const result = await runPilotCiCommand(data.requestFile, data.head, { json: true });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "blocked", reason: "repository-not-authorized" });
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname.startsWith("/orgs/"))).toBe(false);
+  });
+
+  it("refuses incomplete public discovery", async () => {
+    const data = await pilotCiRequest();
+    data.network.change = (url, reply) => url.pathname.startsWith("/orgs/")
+      ? { value: { message: "fabricated rate limit" }, status: 429 } : reply;
+    const result = await runPilotCiCommand(data.requestFile, data.head, { json: true });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "blocked", reason: "fleet-incomplete" });
+    expect(data.network.calls.some(({ url }) => new URL(url).pathname.includes("/actions/"))).toBe(false);
+  });
+
+  it.each([
+    { name: "unsupported workflow", reason: "ci-unsupported-workflow" },
+    { name: "missing run", reason: "ci-no-run" },
+    { name: "failed run", reason: "ci-validation-failed" }
+  ])("refuses a $name", async ({ name, reason }) => {
+    const data = await pilotCiRequest();
+    data.network.change = (url, reply) => {
+      if (name === "unsupported workflow" && url.pathname.endsWith("/actions/workflows/extended-validation.yml")) {
+        return { value: { ...reply.value as Json, state: "disabled_manually" } };
+      }
+      if (url.pathname.endsWith("/actions/workflows/300/runs")) {
+        return name === "missing run" ? { value: { total_count: 0, workflow_runs: [] } }
+          : { value: { total_count: 1, workflow_runs: [{ ...data.network.run(), conclusion: "failure" }] } };
+      }
+      if (name === "failed run" && url.pathname.endsWith("/actions/runs/100")) {
+        return { value: { ...data.network.run(), conclusion: "failure" } };
+      }
+      return reply;
+    };
+    const result = await runPilotCiCommand(data.requestFile, data.head, { json: true });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "blocked", reason });
+    expect(JSON.parse(result.output)).not.toHaveProperty("ci");
   });
 });
 

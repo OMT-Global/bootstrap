@@ -78,7 +78,7 @@
       "source": "bootstrap"
     },
     ".github/workflows/security.yml": {
-      "sha256": "d7eed013d5c0d7c89f95586ff1a2de6316a800e1b5e455ecb7ec0c79b5ea6244",
+      "sha256": "13ad04b2697a8867a138ab1f8ebafcc6c74c26872dc2f4bac0a014bfb98a1867",
       "source": "bootstrap"
     },
     ".gitignore": {

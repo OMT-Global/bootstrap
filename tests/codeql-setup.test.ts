@@ -23,8 +23,8 @@ const scanningAvailabilityWaiver: PolicyException = {
   rationale: "Synthetic temporary provider-availability fixture.", approvedBy: "synthetic-independent-reviewer",
   issue: "#63", permanent: false, expiresAt: "2099-01-01"
 };
-// Preserves the read-only SBOM baseline; the paired CodeQL pins are now v4.39.3.
-const reviewedSecurityWithReadOnlySbomSha256 = "28b305b47f1a485036df12fe850964f4924af95b088d6ba705c78005dba05433";
+// Preserves the read-only SBOM baseline; the paired CodeQL pins are now v4.39.4.
+const reviewedSecurityWithReadOnlySbomSha256 = "b3a3e79c3a0d8cdd3b14f55f9fa4736eb4a1d2cdc2d5486a7e0dcb65ffd07f11";
 
 function input(ci: Record<string, unknown> = {}) {
   return {

@@ -177,6 +177,16 @@ describe("installed private deployment authority", () => {
     expect(f.install().keys.filter((key) => key.ownerId === "worker-audit")).toHaveLength(2);
   });
   it("rejects transport keys without a current owner", () => { const f = fixture(); f.key("workload-transport"); denied(f.install); });
+  it("permits a custody descriptor only on the enrolled broker's workload transport key", () => {
+    const f = fixture();
+    const descriptor = { versionId: "transport-key-version", ciphertextSha256: "d".repeat(64) };
+    const broker = f.binding.workloads.find((w: any) => w.purpose === "read-broker");
+    const controller = f.binding.workloads.find((w: any) => w.purpose === "controller");
+    f.binding.keys.find((key: any) => key.fingerprint === broker.transportKeyFingerprint).custody = descriptor;
+    expect(f.install().keys.find((key) => key.fingerprint === broker.transportKeyFingerprint)?.custody).toEqual(descriptor);
+    f.binding.keys.find((key: any) => key.fingerprint === controller.transportKeyFingerprint).custody = descriptor;
+    denied(f.install);
+  });
   it("supports explicitly pinned immutable GitHub subject format without fallback to name-only", () => {
     const f = fixture();
     for (const role of f.binding.aws.roles) role.oidcSubject = role.oidcSubject.replace("fixture/control", "fixture@456/control@123");

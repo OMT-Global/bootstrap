@@ -54,7 +54,11 @@ const controlRepository = z.object({
 }).strict();
 const deploymentKey = z.object({
   purpose: keyPurpose, fingerprint: controlDigest, publicJwk,
-  notBefore: controlTime, notAfter: controlTime, revoked: z.boolean()
+  notBefore: controlTime, notAfter: controlTime, revoked: z.boolean(),
+  custody: z.object({
+    versionId: z.string().regex(/^[A-Za-z0-9.+_=/\-]{1,256}$/).refine((value) => value !== "null"),
+    ciphertextSha256: controlDigest
+  }).strict().optional()
 }).strict();
 const role = z.object({
   purpose: rolePurpose, arn, oidcSubject: physicalText(2048), sessionSeconds: z.number().int().min(900).max(3600)
@@ -132,8 +136,7 @@ export interface InstalledDeployment {
   readonly verifiedAt: string;
   readonly localWorkloadId: string;
   readonly configLocation: Readonly<{ bucket: string; key: "config/active.json" }>;
-  readonly keys: readonly Readonly<{ ownerId: string; purpose: z.infer<typeof keyPurpose>;
-    fingerprint: string; publicJwk: z.infer<typeof publicJwk>; notBefore: string; notAfter: string; revoked: boolean }>[];
+  readonly keys: readonly Immutable<z.infer<typeof deploymentKey> & { ownerId: string }>[];
 }
 export interface CurrentDeployment {
   readonly installed: InstalledDeployment;
@@ -216,6 +219,8 @@ function validateAuthority(binding: DeploymentBinding, rootFingerprint: string, 
   for (const key of binding.keys) {
     requireControl(key.fingerprint === provenanceSigningKeyFingerprint(key.publicJwk));
     requireControl(Date.parse(key.notBefore) < Date.parse(key.notAfter));
+    requireControl(key.custody === undefined || key.purpose === "public-manifest" || key.purpose === "audit-ack"
+      || key.purpose === "workload-transport");
   }
   const owned = new Map<string, string>();
   function enroll(fingerprint: string | null, purpose: z.infer<typeof keyPurpose>, ownerId: string) {
@@ -263,6 +268,9 @@ function validateAuthority(binding: DeploymentBinding, rootFingerprint: string, 
   // they have no current owner or authority. Every transport key must have a current owner.
   for (const key of binding.keys) {
     if (key.purpose.endsWith("-transport")) requireControl(owned.has(key.fingerprint));
+    if (key.purpose === "workload-transport" && key.custody) {
+      requireControl(owned.get(key.fingerprint) === binding.workloads.find((worker) => worker.purpose === "read-broker")?.id);
+    }
   }
   return binding.keys.filter((key) => owned.has(key.fingerprint)).map((key) => ({ ...key, ownerId: owned.get(key.fingerprint)! }));
 }

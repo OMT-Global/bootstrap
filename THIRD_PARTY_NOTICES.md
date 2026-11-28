@@ -11,6 +11,7 @@ This inventory is separate from the repository's first-party license. Each liste
 The following locked AWS SDK and Smithy runtime components share Apache-2.0 terms. Exact package sources and packaged-license identities are listed separately; the common terms are reproduced once.
 
 - @aws-sdk/checksums@3.1002.5 — https://registry.npmjs.org/@aws-sdk/checksums/-/checksums-3.1002.5.tgz; LICENSE SHA-256 07364a5f7d0177a59a05a0002187431f8f899320983c0dc049d72df015e8064c Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+- @aws-sdk/client-kms@3.1169.0 — https://registry.npmjs.org/@aws-sdk/client-kms/-/client-kms-3.1169.0.tgz; LICENSE SHA-256 e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 - @aws-sdk/client-s3@3.1169.0 — https://registry.npmjs.org/@aws-sdk/client-s3/-/client-s3-3.1169.0.tgz; LICENSE SHA-256 e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 - @aws-sdk/client-sts@3.1169.0 — https://registry.npmjs.org/@aws-sdk/client-sts/-/client-sts-3.1169.0.tgz; LICENSE SHA-256 e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 - @aws-sdk/core@3.981.0 — https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.0.tgz; LICENSE SHA-256 edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.

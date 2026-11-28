@@ -20,7 +20,7 @@ import { planFleetPolicyUpgrades } from "./upgrades.js";
 import { parseFleetUpgradeInventory } from "./upgrade-inventory.js";
 import { runPublicDiscovery } from "./upgrade-discovery-command.js";
 import { runPublicInventory } from "./upgrade-public-inventory.js";
-import { runGovernedUpgradeCommand } from "./upgrade-runtime.js";
+import { runGovernedUpgradeCommand, runPilotCiCommand } from "./upgrade-runtime.js";
 import {
   deliverExceptionNotifications,
   deliverMaterialAction,
@@ -256,6 +256,18 @@ async function main(): Promise<void> {
     .action(async (options) => {
       const result = await runGovernedUpgradeCommand(options.request, options);
       process.stdout.write(`${result.output}\n`);
+      process.exitCode = result.exitCode;
+    });
+
+  program
+    .command("observe-fleet-pilot-ci")
+    .description("Read current CI evidence for an exact merged fleet pilot.")
+    .requiredOption("--request <path>", "Path to a fleet upgrade request JSON file")
+    .requiredOption("--merged-commit <sha>", "Exact merge commit at the pilot's current default head")
+    .option("--json", "Emit JSON")
+    .action(async (options) => {
+      const result = await runPilotCiCommand(options.request, options.mergedCommit, options);
+      process.stdout.write(result.output + "\n");
       process.exitCode = result.exitCode;
     });
 

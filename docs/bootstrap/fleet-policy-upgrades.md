@@ -50,6 +50,23 @@ The enrolled human pilot actor records outcomes in the configured governance iss
 
 A passing record binds an actual merged PR, its exact candidate and merge commits, and successful CI evidence for the recorded target.
 
+After verifying the pilot's merged PR, keep the exact repository and target in
+its upgrade request. If Bootstrap advanced, update the generator checkout and
+commit in that request to the current public controller. Supply the full
+lowercase pilot merge commit SHA to obtain the four CI fields.
+
+~~~sh
+bootstrap observe-fleet-pilot-ci --request ./upgrade-request.json \
+  --merged-commit "$PILOT_MERGE_COMMIT" --json
+~~~
+
+Copy the returned `ci` object into the passing outcome. The command checks that
+the merge commit is still the pilot's current default head, the installed
+policy matches the exact requested target, and the supported extended
+validation completed successfully. The human pilot actor still submits the
+outcome. An inconclusive observation exits nonzero. Omit `--json` to read the same
+evidence as text.
+
 ```text
 PRS-FLEET-GOVERNANCE-001
 {"schemaVersion":1,"kind":"pilot-outcome","outcome":"passed","cohort":720,"repositoryId":501,"targetDigest":"1111111111111111111111111111111111111111111111111111111111111111","candidateCommit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","mergedCommit":"cccccccccccccccccccccccccccccccccccccccc","pullNumber":42,"ci":{"runId":900,"attempt":1,"evidenceSha256":"2222222222222222222222222222222222222222222222222222222222222222","workflowSha256":"3333333333333333333333333333333333333333333333333333333333333333"}}

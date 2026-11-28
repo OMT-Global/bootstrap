@@ -32,6 +32,16 @@ describe("CLI help", () => {
     });
   });
 
+  it("registers the read-only pilot CI command and rejects an invalid SHA before reading the request", async () => {
+    const command = [cli, "observe-fleet-pilot-ci"];
+    const help = await execFileAsync(tsx, [...command, "--help"]);
+    expect(help.stdout).toContain("--merged-commit <sha>");
+    const attempt = await execFileAsync(tsx, [...command, "--request", "/nonexistent/fabricated-request", "--merged-commit", "a".repeat(39) + "\n", "--json"])
+      .catch((error: { code: number; stdout: string; stderr: string }) => error);
+    expect(attempt).toMatchObject({ code: 1, stderr: "" });
+    expect(JSON.parse(attempt.stdout)).toMatchObject({ status: "blocked", reason: "merged-commit-invalid" });
+  });
+
   it("describes configured webhook delivery", async () => {
     const [deliver, exceptions, conform] = await Promise.all([
       execFileAsync(tsx, [cli, "notifications", "deliver", "--help"]),

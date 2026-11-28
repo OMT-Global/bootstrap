@@ -367,6 +367,7 @@ describe.skipIf(!required)("actual isolated Node Docker backend", () => {
     expect(hook).toMatchObject({ profile: report.profile, image: report.image, sourceSha256: report.sourceSha256, baseCommit: report.baseCommit, hook: report.hook });
     expect(hook.commitPlanSha256).toBe(frozen.commitPlanSha256); expect(report.commitPlanSha256).toBe(frozen.commitPlanSha256);
     expect(Object.keys(report.tools).sort()).toEqual(["bash", "git", "jq", "node", "npm", "python"]);
+    expect(report.tools.python).toMatch(/^Python 3\.13\./);
     expect(report.tools.jq).toMatch(/^jq-/);
     expect(report.tools.node).toMatch(/^v24\./); for (const value of Object.values(report.tools)) expect(value.length).toBeGreaterThan(0);
     expect(report.checkOutput).toContain("ISOLATED-PROBE-PASSED:checks"); expect(hook.hookOutput).toContain("ISOLATED-PROBE-PASSED:hook");

@@ -5,8 +5,17 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { parse } from "yaml";
 import { expect, it } from "vitest";
+import { NODE_ISOLATION_IMAGE } from "../src/isolation/node-profile.js";
 
 const exec = promisify(execFile);
+
+it("pulls the same immutable image as the Node backend in both hosted entry points", async () => {
+  const workflow = parse(await readFile(".github/workflows/fleet-isolation-validation.yml", "utf8"));
+  const pull = workflow.jobs["isolated-node-validation"].steps.find((step: { run?: string }) => step.run?.includes("docker pull"));
+  expect(pull.run).toContain(`image='${NODE_ISOLATION_IMAGE}'`);
+  const extended = await readFile("scripts/ci/run-extended-validation.sh", "utf8");
+  expect(extended).toContain(`image='${NODE_ISOLATION_IMAGE}'`);
+});
 
 it("bundles the workflow checkout with its commit ancestry for isolated validation", async () => {
   const workflow = parse(await readFile(".github/workflows/fleet-isolation-validation.yml", "utf8"));
